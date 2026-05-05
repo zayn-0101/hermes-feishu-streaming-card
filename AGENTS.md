@@ -168,3 +168,28 @@ EOF
 ```
 
 Git tag 和 GitHub Release 是两个独立步骤，缺一不可。
+
+## 文档更新清单 / Documentation Checklist
+
+每次发版必须更新以下文件：
+
+| 文件 | 要求 |
+|------|------|
+| `README.md` | 标题版本号、核心功能含所有特性、安装配置在前、升级说明、贡献者、License |
+| `README.en.md` | 与中文版结构一致，地道英文 |
+| `CHANGELOG.md` | 新版本条目（Added/Fixed/Changed），参考 Keep a Changelog |
+| `config.yaml.example` | 版本注释、新增配置项、多 Profile 示例 |
+| `TODO.md` | 当前版本完成项打 `[x]`，下一版本计划，**保留旧字符串供 doc 测试** |
+| `pyproject.toml` | `version` 字段 |
+| `hermes_feishu_card/__init__.py` | `__version__` 字段 |
+| `LICENSE` | 首次发布时创建 MIT License |
+| `AGENTS.md` | 本文件 — 更新间隔、新增约束 |
+
+**README 结构要求**（不遵守会重写）：
+1. 快速安装放在第一位（`pip install` + `setup` 命令）
+2. 核心功能紧跟其后，多 bot、多 profile 必须列出
+3. 配置放中间，三种示例（单/多 bot/多 profile），每种 ~15 行
+4. 不重复 — 一个概念只出现一次
+5. 中英文 README 各 200-400 行，不啰嗦
+
+**测试兼容**：`tests/unit/test_docs.py` 使用精确字符串匹配（含 `。`），更新 TODO.md 时**必须保留所有测试引用的字符串**，否则 doc 测试失败。
