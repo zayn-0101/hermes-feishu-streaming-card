@@ -4,647 +4,196 @@
 
 ![Hermes Feishu Streaming Card 封面](docs/assets/readme-cover.png)
 
-为 Hermes Agent Gateway 的飞书/Lark 平台适配器提供稳定的流式卡片消息能力。V3.3.0 采用 **sidecar-only** 架构：Hermes 主项目只注入极小 hook，飞书 CardKit 渲染、会话状态、更新节流、重试、健康指标和故障隔离全部由独立 sidecar 进程承担。新增多 Profile 进程内支持，一个 sidecar 可同时服务多个 Hermes profile，每个 profile 使用独立的飞书凭据和 bot 路由。
-
-当前版本已完成真实 Feishu E2E 主链路验收：新消息创建新卡片，思考过程和最终答案在同一张卡片内渐进更新，工具调用状态实时统计，完成后卡片显示耗时、模型、token 和上下文占用，且不会再额外刷出灰色原生文本消息。
-
-Feishu CardKit HTTP client 已实现，并通过 mock Feishu server、真实 Feishu smoke、真实 Hermes Gateway E2E 和长卡片压力测试验证。
-
-真实效果截图：
+为 Hermes Agent Gateway 的飞书/Lark 平台提供流式卡片消息。V3.3.0 **sidecar-only** 架构，支持多 Profile 进程内隔离、多 Bot 路由、DeepSeek 思维链兼容和表格超限保护。向后兼容 V3.2 及更早配置。
 
 ![飞书流式卡片真实效果截图](docs/assets/feishu-weather-card.png)
 
-## 核心功能
-
-- **流式思考展示**：支持 `thinking.delta` 累积渲染，自动过滤 `<think>`/`</think>` 及 DeepSeek `<thinking>`/`</thinking>` 标签
-- **渐进式答案更新**：`answer.delta` 分段进入同一张卡片，完成后用最终答案覆盖思考内容
-- **工具调用跟踪**：`tool.updated` 实时显示工具调用次数和状态，完成后保留累计总次数
-- **运行统计 footer**：默认显示耗时、模型、输入/输出 token、上下文长度和百分比，非终态卡片 footer 显示旋转 braille 动画
-- **长文本稳定渲染**：卡片正文按安全长度拆分为多个 Markdown 元素，16k+ 中文字符压力测试通过
-- **表格超限保护**：Markdown 表格超过飞书 5 个表格限制时自动截断并附加提示，防止卡片发送失败
-- **故障隔离**：sidecar 不可用 Hermes hook fail-open，原生文本回复继续运行
-- **安全安装**：安装器 fail-closed，写入前检查 Hermes 版本、代码结构、备份和 manifest
-- **自动恢复**：`restore`/`uninstall` 检测用户改动时拒绝覆盖，避免破坏 Hermes 原文件
-
-## V3.3.0 新特性
-
-V3.3.0 在 V3.2 的 sidecar-only 架构上引入多项增强，重点提升多环境部署能力和稳定性：
-
-- **多 Profile 进程内支持**：一个 sidecar 进程可同时服务多个 Hermes profile，每个 profile 使用独立的飞书凭据（`app_id`/`app_secret`）、bot 注册和路由绑定。Session 隔离使用 `profile_id:message_id` 复合键，确保不同 profile 的消息互不干扰。
-- **多 Bot 独立凭据路由**：`BotRegistry` 支持 profile-aware 路由，根据 `profile_id` 选择对应 profile 的 bot 凭据池，`_client_for_bot()` 使用 dict 工厂模式按 profile 分发。
-- **DeepSeek 思维链兼容**：`THINK_TAG_RE` 和 `THINK_TAGS` 新增 `<thinking>`/`</thinking>` 标签，与原有 `<think>`/`</think>` 标签统一归一化处理，确保 DeepSeek 模型的思考内容正常显示。
-- **卡片表格超限保护**：新增 `count_markdown_tables()` 和 `MAX_CARD_TABLES`（默认 5），渲染时自动截断超过限制的表格，并附加 "表格数量超限，已自动截断" 提示，避免飞书 11310 错误。
-- **Footer 旋转动画**：非终态卡片 footer 由静态 "生成中" 改为 braille 旋转动画（由 `time.time()` 驱动，无需额外 API 请求），提升视觉反馈。
-- **平台判断修复**：`_render_complete_hook_block` 和 `_render_previous_async_complete_hook_block` 仅在 `source.platform.value == "feishu"` 时返回 `None`，非飞书平台（QQ/微信/钉钉等）不再被 complete hook 吞掉响应。
-
-## V3.2 多 Bot 与群聊路由
-
-V3.2 引入**多 bot 注册与路由**：单个 sidecar 管理多个飞书机器人，根据 `chat_id`/`open_chat_id` 将群聊或私聊路由到指定 bot。未绑定会话使用 fallback/default bot。插件**不管**群聊触发规则，Hermes 仍决定何时响应，插件仅负责把 Hermes 已产生的回复渲染到对应飞书会话。
-
-### 主要特性
-
-- **Bot Registry**：`bots.items` 定义多个 bot，每个含独立 `app_id`/`app_secret`
-- **Chat Bindings**：`bindings.chats` 映射 `chat_id → bot_id`，未匹配走 `bindings.fallback_bot`
-- **Group Rules 框架**：`bindings.group_rules.enabled` 为未来群聊过滤预留（V3.3.0 为 `false`，无实际过滤）
-- **Bot CLI 管理**：`hermes_feishu_card.cli bots` 支持 `list`/`show`/`add`/`remove`/`bind-chat`/`unbind-chat`
-- **Sidecar 路由诊断**：`/health.routing` 暴露 `bot_count`、`chat_binding_count`、`last_route`、`bots[]` 详情
-- **透传路由上下文**：`message.started` 的 `chat_type`、`tenant_key`、`agent_id`、`profile_id` 已提取并传递给 bot 客户端
-
-### 配置步骤
-
-1. **在飞书开放平台创建多个自建应用**，分别记录 `app_id` 和 `app_secret`。
-2. **编辑 sidecar 配置文件**（默认 `~/.hermes_feishu_card/config.yaml`）：
-   - 在 `bots.items` 中定义每个 bot 的 `name`、`app_id`、`app_secret`
-   - 在 `bindings.chats` 中将群聊 `chat_id` 映射到 `bot_id`
-   - 设置 `bindings.fallback_bot` 为默认 bot ID（通常是 `default`）
-3. **重启 sidecar**：`hermes-feishu-card restart` 或重启 Hermes Gateway
-4. **验证路由**：`python3 -m hermes_feishu_card.cli doctor --config ~/.hermes_feishu_card/config.yaml`
-5. **发送测试消息**：在绑定的群聊中 @机器人，确认卡片由对应 bot 发出
-
-
-### 完整配置示例
-
-```yaml
-server:
-  host: 127.0.0.1
-  port: 8765
-
-feishu:
-  # 默认 bot 凭据（用于 fallback_bot 或单 bot 模式）
-  app_id: ""
-  app_secret: ""
-
-bots:
-  default: default
-  items:
-    sales:
-      name: "销售群机器人"
-      app_id: "cli_sales_xxxxx"
-      app_secret: "sales_secret_xxx"
-    support:
-      name: "技术支持机器人"
-      app_id: "cli_support_yyyyy"
-      app_secret: "support_secret_xxx"
-
-bindings:
-  fallback_bot: default
-  chats:
-    # 销售群 → sales bot
-    oc_5cc6a25d8815790fa890dd0226005e83: sales
-    # 技术支持群 → support bot
-    oc_7dd7b36e9826701fb901ee0337007f94: support
-  group_rules:
-    enabled: false  # V3.3.0 不启用群聊触发过滤
-
-card:
-  title: Hermes Agent
-  max_wait_ms: 800
-  max_chars: 240
-  footer_fields:
-    - duration
-    - model
-    - input_tokens
-    - output_tokens
-    - context
-```
-
-> **注意**：`feishu.app_id`/`feishu.app_secret` 仅用于未配置多 bot 或作为 fallback。建议为每个 bot 提供独立凭据，避免权限交叉。
-
-### 如何获取 chat_id
-
-**重要**：`bindings.chats` 默认为空 `{}`，所有未绑定的消息都会路由到 `fallback_bot`。如果使用多 bot，必须配置 chat_id 绑定。
-
-获取 chat_id 的方法：
-
-1. **从 Gateway 日志提取**（推荐）：
-   ```bash
-   # 查看 Gateway 日志中的 chat_id
-   grep "chat_id=" ~/.hermes/profiles/*/logs/gateway.log | grep "Inbound" | tail -20
-   
-   # 输出示例：
-   # ... chat_id=oc_xxxxxxxxxxxxxxxx
-   ```
-
-2. **从 sidecar 健康检查确认路由**：
-   ```bash
-   curl -s http://127.0.0.1:8765/health | jq '.routing.last_route'
-   # 输出: {"message_id": "...", "chat_id": "oc_xxx", "bot_id": "main", "reason": "bindings.fallback_bot"}
-   ```
-   如果 `reason` 显示 `bindings.fallback_bot`，说明该 chat_id 未绑定，需要添加到配置中。
-
-3. **从飞书群聊 URL 获取**：打开飞书群聊，URL 中的 `oc_xxx` 即为 chat_id。
-
-### 常用命令
-
-```bash
-# 列出所有已注册的 bots
-python3 -m hermes_feishu_card.cli bots list --config ~/.hermes_feishu_card/config.yaml
-
-# 查看单个 bot 详情
-python3 -m hermes_feishu_card.cli bots show sales --config ~/.hermes_feishu_card/config.yaml
-
-# 绑定群聊到 bot
-python3 -m hermes_feishu_card.cli bots bind-chat oc_xxxx sales --config ~/.hermes_feishu_card/config.yaml
-
-# 解绑群聊
-python3 -m hermes_feishu_card.cli bots unbind-chat oc_xxxx --config ~/.hermes_feishu_card/config.yaml
-
-# 添加新 bot
-python3 -m hermes_feishu_card.cli bots add --id support --name "Support Bot" --app-id cli_support_xxx --app-secret "xxx" --config ~/.hermes_feishu_card/config.yaml
-
-# 删除 bot
-python3 -m hermes_feishu_card.cli bots remove support --config ~/.hermes_feishu_card/config.yaml
-
-# 健康检查与路由诊断
-curl http://127.0.0.1:8765/health | jq '.routing'
-```
-
-### 故障排查
-
-- **机器人回复错误**：检查 `bindings.chats` 中 `chat_id` 是否与飞书群聊 ID 一致（注意 `oc_` 前缀）
-- **群卡片未发送**：
-  1. 确认对应 bot 已加入群聊且开启「允许群成员邀请」权限
-  2. 确认 bot 有「发送消息卡片」和「更新消息卡片」的 API 权限
-  3. 确认 Hermes 已触发回复（检查 Hermes 日志）
-  4. 运行 `doctor` 或查看 `/health.routing` 确认路由正确
-- **未知 bot 绑定**：运行 `python3 -m hermes_feishu_card.cli doctor` 检查配置语法和凭据
-- **sidecar 未启动**：`ps aux | grep hermes_feishu_card.runner` 或 `hermes logs` 查看错误
-
-### 路由逻辑细节
-
-- 事件到达 sidecar → `BotRegistry.resolve(RoutingContext)` → 查找 `bindings.chats[chat_id]` → 匹配 bot
-- 未匹配 → 使用 `bindings.fallback_bot` 指定的 bot
-- `fallback_bot` 未配置或无效 → 使用 `bots.default`（通常为 `"default"`）
-- 每个 bot 使用独立的 `FeishuClient`（独立的 `app_id`/`app_secret` 凭证池）
-- V3.3.0 新增 profile-aware 路由：多 profile 模式下根据 `profile_id` 选择对应 profile 的 bot 凭据池
-- `message.started` 携带的 `chat_type`、`tenant_key`、`agent_id`、`profile_id` 已透传，供未来群聊过滤规则使用
-
-## 环境依赖
-
-- Python `3.9` 及以上，推荐 Python `3.12`。
-- Hermes Agent `v2026.4.23` 及以上。
-- macOS/Linux 等 POSIX 环境，用于 sidecar 进程管理和 pidfile。
-- 飞书/Lark 自建应用，并具备发送与更新消息卡片所需权限。
-- Python 依赖：
-  - `aiohttp>=3.9`
-  - `PyYAML>=6.0`
-
-安装器实际以 Hermes 目录中的 `VERSION=v2026.4.23+` 或 Git tag `v2026.4.23+`，以及 `gateway/run.py` 代码结构检测为准。检查失败时不会写入 Hermes 文件。
-
-## 安装
-
-面向普通用户，推荐使用整合安装器 `setup`。它会自动生成配置文件、检查 Hermes 版本、安装 hook、启动 sidecar，并做健康检查。
+## 快速安装
 
 ```bash
 git clone https://github.com/baileyh8/hermes-feishu-streaming-card.git
-cd hermes-feishu-streaming-card
-python3 -m pip install -e ".[test]"
-export FEISHU_APP_ID=cli_xxx
-export FEISHU_APP_SECRET=xxx
+cd hermes-feishu-streaming-card && pip install -e ".[test]"
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx
 python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --yes
 ```
 
-默认配置文件会写入：
+`setup` 是整合安装器，自动生成配置、检查 Hermes 版本（要求 `v2026.4.23` 以上）、安装 hook、启动 sidecar 并做健康检查。分步命令见下方 CLI 命令表。
 
-```text
-~/.hermes_feishu_card/config.yaml
-```
+## 核心功能
 
-如果你希望指定配置路径：
-
-```bash
-python3 -m hermes_feishu_card.cli setup \
-  --hermes-dir ~/.hermes/hermes-agent \
-  --config ~/.hermes_feishu_card/config.yaml \
-  --yes
-```
-
-`setup` 内部会按顺序执行：
-
-1. 如果配置文件不存在，自动生成默认配置。
-2. 检查飞书凭据是否已通过环境变量或配置文件提供。
-3. 检查 Hermes 目录、版本和 `gateway/run.py` 结构。
-4. 备份 Hermes 原文件并安装最小 hook。
-5. 启动 sidecar。
-6. 调用 `/health` 确认 sidecar 已运行。
-
-缺少 `FEISHU_APP_ID` 或 `FEISHU_APP_SECRET` 时，`setup` 会在安装 hook 前停止，只保留自动生成的配置文件，避免出现"安装成功但真实飞书没有卡片"的误判。
-
-如果只想安装 hook，不自动启动 sidecar：
-
-```bash
-python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --skip-start --yes
-```
-
-### 高级/排障命令
-
-分步命令仍然保留，适合排查安装问题：
-
-```bash
-python3 -m hermes_feishu_card.cli doctor --config config.yaml.example --skip-hermes
-python3 -m hermes_feishu_card.cli doctor --config config.yaml.example --hermes-dir ~/.hermes/hermes-agent
-python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --yes
-python3 -m hermes_feishu_card.cli start --config config.yaml.example
-python3 -m hermes_feishu_card.cli status --config config.yaml.example
-```
-
-`doctor` 会展示 `version_source`、`version`、`minimum_supported_version`、`run_py_exists` 和拒绝原因。正式安装前必须先确认 `doctor: ok`。
-
-停止、恢复或卸载仍使用独立命令：
-
-```bash
-python3 -m hermes_feishu_card.cli stop --config config.yaml.example
-python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --yes
-python3 -m hermes_feishu_card.cli uninstall --hermes-dir ~/.hermes/hermes-agent --yes
-```
-
-`restore` 和 `uninstall` 会优先使用安装时生成的备份与 manifest 校验。检测到 Hermes 文件、备份或 manifest 被用户改动时会拒绝覆盖。
-
-## 版本升级
-
-### 从 V3.2 升级到 V3.3.0
-
-V3.3.0 向后兼容 V3.2 的 sidecar-only 架构。**单 Profile 配置无需任何修改即可继续运行**；如需使用多 Profile 功能，需扩展配置。
-
-#### 升级步骤
-
-1. **备份当前配置**
-
-   ```bash
-   cp ~/.hermes_feishu_card/config.yaml ~/.hermes_feishu_card/config.yaml.v3.2.backup
-   ```
-
-2. **停止 sidecar**
-
-   ```bash
-   python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yaml
-   ```
-
-3. **更新代码到 V3.3.0**
-
-   ```bash
-   cd /path/to/hermes-feishu-streaming-card
-   git checkout v3.3.0
-   python3 -m pip install -e ".[test]" --upgrade
-   ```
-
-4. **更新配置（如需多 Profile）**
-
-   在 `config.yaml` 中新增 `profiles` 字段（参考下方多 Profile 配置示例）。单 Profile 用户无需修改。
-
-5. **重启 sidecar**
-
-   ```bash
-   python3 -m hermes_feishu_card.cli start --config ~/.hermes_feishu_card/config.yaml
-   python3 -m hermes_feishu_card.cli status --config ~/.hermes_feishu_card/config.yaml
-   ```
-
-#### 兼容性说明
-
-- V3.2 单 Profile 配置在 V3.3.0 中**完全兼容**
-- 多 Profile 功能为可选：未配置 `profiles` 时，行为与 V3.2 完全一致
-- 环境变量 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 在多 Profile 模式下不再生效（凭据由各 profile 配置独立提供）
-- 回退：停用 sidecar，恢复备份的 `config.yaml`，重新安装 V3.2 版本即可
+- **多 Profile 进程内支持**（V3.3.0 新增）：一个 sidecar 服务多个 Hermes profile，`profile_id:message_id` 复合键隔离 session，每个 profile 独立凭据和 bot 路由
+- **多 bot 路由与群聊绑定**：`bots.items` 注册多个飞书机器人，`bindings.chats` 按 `chat_id` 路由到指定 bot，支持 fallback/default bot
+- **流式思考展示**：`thinking.delta` 累积渲染，自动过滤 `<think>`/`</think>` 及 DeepSeek `<thinking>`/`</thinking>` 标签
+- **渐进式答案更新**：`answer.delta` 分段进入同一张卡片，完成后覆盖思考内容
+- **工具调用跟踪**：`tool.updated` 显示累计调用次数和状态
+- **运行统计 footer**：显示耗时、模型、token、上下文占比，非终态卡片 footer 旋转 braille 动画
+- **表格超限保护**（V3.3.0 新增）：超过飞书 5 个表格限制自动截断并提示，避免 11310 错误
+- **平台判断修复**（V3.3.0 新增）：非飞书平台不再被 complete hook 吞掉响应
+- **故障隔离**：sidecar 不可用时 Hermes hook fail-open，原生文本继续运行
+- **安全安装**：安装器 fail-closed，检查版本和代码结构后写入，`restore`/`uninstall` 检测改动拒绝覆盖
 
 ## 配置
 
-复制 `config.yaml.example` 到本机安全位置后再填写凭据。不要把真实 App Secret 提交到仓库。
+复制 `config.yaml.example` 到本地，不要提交真实凭据。三种典型配置：
 
-### 单 Profile 最小配置
+**单 Profile 最小配置** — 最简单的起步方式：
 
 ```yaml
 server:
   host: 127.0.0.1
   port: 8765
-
 feishu:
   app_id: ""
   app_secret: ""
-
 card:
   title: Hermes Agent
-  max_wait_ms: 800
-  max_chars: 240
-  footer_fields:
-    - duration
-    - model
-    - input_tokens
-    - output_tokens
-    - context
+  footer_fields: [duration, model, input_tokens, output_tokens, context]
 ```
 
-### 单 Profile + 多 Bot 配置
+**单 Profile + 多 Bot** — 在 `bots.items` 注册多个 bot，`bindings.chats` 按 chat_id 路由：
 
 ```yaml
 server:
   host: 127.0.0.1
   port: 8765
-
 feishu:
-  # 仅作为 fallback 或单 bot 使用
   app_id: ""
-  app_secret: ""
-
+  app_secret: ""          # 仅作 fallback
 bots:
   default: default
   items:
     sales:
-      name: "销售群机器人"
       app_id: "cli_sales_xxx"
       app_secret: "xxx"
     support:
-      name: "技术支持机器人"
       app_id: "cli_support_yyy"
       app_secret: "yyy"
-
 bindings:
   fallback_bot: default
   chats:
     oc_5cc6a25d8815790fa890dd0226005e83: sales
-    oc_7dd7b36e9826701fb901ee0337007f94: support
   group_rules:
     enabled: false
-
 card:
   title: Hermes Agent
-  max_wait_ms: 800
-  max_chars: 240
-  footer_fields:
-    - duration
-    - model
-    - input_tokens
-    - output_tokens
-    - context
+  footer_fields: [duration, model, input_tokens, output_tokens, context]
 ```
 
-### 多 Profile 配置（V3.3.0 新增）
-
-多 Profile 模式允许一个 sidecar 同时服务多个 Hermes profile，每个 profile 使用独立的飞书凭据、bot 注册和路由绑定。适用于一台机器运行多个 Hermes 实例的场景。
+**多 Profile**（V3.3.0 新增）— 一个 sidecar 服务多个 Hermes 实例，按 profile 隔离凭据和 bot：
 
 ```yaml
 server:
   host: 127.0.0.1
   port: 8765
-
 profiles:
   engineering:
-    name: "Engineering"
     feishu:
       app_id: "cli_eng_xxx"
-      app_secret: "eng_secret"
+      app_secret: "xxx"
     bots:
       default: default
       items:
         default:
-          name: "Engineering Bot"
           app_id: "cli_eng_xxx"
-          app_secret: "eng_secret"
+          app_secret: "xxx"
     bindings:
       fallback_bot: default
       chats: {}
   sales:
-    name: "Sales"
     feishu:
       app_id: "cli_sales_xxx"
-      app_secret: "sales_secret"
+      app_secret: "xxx"
     bots:
       default: default
       items:
         default:
-          name: "Sales Bot"
           app_id: "cli_sales_xxx"
-          app_secret: "sales_secret"
-        support:
-          name: "Sales Support Bot"
-          app_id: "cli_sales_support_yyy"
-          app_secret: "support_secret"
+          app_secret: "xxx"
     bindings:
       fallback_bot: default
-      chats:
-        oc_5cc6a25d8815790fa890dd0226005e83: support
+      chats: {}
   group_rules:
     enabled: false
-
 card:
   title: Hermes Agent
-  max_wait_ms: 800
-  max_chars: 240
-  footer_fields:
-    - duration
-    - model
-    - input_tokens
-    - output_tokens
-    - context
+  footer_fields: [duration, model, input_tokens, output_tokens, context]
 ```
 
-> **注意**：多 Profile 模式下，环境变量 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 不再生效，所有凭据由各 profile 的 `feishu` 子配置独立提供。每个 profile 的 `bots`、`bindings` 字段如果未显式配置，会自动继承默认值。
-
-`card.title` 控制飞书卡片 header 主标题。`footer_fields` 控制 footer 字段和顺序，可用值为 `duration`、`model`、`input_tokens`、`output_tokens`、`context`。
-
-footer 默认格式：
-
-```text
-1m32s · MiniMax M2.7 · ↑1.1m · ↓2.2k · ctx 182k/204k 89%
-```
-
-支持的环境变量：
-
-- `FEISHU_APP_ID`（单 Profile 模式）
-- `FEISHU_APP_SECRET`（单 Profile 模式）
-- `HERMES_FEISHU_CARD_HOST`
-- `HERMES_FEISHU_CARD_PORT`
-- `HERMES_FEISHU_CARD_ENABLED`
-- `HERMES_FEISHU_CARD_EVENT_URL`
-- `HERMES_FEISHU_CARD_TIMEOUT_MS`
+多 Profile 模式下环境变量 `FEISHU_APP_ID`/`FEISHU_APP_SECRET` 不生效。`footer_fields` 支持 `duration`、`model`、`input_tokens`、`output_tokens`、`context`。
 
 ## 飞书应用配置
 
-真实发送卡片需要飞书/Lark 自建应用。推荐使用本机配置或环境变量提供凭据：
-
 ```bash
-export FEISHU_APP_ID=cli_xxx
-export FEISHU_APP_SECRET=xxx
-```
-
-可先运行真实飞书 smoke：
-
-```bash
-FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx \
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx
+# 真实飞书 smoke 测试：
 python3 -m hermes_feishu_card.cli smoke-feishu-card --config config.yaml.example --chat-id oc_xxx
 ```
 
-该命令会向指定会话发送一张测试卡片并更新一次。输出会隐藏 App Secret、tenant token 和 Authorization header。
+## Hermes Gateway 流式配置
 
-## Hermes Gateway streaming 与思考流配置
+确保 Hermes `config.yaml` 中 `streaming.enabled: true` 且 `streaming.transport: edit`。不要设置 `display.platforms.feishu.streaming: false`。不要把 `display.show_reasoning` 当成本插件的必需开关——它可能在最终回复中追加 reasoning 代码块，反而干扰卡片流式体验。若模型只返回最终答案（无 thinking 增量），卡片直接显示最终答案。
 
-本插件只负责把 Hermes 已经产生的事件渲染成飞书卡片，不会凭空生成模型思考内容。要看到卡片内的思考过程和渐进式答案，Hermes Gateway 和当前模型/provider 必须输出流式事件。
+## CLI 命令
 
-需要确认三件事：
+| 命令 | 说明 |
+|------|------|
+| `setup --hermes-dir ... --yes` | 一键安装（配置、检查、hook、sidecar、健康检查） |
+| `doctor --config ... --hermes-dir ...` | 诊断 Hermes 兼容性，输出 `version_source`、`version`、`minimum_supported_version`、`run_py_exists`、`reason` |
+| `install --hermes-dir ... --yes` | 安装 hook 到 Hermes |
+| `restore --hermes-dir ... --yes` | 恢复原始 Hermes 文件 |
+| `uninstall --hermes-dir ... --yes` | 卸载并恢复 |
+| `start --config ...` | 启动 sidecar |
+| `stop --config ...` | 停止 sidecar（校验 PID/token，匹配 `/health` 的 `process_pid/process_token` 后才停止） |
+| `status --config ...` | 查看 sidecar 状态和 metrics |
+| `bots list|show|add|remove --config ...` | 管理飞书 Bot 注册 |
+| `bots bind-chat|unbind-chat --config ...` | 管理群聊绑定 |
 
-1. Hermes Gateway 的平台消息流式开关已开启：`streaming.enabled: true`，并保持 `streaming.transport: edit`。
-2. Feishu 平台没有被单独关闭流式更新：不要设置 `display.platforms.feishu.streaming: false`；如需强制打开，可设置为 `true`。
-3. 当前模型/provider 支持并公开 reasoning/thinking 增量；若模型只返回最终答案，卡片会直接显示最终答案，不会出现 `thinking.delta`。
-
-在 Hermes 自身的 `config.yaml` 中，推荐确认以下配置。常见路径是 `~/.hermes/config.yaml`；如果你把配置放在 Hermes 安装目录内，安装器也会尝试读取 `<hermes-dir>/config.yaml`、`<hermes-dir>/config.yml`、`<hermes-dir>/configs/config.yaml` 和 `<hermes-dir>/configs/config.yml`。
-
-```yaml
-streaming:
-  enabled: true
-  transport: edit
-  # 可选：沿用 Hermes 默认值即可；下面是本机真实验收实例使用的配置。
-  edit_interval: 0.8
-  buffer_threshold: 20
-  cursor: ""
-```
-
-如果你的 Hermes 配置里曾经单独关闭过 Feishu 平台流式更新，可以显式覆盖：
-
-```yaml
-display:
-  platforms:
-    feishu:
-      streaming: true
-```
-
-不要把 `display.show_reasoning` 或 `display.platforms.feishu.show_reasoning` 当成本插件的必需开关。基于当前 Hermes 源码，这两个配置用于 Hermes 原生最终回复里的 reasoning 展示，可能把思考内容作为 `💭 Reasoning` 代码块附加到最终文本中，反而干扰卡片内的流式体验。只有当你明确想保留 Hermes 原生 reasoning 文本块时才打开它。
-
-`agent.reasoning_effort` 也是可选项，并且依赖模型/provider 支持。它可以影响某些模型是否产生推理内容，但不是 Gateway 卡片流式传输的开关。
-
-现象判断：
-
-- 卡片能创建，但一直显示"正在思考..."然后直接完成：通常是模型或 Hermes 没有输出 thinking 增量。
-- 卡片内答案能流式更新，但没有思考过程：说明 streaming 已工作，但当前模型没有公开 thinking。
-- 卡片不流式，只在最后更新一次：优先检查 `streaming.enabled`、`streaming.transport` 和 `display.platforms.feishu.streaming`。
-- 飞书没有卡片：优先检查飞书凭据、sidecar 状态和 Hermes hook 是否安装成功。
-
-`setup` 和 `doctor --hermes-dir` 会做保守的 Hermes 配置提示：如果在常见配置文件中发现 `streaming.enabled: false`、`streaming.transport: off` 或 `display.platforms.feishu.streaming: false`，会输出 warning；如果没有检测到 Gateway streaming 配置，会输出 note。该提示不阻止安装，因为不同 Hermes 版本的配置结构可能不同。
-
-## 技术架构
+## 架构
 
 ```text
 Hermes Gateway
   └─ minimal hook in gateway/run.py
        └─ hermes_feishu_card.hook_runtime
-            └─ HTTP POST /events
-                 └─ sidecar server
-                      ├─ CardSession 状态机
-                      ├─ render_card() 卡片渲染
-                      ├─ FeishuClient tenant token / send / update
-                      ├─ 节流、重试、锁和诊断
-                      └─ /health 指标
+            └─ HTTP POST /events ——→  sidecar server
+                                      ├─ CardSession 状态机
+                                      ├─ render_card() 卡片渲染
+                                      ├─ FeishuClient tenant token / send / update
+                                      ├─ 节流、重试、锁、诊断
+                                      └─ /health 指标
 ```
 
-Hermes hook 只负责把消息生命周期转为 `SidecarEvent`：
-
-- `message.started`
-- `thinking.delta`
-- `answer.delta`
-- `tool.updated`
-- `message.completed`
-- `message.failed`
-
-sidecar 持有完整会话状态，负责飞书 CardKit 边界。这样可以把 Hermes 原生代码侵入控制在最小范围，并让卡片逻辑可以独立测试、独立重启、独立诊断。
-
-历史实现已集中归档到 `legacy/`，仅用于迁移参考和问题追溯，不是 active runtime。`legacy/adapter/`、`legacy/sidecar/`、`legacy/patch/`、`legacy/installer.py`、`legacy/installer_sidecar.py`、`legacy/installer_v2.py`、`legacy/gateway_run_patch.py`、`legacy/patch_feishu.py` 等 legacy/dual/patch 代码不属于新主线；新开发、测试和安装入口以 `hermes_feishu_card/` 为准。迁移说明见 [docs/migration.md](docs/migration.md)。
-
-## 运行状态与诊断
-
-`/health` 和 `status` 会展示当前 sidecar 进程生命周期内的内存指标：
-
-- `events_received`
-- `events_applied`
-- `events_ignored`
-- `events_rejected`
-- `feishu_send_successes`
-- `feishu_send_failures`
-- `feishu_update_successes`
-- `feishu_update_failures`
-- `feishu_update_retries`
-
-`stop` 会校验 pidfile 中的 PID/token 与 `/health` 返回的 `process_pid/process_token` 匹配后才停止进程，避免误杀无关服务。
-
-初始创建卡片不自动重试，避免响应丢失时产生重复卡片；已经拿到 message_id 的卡片更新会有限重试。
+Hermes hook 将 `message.started` / `thinking.delta` / `answer.delta` / `tool.updated` / `message.completed` / `message.failed` 转为 `SidecarEvent` 发往 sidecar。sidecar 持有完整会话状态和飞书 CardKit 边界，可独立测试、重启、诊断。历史实现集中归档在 `legacy/`（`installer_v2.py`、`gateway_run_patch.py`、`patch_feishu.py` 等），不是 active runtime，当前主线和安装入口以 `hermes_feishu_card/` 为准。迁移说明见 [docs/migration.md](docs/migration.md)。
 
 ## 常见问题
 
-### doctor 显示 Hermes 不支持
-
-先确认 Hermes 版本不低于 `v2026.4.23`，并确认目标目录中存在 `gateway/run.py`。安装器会读取 `VERSION` 或 Git tag；如果输出里 `version_source`、`version` 或 `reason` 不符合预期，先升级 Hermes 再安装。
-
-### sidecar 启动后没有真实卡片
-
-检查 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET` 是否存在（多 Profile 模式下检查各 profile 的 `feishu` 配置）。未配置凭据时，runner 会使用 no-op client 接收事件，不会发送真实飞书卡片。
-
-### 卡片没有思考内容或不流式更新
-
-先检查 Hermes `config.yaml` 中的 `streaming.enabled: true` 和 `streaming.transport: edit`；如果配置过 `display.platforms.feishu.streaming: false`，改为删除该覆盖或设为 `true`。再确认当前模型/provider 是否真的公开 reasoning/thinking 增量。不要为了卡片思考流盲目打开 `show_reasoning`，它可能只是在最终普通回复里追加 reasoning 代码块。插件配置文件 `~/.hermes_feishu_card/config.yaml` 只控制飞书卡片的标题、footer、节流和渲染参数，不控制 Hermes Gateway 是否发出 `thinking.delta` 或 `answer.delta`。
-
-### 出现重复卡片
-
-检查 `/health` 中的 `feishu_send_successes`、`events_received` 和 `events_rejected`。V3.3.0 对同一个 Hermes message 使用 per-message lock 和 message_id 映射，多 Profile 模式下使用 `profile_id:message_id` 复合键隔离，正常情况下同一轮对话只创建一张卡片。
-
-### 出现灰色原生文本消息
-
-检查 sidecar 是否成功接收并应用 `message.completed`。当 sidecar 接受完成事件后，Hermes hook 会抑制额外原生文本发送；如果 sidecar 不可用，会 fail-open 回退到 Hermes 原生文本。V3.3.0 修复了非飞书平台被完整 hook 吞掉响应的问题。
-
-### footer token 数异常
-
-V3.3.0 会过滤明显异常的 token 累计值。仍异常时，优先检查 Hermes Gateway 传入的 `tokens` 和 `context` 元数据。
-
-### 恢复失败
-
-`restore` 检测到 Hermes 文件或备份被用户改动时会拒绝覆盖。这是安全设计。先备份当前 Hermes 目录，再根据 manifest 和备份文件人工确认差异。
-
-### 多 Profile 配置不生效
-
-确认 `config.yaml` 中 `profiles` 字段正确配置，且每个 profile 的 `feishu.app_id`/`feishu.app_secret` 已填写。多 Profile 模式下环境变量 `FEISHU_APP_ID`/`FEISHU_APP_SECRET` 不生效。检查 sidecar 启动日志确认 profile 加载成功。
-
-### 卡片表格数量超限
-
-飞书 CardKit 对表格组件有严格限制：**单张卡片最多 5 个表格**（若配置多语言，每个语言独立计数）。V3.3.0 已内置表格超限保护，超过 5 个表格时自动截断并附加提示。如需保留全部表格，建议减少 Markdown 内容中的表格数量。
-
-## 测试与验收
-
-本地全量测试：
-
-```bash
-python3 -m pytest -q
-```
-
-专项测试：
-
-```bash
-python3 -m pytest tests/unit -q
-python3 -m pytest tests/integration -q
-python3 -m pytest tests/unit/test_docs.py -q
-python3 -m pytest tests/integration/test_feishu_client_http.py -q
-```
-
-当前 V3.3.0 验收状态：
-
-- 自动化全量测试：**425 passed, 0 failed**
-- GitHub Actions：Python 3.9 / 3.12 测试矩阵通过
-- 安装/恢复专项测试：覆盖备份、manifest、重复安装、用户改动拒绝恢复、卸载和恢复幂等
-- 真实 Hermes Gateway E2E：已验证新卡片创建、流式更新、工具调用计数、完成状态和 footer 元数据
-- 真实飞书应用验证：已验证卡片内更新成功，无重复灰色原生消息
-- 真实长卡压力测试：同一张飞书卡片更新到 16k 中文字符成功
-- fresh Hermes `v2026.4.23`：已完成 `doctor → install → doctor → restore → doctor` 闭环
-- 普通用户整合安装器：`setup --hermes-dir ... --yes` 已覆盖自动生成配置、安装 hook、启动 sidecar 和健康检查
-- V3.3.0 多 Profile 路由验证：`engineering` / `sales` profile 独立凭据与 session 隔离正常
-- V3.3.0 DeepSeek 兼容性：`<thinking>` 标签过滤已通过单元测试
-- V3.3.0 表格保护：超限截断逻辑已通过单元测试验证
+- **卡片没有思考/不流式**：检查 Hermes 的 `streaming.enabled: true` 和 `streaming.transport: edit`，确认模型支持 reasoning 增量。不要盲目开启 `show_reasoning`。
+- **真实飞书没有卡片**：凭据未配时 sidecar 使用 no-op client，不发送真实卡片。多 Profile 模式检查各 profile 的 `feishu` 配置。
+- **重复卡片**：检查 `/health` metrics（`events_received`、`feishu_send_successes`），V3.3.0 per-message lock 和 `profile_id:message_id` 复合键保证一消息一卡片。
+- **灰色原生文本**：sidecar 成功接收 `message.completed` 后 Hermes hook 抑制原生文本；不可用时 fail-open 降级。V3.3.0 修复了非飞书平台被吞掉的问题。
+- **doctor 不支持**：确认 Hermes ≥ `v2026.4.23`（读取 `VERSION` 或 Git tag `v2026.4.23+`），且目录中存在 `gateway/run.py`。
+- **恢复失败**：`restore`/`uninstall` 检测到文件改动拒绝覆盖，先备份再人工确认差异。
+- **footer token 异常**：过滤明显异常值，若仍异常检查 Hermes 传入的 `tokens`/`context` 元数据。
+- **表格超限**：V3.3.0 自动截断超 5 个表格并附加提示，减少 Markdown 表格数量即可。
 
 ## 版本历史
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
-| [v3.3.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.3.0) | 2026-05-01 | 多 Profile 支持、DeepSeek 思维链兼容、表格保护、Footer 动画、平台判断修复 |
-| [v3.2.1](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.2.1) | 2026-04-29 | HTTP Accept-Encoding 修复（brotli 兼容） |
-| [v3.2.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.2.0) | 2026-04-29 | 多 Bot 注册与路由、群聊绑定、Bot CLI 管理、路由诊断 |
-| [v3.1.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.1.0) | 2026-04 | Sidecar 架构、流式卡片更新、健康端点、自动恢复、安装向导 |
-| [v3.0.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.0.0) | 2026-04 | Sidecar-only 架构初始发布（从 V2.x 单体 hook 迁移） |
+| [v3.3.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.3.0) | 2026-05 | 多 Profile、DeepSeek 兼容、表格保护、Footer 动画、平台判断修复 |
+| [v3.2.1](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.2.1) | 2026-04 | Accept-Encoding 修复 |
+| [v3.2.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.2.0) | 2026-04 | 多 Bot 路由、群聊绑定、Bot CLI、路由诊断 |
+| [v3.1.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.1.0) | 2026-04 | Sidecar 架构、流式卡片、健康端点、安装向导 |
+| [v3.0.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.0.0) | 2026-04 | Sidecar-only 初始发布（从 V2.x 单体 hook 迁移） |
 
-完整更新日志详见 [CHANGELOG.md](CHANGELOG.md)。
+完整更新日志：[CHANGELOG.md](CHANGELOG.md)。
+
+## 测试
+
+```bash
+python3 -m pytest -q    # 全量测试：425 passed, 0 failed（GitHub Actions Python 3.9/3.12 矩阵通过）
+```
+
+验收覆盖：真实 Feishu E2E 主链路验证通过，真实 Hermes Gateway E2E、真实飞书应用卡片验证、16k 长卡压力测试、`doctor → install → restore` 闭环、多 Profile 路由、DeepSeek 标签过滤。Feishu CardKit HTTP client 已实现，并通过 mock Feishu server 和真实飞书 smoke 验证。
 
 ## 文档
 
@@ -652,14 +201,14 @@ python3 -m pytest tests/integration/test_feishu_client_http.py -q
 - 事件协议：[中文](docs/event-protocol.md) / [English](docs/event-protocol.en.md)
 - 安装安全：[中文](docs/installer-safety.md) / [English](docs/installer-safety.en.md)
 - 迁移说明：[中文](docs/migration.md) / [English](docs/migration.en.md)
-- 端到端验证材料：[中文](docs/e2e-verification.md) / [English](docs/e2e-verification.en.md)
-- 发布准备说明：[中文](docs/release-readiness.md) / [English](docs/release-readiness.en.md)
+- 端到端验证：[中文](docs/e2e-verification.md) / [English](docs/e2e-verification.en.md)
+- 发布准备：[中文](docs/release-readiness.md) / [English](docs/release-readiness.en.md)
 - 测试说明：[中文](docs/testing.md) / [English](docs/testing.en.md)
 
 ## License
 
-本项目采用 MIT License，详见 [LICENSE](LICENSE) 文件。
+MIT License，详见 [LICENSE](LICENSE)。
 
 ## 安全说明
 
-不要把 App Secret、tenant token、真实 chat_id 或个人隐私内容提交到仓库。README 中的效果图仅用于展示 V3.3.0 的真实卡片效果；生产环境凭据应始终保存在本机配置、环境变量或专用密钥管理系统中。
+不要把 App Secret、tenant token、真实 chat_id 提交到仓库。效果图仅用于展示 V3.3.0 卡片效果，生产凭据保存在本机配置或环境变量中。
