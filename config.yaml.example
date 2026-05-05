@@ -1,23 +1,25 @@
-# Hermes Feishu Streaming Card sidecar-only configuration
+# Hermes Feishu Streaming Card V3.3.0 sidecar configuration
 # Copy to a local path and fill credentials from your environment or secret store.
+# Default config path: ~/.hermes_feishu_card/config.yaml
 
 server:
   host: 127.0.0.1
   port: 8765
 
+# ── Single Profile (minimal) ─────────────────────────────────────────────────
+# For simple setups with one Hermes profile and optionally multiple bots.
 feishu:
-  # Prefer FEISHU_APP_ID and FEISHU_APP_SECRET in real deployments.
+  # Prefer FEISHU_APP_ID and FEISHU_APP_SECRET environment variables.
+  # In multi-profile mode (see profiles section below), these top-level
+  # values are ignored — each profile provides its own credentials.
   app_id: ""
   app_secret: ""
   base_url: https://open.feishu.cn/open-apis
   timeout_seconds: 30
 
 card:
-  # Header title shown on Feishu cards.
   title: Hermes Agent
-  # Flush partial streaming text after this many milliseconds.
   max_wait_ms: 800
-  # Flush partial streaming text after this many buffered characters.
   max_chars: 240
   # Footer fields and order. Supported values:
   # duration, model, input_tokens, output_tokens, context
@@ -28,37 +30,70 @@ card:
     - output_tokens
     - context
 
-# Optional V3.2.1 multi-bot config. Existing single-bot users can leave this empty
-# and rely on the top-level `feishu.app_id` / `feishu.app_secret` as the default bot.
+# ── Multi-Bot (optional) ─────────────────────────────────────────────────────
+# Define multiple Feishu bots under bots.items. Each bot gets its own
+# app_id/app_secret. Bind chat IDs to bots via bindings.chats.
+# Unbound sessions use bindings.fallback_bot.
 #
-# Multi-bot pattern:
-# - Define each bot under `bots.items` with its own Feishu app credentials
-# - Map group/private chat IDs to bot IDs under `bindings.chats`
-# - Unbound sessions use `bindings.fallback_bot` (default: "default")
-#
-# Note: V3.2.1 does NOT filter group triggers. Hermes Gateway still decides
-# whether to respond to a message based on its own rules (mention, private,
-# reply, etc.). The sidecar only ensures the card is sent via the correct bot.
+# Note: V3.3.0 does NOT filter group triggers. Hermes Gateway still decides
+# whether to respond based on its own rules (mention, private, reply, etc.).
+# The sidecar only ensures the card is sent via the correct bot.
 bots:
   default: default
-  items:
-    # Example: a dedicated bot for the sales group
-    sales:
-      name: Sales Group Bot
-      app_id: cli_sales_xxxxx
-      app_secret: ""
-    # Example: a support bot for customer service
-    support:
-      name: Support Bot
-      app_id: cli_support_yyyyy
-      app_secret: ""
+  items: {}
+  # Example:
+  # sales:
+  #   name: Sales Group Bot
+  #   app_id: cli_sales_xxxxx
+  #   app_secret: ""
+  # support:
+  #   name: Support Bot
+  #   app_id: cli_support_yyyyy
+  #   app_secret: ""
 
 bindings:
   fallback_bot: default
-  chats:
-    # Map Feishu chat_id to bot_id defined above
-    oc_xxxxxxxxxxxx: sales
-    oc_yyyyyyyyyyyy: support
-   # Reserved for a future release. V3.2.1 does not filter group triggers.
+  chats: {}
+  # Example:
+  # oc_xxxxxxxxxxxx: sales
+  # oc_yyyyyyyyyyyy: support
   group_rules:
-    enabled: false
+    enabled: false  # V3.3.0 does not filter group triggers
+
+# ── Multi-Profile (V3.3.0+, optional) ────────────────────────────────────────
+# For setups with multiple Hermes profiles sharing one sidecar process.
+# When profiles is non-empty, the top-level feishu/bots/bindings sections
+# above are IGNORED. Each profile provides its own independent credentials,
+# bot registry, and chat bindings.
+#
+# FEISHU_APP_ID and FEISHU_APP_SECRET environment variables are also
+# ignored in multi-profile mode.
+#
+# Uncomment and customize:
+#
+# profiles:
+#   default:
+#     feishu:
+#       app_id: "cli_default_xxx"
+#       app_secret: ""
+#       base_url: https://open.feishu.cn/open-apis
+#       timeout_seconds: 30
+#     bots:
+#       default: default
+#       items: {}
+#     bindings:
+#       fallback_bot: default
+#       chats: {}
+#
+#   work:
+#     feishu:
+#       app_id: "cli_work_yyy"
+#       app_secret: ""
+#       base_url: https://open.feishu.cn/open-apis
+#       timeout_seconds: 30
+#     bots:
+#       default: default
+#       items: {}
+#     bindings:
+#       fallback_bot: default
+#       chats: {}
