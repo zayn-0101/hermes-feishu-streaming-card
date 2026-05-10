@@ -87,6 +87,39 @@ def test_completion_stores_model_and_context_footer_metadata():
     assert session.context == {"used_tokens": 182_000, "max_tokens": 204_000}
 
 
+def test_session_stores_attachment_and_delivery_metadata():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "message.started",
+            0,
+            {"delivery_kind": "chat", "reply_to_message_id": "om_parent"},
+        )
+    )
+    assert session.apply(
+        event(
+            "message.completed",
+            1,
+            {
+                "answer": "最终答案",
+                "attachments": [
+                    {"kind": "file", "name": "report.pdf", "summary": "report.pdf"},
+                    {"kind": "image", "summary": "missing-name.png"},
+                    "bad",
+                ],
+            },
+        )
+    )
+
+    assert session.delivery_kind == "chat"
+    assert session.reply_to_message_id == "om_parent"
+    assert session.attachments == [
+        {"kind": "file", "name": "report.pdf", "summary": "report.pdf"}
+    ]
+    assert session.visible_main_text == "最终答案"
+
+
 def test_answer_delta_takes_over_visible_text_before_completion():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     assert session.apply(event("thinking.delta", 1, {"text": "思考内容。"}))

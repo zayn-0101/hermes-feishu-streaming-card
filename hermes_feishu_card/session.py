@@ -29,6 +29,9 @@ class CardSession:
     model: str = "Unknown"
     context: Dict[str, Any] = field(default_factory=dict)
     duration: float = 0.0
+    attachments: list[dict[str, str]] = field(default_factory=list)
+    delivery_kind: str = "chat"
+    reply_to_message_id: str = ""
     _tool_call_count: int = field(default=0)
     thinking_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
     answer_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
@@ -77,9 +80,22 @@ class CardSession:
                 detail=detail if isinstance(detail, str) else "",
             )
             self._tool_call_count += 1
+        elif event.event == "message.started":
+            delivery_kind = event.data.get("delivery_kind")
+            if isinstance(delivery_kind, str) and delivery_kind.strip():
+                self.delivery_kind = delivery_kind.strip()
+            reply_to_message_id = event.data.get("reply_to_message_id")
+            if isinstance(reply_to_message_id, str):
+                self.reply_to_message_id = reply_to_message_id
         elif event.event == "message.completed":
             self.status = "completed"
             self.answer_text = normalize_stream_text(str(event.data.get("answer") or self.answer_text))
+            delivery_kind = event.data.get("delivery_kind")
+            if isinstance(delivery_kind, str) and delivery_kind.strip():
+                self.delivery_kind = delivery_kind.strip()
+            reply_to_message_id = event.data.get("reply_to_message_id")
+            if isinstance(reply_to_message_id, str):
+                self.reply_to_message_id = reply_to_message_id
             tokens = event.data.get("tokens", {})
             self.tokens = dict(tokens) if isinstance(tokens, dict) else {}
             model = event.data.get("model")
@@ -90,6 +106,13 @@ class CardSession:
                 self.duration = float(event.data.get("duration", 0.0))
             except (TypeError, ValueError):
                 self.duration = 0.0
+            attachments = event.data.get("attachments", [])
+            if isinstance(attachments, list):
+                self.attachments = [
+                    attachment
+                    for attachment in attachments
+                    if isinstance(attachment, dict) and isinstance(attachment.get("name"), str)
+                ]
         elif event.event == "message.failed":
             self.status = "failed"
             error = event.data.get("error")

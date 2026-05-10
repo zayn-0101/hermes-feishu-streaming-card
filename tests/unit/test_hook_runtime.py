@@ -198,11 +198,44 @@ def test_build_completed_event_preserves_duration_and_tokens():
         "profile_id": "default",
         "profile_source": "fallback_default",
         "answer": "最终答案",
+        "attachments": [],
         "duration": 2.75,
         "model": "MiniMax M2.7",
         "tokens": {"input_tokens": 12, "output_tokens": 34},
         "context": {"used_tokens": 182_000, "max_tokens": 204_000},
     }
+
+
+def test_completed_event_extracts_attachment_summaries_from_response():
+    payload = hook_runtime.build_event(
+        "message.completed",
+        {
+            "chat_id": "oc_1",
+            "message_id": "m_1",
+            "answer": "结果见附件 MEDIA:/tmp/report.pdf\n还有 /tmp/chart.png",
+        },
+    )
+
+    attachments = payload["data"]["attachments"]
+    assert {"kind": "file", "name": "report.pdf", "summary": "report.pdf"} in attachments
+    assert {"kind": "image", "name": "chart.png", "summary": "chart.png"} in attachments
+
+
+def test_completed_event_extracts_attachment_summaries_from_response_field():
+    payload = hook_runtime.build_event(
+        "message.completed",
+        {
+            "chat_id": "oc_1",
+            "message_id": "m_1",
+            "response": "生成完成 MEDIA:/tmp/audio.mp3",
+        },
+    )
+
+    assert {
+        "kind": "audio",
+        "name": "audio.mp3",
+        "summary": "audio.mp3",
+    } in payload["data"]["attachments"]
 
 
 def test_build_completed_event_uses_agent_result_token_fallbacks():

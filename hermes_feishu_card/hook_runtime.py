@@ -16,6 +16,10 @@ DEFAULT_EVENT_URL = "http://127.0.0.1:8765/events"
 DEFAULT_TIMEOUT_SECONDS = 0.8
 TERMINAL_TIMEOUT_SECONDS = 10.0
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+MEDIA_RE = re.compile(r"MEDIA:([^\s\]]+)")
+LOCAL_FILE_RE = re.compile(
+    r"(?<![\w/])(/[^\s`]+\.(?:png|jpg|jpeg|webp|gif|pdf|txt|md|csv|xlsx|docx|mp3|wav|ogg|mp4|mov|webm))"
+)
 
 SUPPORTED_RUNTIME_EVENTS = {
     "message.started",
@@ -286,9 +290,10 @@ def _event_data(
         data.update({"tool_id": tool_id, "name": name, "status": status, "detail": detail})
         return data
     if event_name == "message.completed":
-        answer = _first_string(local_vars, ("answer", "final_answer", "text", "content")) or ""
+        answer = _first_string(local_vars, ("answer", "response", "final_answer", "text", "content")) or ""
         data.update({
             "answer": answer,
+            "attachments": _extract_attachments(answer),
             "duration": _completion_duration(local_vars),
             "model": _completion_model(local_vars),
             "tokens": _completion_tokens(local_vars, answer),
@@ -364,6 +369,31 @@ def _first_string(source: dict[str, Any], names: tuple[str, ...]) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _extract_attachments(text: str) -> list[dict[str, str]]:
+    seen = set()
+    attachments = []
+    for raw in list(MEDIA_RE.findall(text or "")) + list(LOCAL_FILE_RE.findall(text or "")):
+        name = Path(raw).name.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        attachments.append({"kind": _attachment_kind(name), "name": name, "summary": name})
+    return attachments
+
+
+def _attachment_kind(name: str) -> str:
+    ext = Path(name).suffix.lower()
+    if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        return "image"
+    if ext in {".mp3", ".wav", ".ogg"}:
+        return "audio"
+    if ext in {".mp4", ".mov", ".webm"}:
+        return "video"
+    if ext:
+        return "file"
+    return "unknown"
 
 
 def _completion_duration(local_vars: dict[str, Any]) -> float:

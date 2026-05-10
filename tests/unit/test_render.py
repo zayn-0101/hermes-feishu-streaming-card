@@ -43,6 +43,17 @@ def test_render_completed_card_replaces_thinking():
     assert "不会展示" not in content
 
 
+def test_render_completed_card_shows_attachment_summary():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.status = "completed"
+    session.answer_text = "正文"
+    session.attachments = [{"kind": "file", "name": "report.pdf", "summary": "report.pdf"}]
+
+    card = render_card(session)
+
+    assert "附件：report.pdf" in str(card)
+
+
 def test_render_long_main_content_splits_markdown_elements_without_truncating():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     session.answer_text = "甲" * 2600 + "乙" * 2600

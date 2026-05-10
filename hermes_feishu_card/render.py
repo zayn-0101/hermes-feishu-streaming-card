@@ -30,9 +30,18 @@ def render_card(
     status = _render_status(session)
     main_text = normalize_stream_text(session.visible_main_text) or ("正在思考..." if session.status == "thinking" else "")
     tool_summary = _render_tool_summary(session)
+    attachment_summary = _render_attachment_summary(session)
     footer = _render_footer(session, footer_fields)
     header_title = title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE
     elements = _render_main_content_elements(main_text)
+    if attachment_summary:
+        elements.append(
+            {
+                "tag": "markdown",
+                "element_id": "attachment_summary",
+                "content": attachment_summary,
+            }
+        )
     elements.extend(
         [
             {"tag": "hr", "element_id": "main_divider"},
@@ -101,6 +110,19 @@ def _render_tool_summary(session: CardSession) -> str:
     for tool in session.tools.values():
         lines.append(f"- `{tool.name}`: {tool.status}")
     return "\n".join(lines)
+
+
+def _render_attachment_summary(session: CardSession) -> str:
+    items = []
+    for item in session.attachments:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("summary") or item.get("name") or "").strip()
+        if name:
+            items.append(name)
+    if not items:
+        return ""
+    return "附件：" + "、".join(items[:8])
 
 
 def _render_footer(
