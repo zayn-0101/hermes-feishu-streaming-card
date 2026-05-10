@@ -125,13 +125,7 @@ def _apply_complete_patch(content: str) -> str:
 
 def remove_patch(content: str) -> str:
     """Remove the owned Feishu card hook block from patched Hermes content."""
-    content = _remove_simple_owned_patch(
-        content,
-        CRON_PATCH_BEGIN,
-        CRON_PATCH_END,
-        _render_cron_hook_block,
-        "cron patch markers",
-    )
+    content = _remove_cron_patch(content)
     content = _remove_simple_owned_patch(
         content,
         TOOL_PATCH_BEGIN,
@@ -183,7 +177,6 @@ def remove_patch_lenient(content: str) -> str:
         content = "".join(lines[:begin_index] + lines[end_index + 1 :])
 
     for begin_marker, end_marker in (
-        (CRON_PATCH_BEGIN, CRON_PATCH_END),
         (TOOL_PATCH_BEGIN, TOOL_PATCH_END),
         (ANSWER_DELTA_PATCH_BEGIN, ANSWER_DELTA_PATCH_END),
         (THINKING_DELTA_PATCH_BEGIN, THINKING_DELTA_PATCH_END),
@@ -255,12 +248,7 @@ def _apply_callback_patch(
 
 
 def _apply_cron_patch(content: str) -> str:
-    owned_block = _find_simple_marker_block(
-        content,
-        CRON_PATCH_BEGIN,
-        CRON_PATCH_END,
-        "cron patch markers",
-    )
+    owned_block = _find_owned_cron_block(content)
     if owned_block is not None:
         lines = content.splitlines(keepends=True)
         begin_index, end_index = owned_block
@@ -293,6 +281,15 @@ def _remove_simple_owned_patch(
     owned_block = _find_simple_owned_patch(
         content, begin_marker, end_marker, renderer, error_label
     )
+    if owned_block is None:
+        return content
+    lines = content.splitlines(keepends=True)
+    begin_index, end_index = owned_block
+    return "".join(lines[:begin_index] + lines[end_index + 1 :])
+
+
+def _remove_cron_patch(content: str) -> str:
+    owned_block = _find_owned_cron_block(content)
     if owned_block is None:
         return content
     lines = content.splitlines(keepends=True)
@@ -541,6 +538,35 @@ def _find_owned_complete_block(content: str):
     actual = lines[begin_index : end_index + 1]
     if actual not in (expected, legacy, previous_async):
         raise ValueError("corrupt completion patch markers")
+    return begin_index, end_index
+
+
+def _find_owned_cron_block(content: str):
+    marker_block = _find_simple_marker_block(
+        content,
+        CRON_PATCH_BEGIN,
+        CRON_PATCH_END,
+        "cron patch markers",
+    )
+    if marker_block is None:
+        return None
+
+    lines = content.splitlines(keepends=True)
+    begin_index, end_index = marker_block
+    indent = _leading_whitespace(_strip_line_ending(lines[begin_index]))
+    newline = _line_ending(lines[begin_index]) or _detect_newline(content)
+    expected = _render_cron_hook_block(indent, newline)
+    actual = lines[begin_index : end_index + 1]
+    if actual != expected:
+        raise ValueError("corrupt cron patch markers")
+
+    tree = _parse_content_with_markers(content)
+    cron_deliver_body = _find_cron_deliver_body_location(tree, lines)
+    if cron_deliver_body is None:
+        raise ValueError("corrupt cron patch markers")
+    first_body_index, _body_indent = cron_deliver_body
+    if begin_index != first_body_index - 1:
+        raise ValueError("corrupt cron patch markers")
     return begin_index, end_index
 
 

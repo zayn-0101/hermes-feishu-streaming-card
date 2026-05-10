@@ -73,6 +73,38 @@ def test_apply_patch_013_plus_inserts_cron_delivery_hook():
     assert patcher.remove_patch(patched) == content
 
 
+def test_cron_marker_block_in_other_function_is_not_owned():
+    content = (
+        "def other():\n"
+        "    # HERMES_FEISHU_CARD_CRON_PATCH_BEGIN\n"
+        "    try:\n"
+        "        from hermes_feishu_card.hook_runtime import emit_cron_delivery as _hfc_emit_cron\n"
+        "        _hfc_cron_metadata = {\"delivery_kind\": \"cron\"}\n"
+        "        # event_name=\"message.completed\"\n"
+        "        if _hfc_emit_cron(locals()):\n"
+        "            return None\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    # HERMES_FEISHU_CARD_CRON_PATCH_END\n"
+        "    return None\n"
+        "\n"
+        "def _deliver_result(job: dict, content: str, adapters=None, loop=None):\n"
+        "    return adapter.send('chat', content)\n"
+        "\n"
+        "async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "    response = 'ok'\n"
+        "    _response_time = 1\n"
+        "    agent_result = {}\n"
+        "    return response\n"
+    )
+
+    with pytest.raises(ValueError, match="corrupt cron patch markers"):
+        patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    with pytest.raises(ValueError, match="corrupt cron patch markers"):
+        patcher.remove_patch(content)
+
+
 def test_apply_patch_inserts_real_runtime_hook_call():
     content = (
         "async def _handle_message_with_agent(message):\n"

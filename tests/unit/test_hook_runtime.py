@@ -845,6 +845,60 @@ async def test_emit_from_hermes_locals_threadsafe_schedules_on_running_loop(monk
     assert timeout == 0.8
 
 
+@pytest.mark.asyncio
+async def test_emit_cron_delivery_posts_from_running_loop_without_unawaited_warning(
+    monkeypatch,
+    recwarn,
+):
+    sender = SenderProbe()
+    monkeypatch.setattr(hook_runtime, "_post_json", sender)
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+
+    result = hook_runtime.emit_cron_delivery(
+        {
+            "job": {
+                "id": "job-1",
+                "origin": {"platform": "feishu", "chat_id": "oc_cron"},
+            },
+            "content": "定时结果",
+        }
+    )
+
+    assert result is True
+    assert len(sender.payloads) == 1
+    url, payload, timeout = sender.payloads[0]
+    assert url == "http://sidecar.test/events"
+    assert payload["event"] == "message.completed"
+    assert payload["chat_id"] == "oc_cron"
+    assert payload["data"]["delivery_kind"] == "cron"
+    assert timeout == hook_runtime.TERMINAL_TIMEOUT_SECONDS
+    assert [
+        warning
+        for warning in recwarn
+        if "was never awaited" in str(warning.message)
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_emit_cron_delivery_reports_sender_failure_from_running_loop(monkeypatch):
+    sender = SenderProbe()
+    sender.raise_error = True
+    monkeypatch.setattr(hook_runtime, "_post_json", sender)
+
+    result = hook_runtime.emit_cron_delivery(
+        {
+            "job": {
+                "id": "job-1",
+                "origin": {"platform": "feishu", "chat_id": "oc_cron"},
+            },
+            "content": "定时结果",
+        }
+    )
+
+    assert result is False
+    assert len(sender.payloads) == 1
+
+
 def test_emit_from_hermes_locals_threadsafe_uses_explicit_loop_from_sync_call(
     monkeypatch,
 ):

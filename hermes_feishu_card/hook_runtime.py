@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import re
+import threading
 import time
 from typing import Any
 from urllib import parse
@@ -153,10 +154,33 @@ def emit_cron_delivery(local_vars: dict[str, Any]) -> bool:
         payload = build_cron_event(local_vars)
         if payload is None:
             return False
-        asyncio.run(_post_json(config.event_url, payload, TERMINAL_TIMEOUT_SECONDS))
-        return True
+        return _post_json_sync(config.event_url, payload, TERMINAL_TIMEOUT_SECONDS)
     except Exception:
         return False
+
+
+def _post_json_sync(url: str, payload: dict[str, Any], timeout: float) -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            asyncio.run(_post_json(url, payload, timeout))
+        except Exception:
+            return False
+        return True
+
+    result: dict[str, BaseException | None] = {"error": None}
+
+    def run_in_thread() -> None:
+        try:
+            asyncio.run(_post_json(url, payload, timeout))
+        except BaseException as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=run_in_thread, daemon=True)
+    thread.start()
+    thread.join()
+    return result["error"] is None
 
 
 def _timeout_for_event(config: RuntimeConfig, event_name: str) -> float:
