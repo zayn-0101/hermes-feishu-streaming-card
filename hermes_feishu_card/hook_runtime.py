@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any
+from urllib import parse
 from urllib import request
 
 DEFAULT_EVENT_URL = "http://127.0.0.1:8765/events"
@@ -171,9 +172,54 @@ async def _post_json(url: str, payload: dict[str, Any], timeout: float) -> None:
     await loop.run_in_executor(None, _open_request, req, timeout)
 
 
+async def lookup_card_summary(
+    message_id: str,
+    event_url: str | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any] | None:
+    try:
+        message_id = str(message_id or "").strip()
+        if not message_id:
+            return None
+        base_url = _summary_base_url(event_url or load_runtime_config().event_url)
+        quoted_message_id = parse.quote(message_id, safe="")
+        url = f"{base_url}/messages/{quoted_message_id}/summary"
+        result = await _get_json(url, timeout)
+        return result if isinstance(result, dict) else None
+    except Exception:
+        return None
+
+
+def _summary_base_url(event_url: str) -> str:
+    parsed = parse.urlsplit(event_url)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/events"):
+        path = path[: -len("/events")]
+    rebuilt = parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+    return rebuilt.rstrip("/")
+
+
+async def _get_json(url: str, timeout: float) -> Any:
+    req = request.Request(
+        url,
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _open_json_request, req, timeout)
+
+
 def _open_request(req: request.Request, timeout: float) -> None:
     with request.urlopen(req, timeout=timeout) as response:
         response.read()
+
+
+def _open_json_request(req: request.Request, timeout: float) -> Any:
+    with request.urlopen(req, timeout=timeout) as response:
+        body = response.read()
+    if not body:
+        return None
+    return json.loads(body.decode("utf-8"))
 
 
 def build_event(event_name: str, local_vars: dict[str, Any]) -> dict[str, Any] | None:
@@ -314,6 +360,18 @@ def _event_data(
             value = _first_string(local_vars, (source_key,)) or _first_attr_string(message_obj, (source_key,))
             if value:
                 data[data_key] = value
+        for reply_key in (
+            "reply_to_message_id",
+            "quote_message_id",
+            "parent_message_id",
+        ):
+            value = (
+                _first_string(local_vars, (reply_key,))
+                or _first_attr_string(message_obj, (reply_key,))
+                or _first_attr_string(local_vars.get("event"), (reply_key,))
+            )
+            if value:
+                data[reply_key] = value
         return data
     return {}
 

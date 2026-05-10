@@ -243,6 +243,43 @@ async def test_event_lifecycle_sends_then_updates_final_card(client):
     assert metrics["feishu_update_retries"] == 0
 
 
+async def test_completed_card_summary_can_be_looked_up_by_feishu_message_id(client):
+    test_client, _ = client
+    long_answer = "最终答案" * 1000
+
+    missing = await test_client.get("/messages/feishu-message-1/summary")
+    await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.started",
+            0,
+            {"profile_id": "work"},
+        ),
+    )
+    completed = await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.completed",
+            1,
+            {"answer": long_answer, "profile_id": "work"},
+        ),
+    )
+    found = await test_client.get("/messages/feishu-message-1/summary")
+
+    assert missing.status == 404
+    assert await missing.json() == {"ok": False, "error": "not found"}
+    assert completed.status == 200
+    assert await completed.json() == {"ok": True, "applied": True}
+    assert found.status == 200
+    body = await found.json()
+    assert body["ok"] is True
+    assert body["profile_id"] == "work"
+    assert body["chat_id"] == "oc_abc"
+    assert body["message_id"] == "feishu-message-1"
+    assert body["summary"] == long_answer[:4000]
+    assert len(body["summary"]) == 4000
+
+
 async def test_card_config_customizes_header_title():
     feishu_client = FakeFeishuClient()
     app = create_app(feishu_client, card_config={"title": "研发助手"})

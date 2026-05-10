@@ -94,6 +94,50 @@ def test_build_event_extracts_direct_fields():
     }
 
 
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("reply_to_message_id", "om_reply"),
+        ("quote_message_id", "om_quote"),
+        ("parent_message_id", "om_parent"),
+    ],
+)
+def test_build_started_event_extracts_reply_context_from_local_vars(field, expected):
+    payload = hook_runtime.build_event(
+        "message.started",
+        {
+            "chat_id": "oc_direct",
+            "message_id": "msg_direct",
+            field: expected,
+        },
+    )
+
+    assert payload["data"][field] == expected
+
+
+def test_build_started_event_extracts_reply_context_from_message_and_event_objects():
+    class ReplyMessageObject:
+        chat_id = "oc_message"
+        message_id = "msg_message"
+        reply_to_message_id = "om_reply"
+
+    class QuoteEventObject:
+        quote_message_id = "om_quote"
+        parent_message_id = "om_parent"
+
+    payload = hook_runtime.build_event(
+        "message.started",
+        {
+            "message": ReplyMessageObject(),
+            "event": QuoteEventObject(),
+        },
+    )
+
+    assert payload["data"]["reply_to_message_id"] == "om_reply"
+    assert payload["data"]["quote_message_id"] == "om_quote"
+    assert payload["data"]["parent_message_id"] == "om_parent"
+
+
 def test_build_event_extracts_gateway_source_object():
     payload = hook_runtime.build_event(
         "message.started",
@@ -924,6 +968,59 @@ async def test_post_json_propagates_http_errors_from_open_request(monkeypatch):
             {"event": "message.started"},
             0.8,
         )
+
+
+@pytest.mark.asyncio
+async def test_lookup_card_summary_gets_sidecar_summary(monkeypatch):
+    opened = {}
+
+    def fake_open_json(req, timeout):
+        opened["url"] = req.full_url
+        opened["method"] = req.get_method()
+        opened["timeout"] = timeout
+        return {
+            "ok": True,
+            "summary": "最终答案",
+            "profile_id": "work",
+            "chat_id": "oc_abc",
+            "message_id": "feishu-message-1",
+        }
+
+    monkeypatch.setattr(hook_runtime, "_open_json_request", fake_open_json)
+
+    result = await hook_runtime.lookup_card_summary(
+        "feishu-message-1",
+        event_url="http://sidecar.test/events",
+        timeout=0.25,
+    )
+
+    assert opened == {
+        "url": "http://sidecar.test/messages/feishu-message-1/summary",
+        "method": "GET",
+        "timeout": 0.25,
+    }
+    assert result == {
+        "ok": True,
+        "summary": "最终答案",
+        "profile_id": "work",
+        "chat_id": "oc_abc",
+        "message_id": "feishu-message-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_lookup_card_summary_fails_open_on_sidecar_error(monkeypatch):
+    def fake_open_json(_req, _timeout):
+        raise error.URLError("sidecar unavailable")
+
+    monkeypatch.setattr(hook_runtime, "_open_json_request", fake_open_json)
+
+    result = await hook_runtime.lookup_card_summary(
+        "feishu-message-1",
+        event_url="http://sidecar.test/events",
+    )
+
+    assert result is None
 
 
 def test_build_event_includes_routing_context_from_local_vars():

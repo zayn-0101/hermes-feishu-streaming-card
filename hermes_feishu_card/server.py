@@ -18,6 +18,7 @@ from .session import CardSession
 FEISHU_CLIENT_KEY = web.AppKey("feishu_client", Any)
 SESSIONS_KEY = web.AppKey("sessions", dict)
 FEISHU_MESSAGE_IDS_KEY = web.AppKey("feishu_message_ids", dict)
+CARD_SUMMARIES_KEY = web.AppKey("card_summaries", dict)
 MESSAGE_BOT_IDS_KEY = web.AppKey("message_bot_ids", dict)
 SESSION_CARD_CONFIGS_KEY = web.AppKey("session_card_configs", dict)
 BOT_ROUTER_KEY = web.AppKey("bot_router", Any)
@@ -49,6 +50,7 @@ def create_app(
     app[FEISHU_CLIENT_KEY] = feishu_client
     app[SESSIONS_KEY] = {}
     app[FEISHU_MESSAGE_IDS_KEY] = {}
+    app[CARD_SUMMARIES_KEY] = {}
     app[MESSAGE_BOT_IDS_KEY] = {}
     app[SESSION_CARD_CONFIGS_KEY] = {}
     app[BOT_ROUTER_KEY] = bot_router
@@ -69,6 +71,7 @@ def create_app(
     title = card_config.get("title")
     app[CARD_TITLE_KEY] = title if isinstance(title, str) else "Hermes Agent"
     app.router.add_get("/health", _health)
+    app.router.add_get("/messages/{message_id}/summary", _message_summary)
     app.router.add_post("/events", _events)
     return app
 
@@ -120,6 +123,14 @@ async def _health(request: web.Request) -> web.Response:
         response["profiles"] = profile_stats
 
     return web.json_response(response)
+
+
+async def _message_summary(request: web.Request) -> web.Response:
+    summaries: Dict[str, dict[str, Any]] = request.app[CARD_SUMMARIES_KEY]
+    summary = summaries.get(request.match_info["message_id"])
+    if summary is None:
+        return web.json_response({"ok": False, "error": "not found"}, status=404)
+    return web.json_response({"ok": True, **summary})
 
 
 async def _events(request: web.Request) -> web.Response:
@@ -237,6 +248,8 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         }
     post_lock_task = None
     if applied and feishu_message_id is not None:
+        if event.event in TERMINAL_EVENTS:
+            _store_card_summary(request.app, event, session, feishu_message_id)
         should_update = _should_update_card(last_update_at, event)
         if should_update:
             # 锁内立即标记，防止后续事件在API完成前重复触发更新
@@ -260,6 +273,22 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
     else:
         metrics.events_ignored += 1
     return web.json_response({"ok": True, "applied": applied}), post_lock_task
+
+
+def _store_card_summary(
+    app: web.Application,
+    event: SidecarEvent,
+    session: CardSession,
+    feishu_message_id: str,
+) -> None:
+    data = event.data if isinstance(event.data, dict) else {}
+    profile_id = _safe_profile_id(data.get("profile_id"))
+    app[CARD_SUMMARIES_KEY][feishu_message_id] = {
+        "summary": session.answer_text[:4000],
+        "profile_id": profile_id,
+        "chat_id": event.chat_id,
+        "message_id": feishu_message_id,
+    }
 
 
 def _record_profile_diagnostics(app: web.Application, event: SidecarEvent) -> None:
