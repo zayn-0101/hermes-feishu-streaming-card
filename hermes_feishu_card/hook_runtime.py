@@ -159,6 +159,18 @@ def emit_cron_delivery(local_vars: dict[str, Any]) -> bool:
         return False
 
 
+def should_suppress_native_response(
+    platform: str, delivered: bool, attachments: Any = None
+) -> bool:
+    if not delivered:
+        return False
+    if str(platform or "").lower() != "feishu":
+        return False
+    if attachments:
+        return False
+    return True
+
+
 def _post_json_sync(url: str, payload: dict[str, Any], timeout: float) -> bool:
     try:
         asyncio.get_running_loop()
@@ -265,7 +277,15 @@ def _open_json_request(req: request.Request, timeout: float) -> Any:
     return json.loads(body.decode("utf-8"))
 
 
-def build_event(event_name: str, local_vars: dict[str, Any]) -> dict[str, Any] | None:
+def build_event(
+    event_name: str, local_vars: dict[str, Any], preview: bool = False
+) -> dict[str, Any] | None:
+    return _build_event(event_name, local_vars, preview=preview)
+
+
+def _build_event(
+    event_name: str, local_vars: dict[str, Any], *, preview: bool
+) -> dict[str, Any] | None:
     if event_name not in SUPPORTED_RUNTIME_EVENTS:
         return None
     source_obj = local_vars.get("source")
@@ -329,10 +349,11 @@ def build_event(event_name: str, local_vars: dict[str, Any]) -> dict[str, Any] |
             conversation_id,
             chat_id,
             created_at_lifecycle_token,
+            preview=preview,
         )
         if message_id is None:
             return None
-    sequence = _next_sequence(message_id)
+    sequence = _peek_next_sequence(message_id) if preview else _next_sequence(message_id)
     payload = {
         "schema_version": "1",
         "event": event_name,
@@ -345,16 +366,17 @@ def build_event(event_name: str, local_vars: dict[str, Any]) -> dict[str, Any] |
         "data": _event_data(event_name, local_vars, source_obj, message_obj),
     }
     if is_terminal_event:
-        if (
-            explicit_message_id is not None
-            and created_at_lifecycle_token is None
-            and active_fallback_cache_key is None
-        ):
-            _retire_current_fallback_key(fallback_key)
-        if active_fallback_cache_key is not None:
-            _ACTIVE_FALLBACK_MESSAGE_IDS.pop(active_fallback_cache_key, None)
-            if _CURRENT_FALLBACK_KEYS.get(fallback_key) == active_fallback_cache_key:
-                _CURRENT_FALLBACK_KEYS.pop(fallback_key, None)
+        if not preview:
+            if (
+                explicit_message_id is not None
+                and created_at_lifecycle_token is None
+                and active_fallback_cache_key is None
+            ):
+                _retire_current_fallback_key(fallback_key)
+            if active_fallback_cache_key is not None:
+                _ACTIVE_FALLBACK_MESSAGE_IDS.pop(active_fallback_cache_key, None)
+                if _CURRENT_FALLBACK_KEYS.get(fallback_key) == active_fallback_cache_key:
+                    _CURRENT_FALLBACK_KEYS.pop(fallback_key, None)
     return payload
 
 
@@ -742,9 +764,19 @@ def _fallback_message_id(
     conversation_id: str,
     chat_id: str,
     created_at_lifecycle_token: str | None,
+    *,
+    preview: bool = False,
 ) -> str | None:
     key = (conversation_id, chat_id)
     if event_name == "message.started":
+        if preview:
+            cache_key = _new_fallback_cache_key(key, created_at_lifecycle_token)
+            cached = _ACTIVE_FALLBACK_MESSAGE_IDS.get(cache_key)
+            if cached is not None:
+                return cached
+            return _preview_fallback_message_id(
+                key, conversation_id, chat_id, created_at_lifecycle_token
+            )
         cache_key = _new_fallback_cache_key(key, created_at_lifecycle_token)
         cached = _ACTIVE_FALLBACK_MESSAGE_IDS.get(cache_key)
         if cached is not None:
@@ -762,6 +794,10 @@ def _fallback_message_id(
         if cached is not None:
             return cached
 
+    if preview:
+        return _preview_fallback_message_id(
+            key, conversation_id, chat_id, created_at_lifecycle_token
+        )
     cache_key = _new_fallback_cache_key(key, created_at_lifecycle_token)
     return _create_active_fallback_message_id(
         key, cache_key, conversation_id, chat_id, created_at_lifecycle_token
@@ -786,6 +822,19 @@ def _create_active_fallback_message_id(
     _ACTIVE_FALLBACK_MESSAGE_IDS[cache_key] = message_id
     _CURRENT_FALLBACK_KEYS[key] = cache_key
     return message_id
+
+
+def _preview_fallback_message_id(
+    key: tuple[str, str],
+    conversation_id: str,
+    chat_id: str,
+    created_at_lifecycle_token: str | None,
+) -> str:
+    lifecycle_count = _FALLBACK_LIFECYCLE_COUNTS.get(key, 0)
+    lifecycle_token = f"active:{lifecycle_count}"
+    if created_at_lifecycle_token is not None:
+        lifecycle_token = f"{lifecycle_token}:created_at:{created_at_lifecycle_token}"
+    return _hash_fallback_message_id(conversation_id, chat_id, lifecycle_token)
 
 
 def _new_fallback_cache_key(
@@ -866,3 +915,7 @@ def _next_sequence(message_id: str) -> int:
     sequence = _SEQUENCES.get(message_id, -1) + 1
     _SEQUENCES[message_id] = sequence
     return sequence
+
+
+def _peek_next_sequence(message_id: str) -> int:
+    return _SEQUENCES.get(message_id, -1) + 1

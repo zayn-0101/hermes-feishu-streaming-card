@@ -326,6 +326,25 @@ def test_completed_event_strips_trailing_attachment_punctuation_and_deduplicates
     ]
 
 
+@pytest.mark.parametrize(
+    ("platform", "delivered", "attachments", "expected"),
+    [
+        ("feishu", True, None, True),
+        ("feishu", True, [], True),
+        ("feishu", False, None, False),
+        ("slack", True, None, False),
+        ("feishu", True, [{"kind": "image", "name": "chart.png"}], False),
+    ],
+)
+def test_should_suppress_native_response_requires_feishu_delivery_without_attachments(
+    platform, delivered, attachments, expected
+):
+    assert (
+        hook_runtime.should_suppress_native_response(platform, delivered, attachments)
+        is expected
+    )
+
+
 def test_build_cron_event_from_feishu_job_origin():
     payload = hook_runtime.build_cron_event(
         {
@@ -463,6 +482,30 @@ def test_build_event_uses_stable_message_id_fallback_with_created_at():
 
     assert started["message_id"] == delta["message_id"] == completed["message_id"]
     assert started["message_id"].startswith("hfc_")
+
+
+def test_build_event_preview_does_not_advance_sequence_or_retire_fallback():
+    local_vars = {"chat_id": "oc_abc", "conversation_id": "conv_abc"}
+
+    started = hook_runtime.build_event("message.started", local_vars)
+    preview = hook_runtime.build_event(
+        "message.completed",
+        {**local_vars, "answer": "结果 MEDIA:/tmp/report.pdf"},
+        preview=True,
+    )
+    completed = hook_runtime.build_event(
+        "message.completed", {**local_vars, "answer": "结果"}
+    )
+
+    assert preview is not None
+    assert preview["message_id"] == started["message_id"]
+    assert preview["sequence"] == 1
+    assert {"kind": "file", "name": "report.pdf", "summary": "report.pdf"} in preview[
+        "data"
+    ]["attachments"]
+    assert completed is not None
+    assert completed["message_id"] == started["message_id"]
+    assert completed["sequence"] == 1
 
 
 def test_build_event_reuses_active_fallback_for_duplicate_started_before_terminal():

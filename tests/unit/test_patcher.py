@@ -131,7 +131,14 @@ def test_apply_patch_inserts_completion_hook_before_response_return():
 
     assert patcher.COMPLETE_PATCH_BEGIN in patched
     assert 'event_name="message.completed"' in patched
-    assert "if _hfc_card_delivered and source.platform.value == \"feishu\":" in patched
+    assert "should_suppress_native_response as _hfc_should_suppress" in patched
+    assert "_hfc_card_delivered = await _hfc_emit_async(_hfc_completed_locals" in patched
+    assert (
+        '_hfc_completed_event = _hfc_build_event("message.completed", '
+        "_hfc_completed_locals, preview=True)"
+    ) in patched
+    assert 'getattr(source.platform, "value", source.platform)' in patched
+    assert "if _hfc_should_suppress(_hfc_platform, _hfc_card_delivered, _hfc_attachments):" in patched
     assert "        return None\n" in patched
     assert '"model": agent_result.get("model", ""),' in patched
     assert '"context": {' in patched
@@ -167,8 +174,40 @@ def test_apply_patch_upgrades_legacy_completion_hook_block():
     upgraded = patcher.apply_patch(content)
 
     assert "emit_from_hermes_locals_async" in upgraded
-    assert "if _hfc_card_delivered and source.platform.value == \"feishu\":" in upgraded
+    assert "should_suppress_native_response as _hfc_should_suppress" in upgraded
     assert upgraded.count("emit_from_hermes_locals as _hfc_emit") == 1
+
+
+def test_apply_patch_upgrades_previous_async_completion_hook_without_platform_guard():
+    content = (
+        "async def _handle_message_with_agent(message):\n"
+        "    response = await run_agent(message)\n"
+        "    _response_time = 1.5\n"
+        "    agent_result = {'input_tokens': 1, 'output_tokens': 2}\n"
+        "    # HERMES_FEISHU_CARD_COMPLETE_PATCH_BEGIN\n"
+        "    try:\n"
+        "        from hermes_feishu_card.hook_runtime import emit_from_hermes_locals_async as _hfc_emit_async\n"
+        "        _hfc_card_delivered = await _hfc_emit_async({\n"
+        "            **locals(),\n"
+        "            \"answer\": response,\n"
+        "            \"duration\": _response_time,\n"
+        "            \"tokens\": {\n"
+        "                \"input_tokens\": agent_result.get(\"input_tokens\", 0),\n"
+        "                \"output_tokens\": agent_result.get(\"output_tokens\", 0),\n"
+        "            },\n"
+        "        }, event_name=\"message.completed\")\n"
+        "        if _hfc_card_delivered:\n"
+        "            return None\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    # HERMES_FEISHU_CARD_COMPLETE_PATCH_END\n"
+        "    return response\n"
+    )
+
+    upgraded = patcher.apply_patch(content)
+
+    assert "should_suppress_native_response as _hfc_should_suppress" in upgraded
+    assert "if _hfc_card_delivered:\n" not in upgraded
 
 
 def test_remove_patch_lenient_removes_previous_async_completion_hook_block():
@@ -868,11 +907,13 @@ def test_apply_patch_raises_when_no_handler_found():
         patcher.apply_patch("def handle(message):\n    return message\n")
 
 
-def test_complete_hook_block_contains_platform_check():
-    """_render_complete_hook_block 生成的代码包含 source.platform.value == 'feishu'"""
+def test_complete_hook_block_contains_suppression_guard():
+    """_render_complete_hook_block 生成的代码包含 native response suppression guard"""
     from hermes_feishu_card.install.patcher import _render_complete_hook_block
     block = "".join(_render_complete_hook_block("    ", "\n"))
-    assert "source.platform.value == \"feishu\"" in block
+    assert "should_suppress_native_response as _hfc_should_suppress" in block
+    assert "getattr(source.platform, \"value\", source.platform)" in block
+    assert "_hfc_attachments" in block
     assert "return None" in block
 
 

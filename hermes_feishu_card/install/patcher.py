@@ -535,8 +535,11 @@ def _find_owned_complete_block(content: str):
     expected = _render_complete_hook_block(indent, newline)
     legacy = _render_legacy_complete_hook_block(indent, newline)
     previous_async = _render_previous_async_complete_hook_block(indent, newline)
+    previous_async_without_platform = (
+        _render_previous_async_complete_hook_block_without_platform_guard(indent, newline)
+    )
     actual = lines[begin_index : end_index + 1]
-    if actual not in (expected, legacy, previous_async):
+    if actual not in (expected, legacy, previous_async, previous_async_without_platform):
         raise ValueError("corrupt completion patch markers")
     return begin_index, end_index
 
@@ -732,9 +735,17 @@ def _render_complete_hook_block(indent: str, newline: str):
         f"{indent}try:{newline}",
         (
             f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import build_event as _hfc_build_event{newline}"
+        ),
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
             f"import emit_from_hermes_locals_async as _hfc_emit_async{newline}"
         ),
-        f"{inner_indent}_hfc_card_delivered = await _hfc_emit_async({{{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import should_suppress_native_response as _hfc_should_suppress{newline}"
+        ),
+        f"{inner_indent}_hfc_completed_locals = {{{newline}",
         f"{deeper_indent}**locals(),{newline}",
         f"{deeper_indent}\"answer\": response,{newline}",
         f"{deeper_indent}\"duration\": _response_time,{newline}",
@@ -747,8 +758,14 @@ def _render_complete_hook_block(indent: str, newline: str):
         f"{deeper_indent}    \"used_tokens\": agent_result.get(\"last_prompt_tokens\", 0),{newline}",
         f"{deeper_indent}    \"max_tokens\": agent_result.get(\"context_length\", 0),{newline}",
         f"{deeper_indent}}},{newline}",
-        f"{inner_indent}}}, event_name=\"message.completed\"){newline}",
-        f"{inner_indent}if _hfc_card_delivered and source.platform.value == \"feishu\":{newline}",
+        f"{inner_indent}}}{newline}",
+        f"{inner_indent}_hfc_card_delivered = await _hfc_emit_async(_hfc_completed_locals, event_name=\"message.completed\"){newline}",
+        f"{inner_indent}_hfc_completed_event = _hfc_build_event(\"message.completed\", _hfc_completed_locals, preview=True){newline}",
+        f"{inner_indent}_hfc_attachments = []{newline}",
+        f"{inner_indent}if _hfc_completed_event is not None:{newline}",
+        f"{deeper_indent}_hfc_attachments = _hfc_completed_event.get(\"data\", {{}}).get(\"attachments\", []){newline}",
+        f"{inner_indent}_hfc_platform = getattr(source.platform, \"value\", source.platform){newline}",
+        f"{inner_indent}if _hfc_should_suppress(_hfc_platform, _hfc_card_delivered, _hfc_attachments):{newline}",
         f"{deeper_indent}return None{newline}",
         f"{indent}except Exception:{newline}",
         f"{inner_indent}pass{newline}",
@@ -801,6 +818,35 @@ def _render_previous_async_complete_hook_block(indent: str, newline: str):
         f"{deeper_indent}}},{newline}",
         f"{inner_indent}}}, event_name=\"message.completed\"){newline}",
         f"{inner_indent}if _hfc_card_delivered and source.platform.value == \"feishu\":{newline}",
+        f"{deeper_indent}return None{newline}",
+        f"{indent}except Exception:{newline}",
+        f"{inner_indent}pass{newline}",
+        f"{indent}{COMPLETE_PATCH_END}{newline}",
+    ]
+
+
+def _render_previous_async_complete_hook_block_without_platform_guard(
+    indent: str, newline: str
+):
+    inner_indent = _child_indent(indent)
+    deeper_indent = _child_indent(inner_indent)
+    return [
+        f"{indent}{COMPLETE_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import emit_from_hermes_locals_async as _hfc_emit_async{newline}"
+        ),
+        f"{inner_indent}_hfc_card_delivered = await _hfc_emit_async({{{newline}",
+        f"{deeper_indent}**locals(),{newline}",
+        f"{deeper_indent}\"answer\": response,{newline}",
+        f"{deeper_indent}\"duration\": _response_time,{newline}",
+        f"{deeper_indent}\"tokens\": {{{newline}",
+        f"{deeper_indent}    \"input_tokens\": agent_result.get(\"input_tokens\", 0),{newline}",
+        f"{deeper_indent}    \"output_tokens\": agent_result.get(\"output_tokens\", 0),{newline}",
+        f"{deeper_indent}}},{newline}",
+        f"{inner_indent}}}, event_name=\"message.completed\"){newline}",
+        f"{inner_indent}if _hfc_card_delivered:{newline}",
         f"{deeper_indent}return None{newline}",
         f"{indent}except Exception:{newline}",
         f"{inner_indent}pass{newline}",
