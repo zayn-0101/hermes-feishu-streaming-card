@@ -508,6 +508,26 @@ def test_build_event_preview_does_not_advance_sequence_or_retire_fallback():
     assert completed["sequence"] == 1
 
 
+def test_attachment_guard_uses_preview_before_terminal_emit_retires_fallback():
+    local_vars = {"chat_id": "oc_abc", "conversation_id": "conv_abc"}
+    payload_locals = {**local_vars, "answer": "结果 MEDIA:/tmp/report.pdf"}
+
+    hook_runtime.build_event("message.started", local_vars)
+    preview = hook_runtime.build_event(
+        "message.completed", payload_locals, preview=True
+    )
+    delivered = hook_runtime.build_event("message.completed", payload_locals) is not None
+    attachments = preview["data"]["attachments"] if preview is not None else []
+
+    assert attachments == [
+        {"kind": "file", "name": "report.pdf", "summary": "report.pdf"}
+    ]
+    assert (
+        hook_runtime.should_suppress_native_response("feishu", delivered, attachments)
+        is False
+    )
+
+
 def test_build_event_reuses_active_fallback_for_duplicate_started_before_terminal():
     local_vars = {
         "chat_id": "oc_abc",

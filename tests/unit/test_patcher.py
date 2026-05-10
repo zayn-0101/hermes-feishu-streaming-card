@@ -137,6 +137,9 @@ def test_apply_patch_inserts_completion_hook_before_response_return():
         '_hfc_completed_event = _hfc_build_event("message.completed", '
         "_hfc_completed_locals, preview=True)"
     ) in patched
+    assert patched.index("_hfc_completed_event = _hfc_build_event") < patched.index(
+        "_hfc_card_delivered = await _hfc_emit_async"
+    )
     assert 'getattr(source.platform, "value", source.platform)' in patched
     assert "if _hfc_should_suppress(_hfc_platform, _hfc_card_delivered, _hfc_attachments):" in patched
     assert "        return None\n" in patched
