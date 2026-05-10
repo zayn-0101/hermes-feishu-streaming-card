@@ -80,11 +80,20 @@ def create_app(
 async def _health(request: web.Request) -> web.Response:
     sessions: Dict[str, CardSession] = request.app[SESSIONS_KEY]
     metrics: SidecarMetrics = request.app[METRICS_KEY]
+    diagnostics = request.app[DIAGNOSTICS_KEY]
     response = {
         "status": "healthy",
         "active_sessions": len(sessions),
         "process_pid": os.getpid(),
         "metrics": metrics.snapshot(),
+        "reply_index": {
+            "entries": len(request.app[CARD_SUMMARIES_KEY]),
+            "last_lookup": diagnostics.get("last_reply_lookup", {}),
+        },
+        "cron": {
+            "cards_sent": metrics.cron_cards_sent,
+            "fallbacks": metrics.cron_fallbacks,
+        },
         "sessions": {
             message_id: {
                 "status": session.status,
@@ -95,7 +104,7 @@ async def _health(request: web.Request) -> web.Response:
             }
             for message_id, session in sessions.items()
         },
-        "diagnostics": request.app[DIAGNOSTICS_KEY],
+        "diagnostics": diagnostics,
         "routing": request.app[ROUTING_DIAGNOSTICS_KEY],
         "profile_diagnostics": request.app[PROFILE_DIAGNOSTICS_KEY],
     }

@@ -121,6 +121,9 @@ async def test_health_reports_healthy_status_and_active_sessions(client):
         "cron_cards_sent": 0,
         "cron_fallbacks": 0,
     }
+    assert body["reply_index"] == {"entries": 0, "last_lookup": {}}
+    assert body["cron"] == {"cards_sent": 0, "fallbacks": 0}
+    assert body["profile_diagnostics"] == {}
 
 
 async def test_health_reports_profile_diagnostics_for_profile_events():

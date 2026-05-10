@@ -46,6 +46,30 @@ def test_status_reports_process_state(capsys):
     assert "running" in captured.out.lower() or "stopped" in captured.out.lower()
 
 
+def test_status_reports_cron_metrics_when_sidecar_is_running(monkeypatch, capsys):
+    def fake_status_sidecar(config):
+        return {
+            "running": True,
+            "pid": 12345,
+            "health": {
+                "active_sessions": 0,
+                "metrics": {
+                    "cron_cards_sent": 2,
+                    "cron_fallbacks": 1,
+                },
+            },
+        }
+
+    monkeypatch.setattr("hermes_feishu_card.cli.status_sidecar", fake_status_sidecar)
+
+    exit_code = main(["status"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "cron_cards_sent: 2" in captured.out
+    assert "cron_fallbacks: 1" in captured.out
+
+
 def test_doctor_bad_config_returns_nonzero(tmp_path, capsys):
     config_path = tmp_path / "bad.yaml"
     config_path.write_text("- bad\n", encoding="utf-8")

@@ -446,6 +446,8 @@ def _run_status(args: argparse.Namespace) -> int:
                 "feishu_update_successes",
                 "feishu_update_failures",
                 "feishu_update_retries",
+                "cron_cards_sent",
+                "cron_fallbacks",
             ):
                 value = metrics.get(name)
                 if isinstance(value, int):
