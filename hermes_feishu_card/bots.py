@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import copy
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .feishu_client import FeishuClient, FeishuClientConfig
@@ -18,6 +19,7 @@ class BotConfig:
     app_secret: str
     base_url: str = FeishuClientConfig.base_url
     timeout_seconds: int | float = FeishuClientConfig.timeout_seconds
+    card: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -125,7 +127,12 @@ class BotRegistry:
             "bot_count": len(self._bots),
             "chat_binding_count": len(self.chat_bindings),
             "bots": [
-                {"bot_id": bot.bot_id, "name": bot.name, "app_id": bot.app_id}
+                {
+                    "bot_id": bot.bot_id,
+                    "name": bot.name,
+                    "app_id": bot.app_id,
+                    "card_title": bot.card.get("title", ""),
+                }
                 for bot in self.list_bots()
             ],
         }
@@ -136,9 +143,11 @@ class FeishuClientFactory:
         self,
         registry: BotRegistry,
         client_builder: Callable[[FeishuClientConfig], Any] | None = None,
+        profile_card: dict[str, Any] | None = None,
     ) -> None:
         self.registry = registry
         self._client_builder = client_builder or FeishuClient
+        self.profile_card = copy.deepcopy(profile_card or {})
         self._clients: dict[str, Any] = {}
 
     def get_client(self, bot_id: str) -> Any:
@@ -155,6 +164,31 @@ class FeishuClientFactory:
             )
         return self._clients[normalized]
 
+    def card_config_for_bot(
+        self,
+        bot_id: str,
+        base_card: dict[str, Any] | None = None,
+        profile_card: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        bot = self.registry.get(bot_id)
+        effective_profile_card = self.profile_card
+        if isinstance(profile_card, dict) and profile_card:
+            effective_profile_card = profile_card
+        return resolve_card_config(base_card, effective_profile_card, bot.card)
+
+
+def resolve_card_config(
+    base_card: dict[str, Any] | None,
+    profile_card: dict[str, Any] | None,
+    bot_card: dict[str, Any] | None,
+) -> dict[str, Any]:
+    resolved = copy.deepcopy(base_card or {})
+    if isinstance(profile_card, dict):
+        resolved.update(copy.deepcopy(profile_card))
+    if isinstance(bot_card, dict):
+        resolved.update(copy.deepcopy(bot_card))
+    return resolved
+
 
 def _select_default_bot_id(
     bots_section: dict[str, Any], bindings: dict[str, Any]
@@ -170,6 +204,11 @@ def _bot_from_mapping(bot_id: str, name: str, value: dict[str, Any]) -> BotConfi
     normalized = _normalize_bot_id(bot_id)
     app_id = str(value.get("app_id") or "").strip()
     app_secret = str(value.get("app_secret") or "").strip()
+    card = value.get("card", {})
+    if card is None:
+        card = {}
+    if not isinstance(card, dict):
+        raise ValueError(f"bot {normalized} card must be a mapping")
     if not app_id:
         raise ValueError(f"bot {normalized} app_id is required")
     if not app_secret:
@@ -183,6 +222,7 @@ def _bot_from_mapping(bot_id: str, name: str, value: dict[str, Any]) -> BotConfi
         timeout_seconds=value.get(
             "timeout_seconds", FeishuClientConfig.timeout_seconds
         ),
+        card=copy.deepcopy(card),
     )
 
 

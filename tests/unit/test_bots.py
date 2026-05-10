@@ -262,3 +262,48 @@ def test_feishu_client_factory_lazily_builds_one_client_per_bot():
     assert support == {"app_id": "cli_support"}
     assert [config.app_id for config in built_configs] == ["cli_sales", "cli_support"]
     assert built_configs[0].app_secret == "sales-secret"
+
+
+def test_bot_registry_preserves_bot_card_title():
+    registry = BotRegistry.from_config(
+        {
+            "feishu": {"app_id": "cli_default", "app_secret": "secret"},
+            "bots": {
+                "default": "sales",
+                "items": {
+                    "sales": {
+                        "app_id": "cli_sales",
+                        "app_secret": "sales-secret",
+                        "card": {"title": "Sales Bot"},
+                    }
+                },
+            },
+        }
+    )
+
+    assert registry.get("sales").card == {"title": "Sales Bot"}
+
+
+def test_safe_diagnostics_exposes_only_card_title():
+    registry = BotRegistry.from_config(
+        {
+            "bots": {
+                "default": "sales",
+                "items": {
+                    "sales": {
+                        "app_id": "cli_sales",
+                        "app_secret": "sales-secret",
+                        "card": {
+                            "title": "Sales Bot",
+                            "secret_template": "do-not-leak",
+                        },
+                    }
+                },
+            },
+        }
+    )
+
+    diagnostics = registry.safe_diagnostics()
+
+    assert diagnostics["bots"][0]["card_title"] == "Sales Bot"
+    assert "do-not-leak" not in str(diagnostics)

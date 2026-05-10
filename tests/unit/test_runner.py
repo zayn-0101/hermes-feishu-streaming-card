@@ -207,6 +207,31 @@ def test_build_feishu_boundary_multi_profile():
     assert callable(boundary.router)
 
 
+def test_build_feishu_boundary_multi_profile_preserves_profile_card():
+    config = {
+        "card": {"title": "Global"},
+        "profiles": {
+            "default": {
+                "feishu": {"app_id": "cli_a", "app_secret": "s_a"},
+                "bots": {"default": "default", "items": {}},
+                "bindings": {"chats": {}, "fallback_bot": "default"},
+                "card": {"title": "Default Profile"},
+            },
+            "work": {
+                "feishu": {"app_id": "cli_b", "app_secret": "s_b"},
+                "bots": {"default": "default", "items": {}},
+                "bindings": {"chats": {}, "fallback_bot": "default"},
+                "card": {"title": "Work Profile"},
+            },
+        },
+        "server": {"host": "127.0.0.1", "port": 8765},
+    }
+
+    boundary = build_feishu_boundary(config)
+
+    assert boundary.client["work"].profile_card == {"title": "Work Profile"}
+
+
 def test_main_rejects_malformed_named_bot_without_leaking_secret(monkeypatch):
     config = {
         "server": {"host": "127.0.0.1", "port": 0},
@@ -273,3 +298,17 @@ def test_main_uses_boundary_with_profiles_only(monkeypatch):
     assert isinstance(captured["feishu_client"], dict)
     assert "default" in captured["feishu_client"]
     assert captured["kwargs"]["bot_router"] is not None
+
+
+def test_resolve_card_config_merges_global_profile_and_bot_in_priority_order():
+    resolved = runner.resolve_card_config(
+        {"title": "Global", "footer_fields": ["model"], "max_chars": 120},
+        {"title": "Profile", "footer_fields": ["duration"]},
+        {"title": "Bot"},
+    )
+
+    assert resolved == {
+        "title": "Bot",
+        "footer_fields": ["duration"],
+        "max_chars": 120,
+    }

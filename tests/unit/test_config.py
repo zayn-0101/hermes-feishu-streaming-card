@@ -308,3 +308,42 @@ profiles:
     )
     with pytest.raises(ValueError, match="profile"):
         load_config(path)
+
+
+def test_profile_card_config_inherits_global_card_defaults(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+card:
+  title: Global
+  footer_fields: [model]
+profiles:
+  work:
+    card:
+      title: Work
+    feishu:
+      app_id: cli_work
+      app_secret: s
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config["profiles"]["work"]["card"]["title"] == "Work"
+    assert config["profiles"]["work"]["card"]["footer_fields"] == ["model"]
+
+
+def test_load_config_rejects_non_mapping_profile_card(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+profiles:
+  work:
+    card: bad
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="profile 'work' card must be a mapping"):
+        load_config(path)

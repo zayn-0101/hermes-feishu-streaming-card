@@ -19,6 +19,7 @@ FEISHU_CLIENT_KEY = web.AppKey("feishu_client", Any)
 SESSIONS_KEY = web.AppKey("sessions", dict)
 FEISHU_MESSAGE_IDS_KEY = web.AppKey("feishu_message_ids", dict)
 MESSAGE_BOT_IDS_KEY = web.AppKey("message_bot_ids", dict)
+SESSION_CARD_CONFIGS_KEY = web.AppKey("session_card_configs", dict)
 BOT_ROUTER_KEY = web.AppKey("bot_router", Any)
 ROUTING_DIAGNOSTICS_KEY = web.AppKey("routing_diagnostics", dict)
 PROFILE_DIAGNOSTICS_KEY = web.AppKey("profile_diagnostics", dict)
@@ -28,6 +29,7 @@ LAST_UPDATE_AT_KEY = web.AppKey("last_update_at", dict)
 MESSAGE_LOCKS_KEY = web.AppKey("message_locks", dict)
 FOOTER_FIELDS_KEY = web.AppKey("footer_fields", Any)
 CARD_TITLE_KEY = web.AppKey("card_title", str)
+BASE_CARD_CONFIG_KEY = web.AppKey("base_card_config", dict)
 UPDATE_MAX_ATTEMPTS = 3
 UPDATE_MIN_INTERVAL_SECONDS = 0.5
 TERMINAL_EVENTS = {"message.completed", "message.failed"}
@@ -48,6 +50,7 @@ def create_app(
     app[SESSIONS_KEY] = {}
     app[FEISHU_MESSAGE_IDS_KEY] = {}
     app[MESSAGE_BOT_IDS_KEY] = {}
+    app[SESSION_CARD_CONFIGS_KEY] = {}
     app[BOT_ROUTER_KEY] = bot_router
     app[PROCESS_TOKEN_KEY] = process_token
     app[METRICS_KEY] = SidecarMetrics()
@@ -60,6 +63,7 @@ def create_app(
     }
     app[ROUTING_DIAGNOSTICS_KEY] = _initial_routing_diagnostics(feishu_client)
     app[PROFILE_DIAGNOSTICS_KEY] = {}
+    app[BASE_CARD_CONFIG_KEY] = dict(card_config)
     footer_fields = card_config.get("footer_fields")
     app[FOOTER_FIELDS_KEY] = list(footer_fields) if isinstance(footer_fields, list) else None
     title = card_config.get("title")
@@ -184,6 +188,9 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     {"ok": False, "error": "bot route failed"},
                     status=502,
                 ), None
+            request.app[SESSION_CARD_CONFIGS_KEY][_session_key(event)] = (
+                _resolve_session_card_config(request.app, route.bot_id, event)
+            )
             message_id = await _send_card(
                 request,
                 event.chat_id,
@@ -192,6 +199,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             )
             if message_id is None:
                 sessions.pop(_session_key(event), None)
+                request.app[SESSION_CARD_CONFIGS_KEY].pop(_session_key(event), None)
                 metrics.events_rejected += 1
                 return web.json_response(
                     {"ok": False, "error": "feishu send failed"},
@@ -275,12 +283,66 @@ def _safe_profile_id(value: Any) -> str:
 
 
 def _render_session_card(request: web.Request, session: CardSession) -> dict[str, Any]:
-    footer_fields = request.app[FOOTER_FIELDS_KEY]
+    card_config = request.app[SESSION_CARD_CONFIGS_KEY].get(
+        _session_key_for_session(request.app, session),
+        {},
+    )
+    footer_fields = card_config.get("footer_fields", request.app[FOOTER_FIELDS_KEY])
+    if isinstance(footer_fields, list):
+        footer_fields = list(footer_fields)
+    elif footer_fields is not None:
+        footer_fields = request.app[FOOTER_FIELDS_KEY]
+    title = card_config.get("title", request.app[CARD_TITLE_KEY])
+    if not isinstance(title, str):
+        title = request.app[CARD_TITLE_KEY]
     return render_card(
         session,
         footer_fields=footer_fields,
-        title=request.app[CARD_TITLE_KEY],
+        title=title,
     )
+
+
+def _session_key_for_session(app: web.Application, session: CardSession) -> str:
+    for key, candidate in app[SESSIONS_KEY].items():
+        if candidate is session:
+            return key
+    return session.message_id
+
+
+def _resolve_session_card_config(
+    app: web.Application, bot_id: str | None, event: SidecarEvent
+) -> dict[str, Any]:
+    base_card = app[BASE_CARD_CONFIG_KEY]
+    profile_card = event.data.get("card", {}) if isinstance(event.data, dict) else {}
+    actual_bot_id = bot_id
+    feishu_client = app[FEISHU_CLIENT_KEY]
+    if isinstance(feishu_client, dict):
+        profile_id = "default"
+        if isinstance(bot_id, str) and ":" in bot_id:
+            profile_id, actual_bot_id = bot_id.split(":", 1)
+        factory = feishu_client.get(profile_id) or feishu_client.get("default")
+        if factory is not None:
+            return _card_config_for_client(factory, actual_bot_id, base_card, profile_card)
+        return dict(base_card)
+    return _card_config_for_client(feishu_client, actual_bot_id, base_card, profile_card)
+
+
+def _card_config_for_client(
+    feishu_client: Any,
+    bot_id: str | None,
+    base_card: dict[str, Any],
+    profile_card: dict[str, Any],
+) -> dict[str, Any]:
+    resolver = getattr(feishu_client, "card_config_for_bot", None)
+    if callable(resolver) and bot_id:
+        try:
+            return resolver(bot_id, base_card=base_card, profile_card=profile_card)
+        except Exception:
+            return dict(base_card)
+    resolved = dict(base_card)
+    if isinstance(profile_card, dict):
+        resolved.update(profile_card)
+    return resolved
 
 
 async def _send_card(

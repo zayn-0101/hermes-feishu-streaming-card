@@ -43,15 +43,23 @@ class FakeBotRegistry:
 
 
 class FakeFeishuClientFactory:
-    def __init__(self):
+    def __init__(self, cards=None, profile_card=None):
         self.registry = FakeBotRegistry()
         self.clients = {
             "default": FakeFeishuClient(),
             "sales": FakeFeishuClient(),
         }
+        self.cards = cards or {}
+        self.profile_card = profile_card or {}
 
     def get_client(self, bot_id):
         return self.clients[bot_id]
+
+    def card_config_for_bot(self, bot_id, base_card=None, profile_card=None):
+        card = dict(base_card or {})
+        card.update(profile_card or self.profile_card)
+        card.update(self.cards.get(bot_id, {}))
+        return card
 
 
 def event_payload(
@@ -685,6 +693,40 @@ async def test_started_routes_card_to_bound_bot_client():
     assert factory.clients["default"].sent == []
     assert len(factory.clients["sales"].sent) == 1
     assert factory.clients["sales"].sent[0][0] == "oc_sales"
+
+
+async def test_started_card_title_uses_bot_over_profile_and_global():
+    factory = FakeFeishuClientFactory(
+        cards={"sales": {"title": "Sales Bot"}},
+        profile_card={"title": "Profile"},
+    )
+
+    def bot_router(event):
+        return RouteResult("sales", "bindings.chats")
+
+    app = create_app(
+        factory,
+        card_config={"title": "Global"},
+        bot_router=bot_router,
+    )
+    server = TestServer(app)
+    test_client = TestClient(server)
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/events",
+            json=event_payload(
+                "message.started",
+                0,
+                chat_id="oc_sales",
+            ),
+        )
+    finally:
+        await test_client.close()
+
+    assert response.status == 200
+    sent_card = factory.clients["sales"].sent[0][1]
+    assert sent_card["header"]["title"]["content"] == "Sales Bot"
 
 
 @pytest.mark.parametrize("profile_id", ["bad:profile/path", "", "x" * 65])

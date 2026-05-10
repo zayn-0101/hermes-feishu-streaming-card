@@ -54,9 +54,17 @@ def load_config(path: str | Path) -> dict[str, dict[str, Any]]:
         for profile_id, profile_cfg in profiles.items():
             if not isinstance(profile_cfg, dict):
                 raise ValueError(f"profile {profile_id!r} must be a mapping")
+            raw_profile_card = profile_cfg.get("card", {})
+            if raw_profile_card is None:
+                raw_profile_card = {}
+            if not isinstance(raw_profile_card, dict):
+                raise ValueError(f"profile {profile_id!r} card must be a mapping")
+            profile_card = copy.deepcopy(config.get("card", DEFAULT_CONFIG["card"]))
+            profile_card.update(raw_profile_card)
             profile_cfg.setdefault("feishu", copy.deepcopy(DEFAULT_CONFIG["feishu"]))
             profile_cfg.setdefault("bots", copy.deepcopy(DEFAULT_CONFIG["bots"]))
             profile_cfg.setdefault("bindings", copy.deepcopy(DEFAULT_CONFIG["bindings"]))
+            profile_cfg["card"] = profile_card
 
     config["server"]["port"] = _normalize_port(config["server"]["port"], "server.port")
     _apply_env_overrides(config)

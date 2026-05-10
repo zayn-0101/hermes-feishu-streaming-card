@@ -7,6 +7,7 @@ from typing import Any
 from aiohttp import web
 
 from .bots import BotRegistry, FeishuClientFactory, RoutingContext
+from .bots import resolve_card_config as _resolve_card_config
 from .config import load_config
 from .feishu_client import FeishuClient, FeishuClientConfig
 from .server import create_app
@@ -49,6 +50,14 @@ def build_feishu_client(config: dict[str, Any]) -> NoopFeishuClient | FeishuClie
     return FeishuClient(client_config)
 
 
+def resolve_card_config(
+    global_card: dict[str, Any] | None,
+    profile_card: dict[str, Any] | None,
+    bot_card: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return _resolve_card_config(global_card, profile_card, bot_card)
+
+
 def build_feishu_boundary(config: dict[str, Any]) -> FeishuBoundary:
     profiles = config.get("profiles")
     if isinstance(profiles, dict) and profiles:
@@ -84,7 +93,10 @@ def _build_multi_profile_boundary(
         registry = BotRegistry.from_config(
             _normalize_feishu_boundary_config(sub_config)
         )
-        factories[profile_id] = FeishuClientFactory(registry)
+        factories[profile_id] = FeishuClientFactory(
+            registry,
+            profile_card=profile_cfg.get("card") if isinstance(profile_cfg, dict) else {},
+        )
 
     def profile_router(event: Any) -> Any:
         """Route event to the appropriate profile's bot."""
