@@ -1,15 +1,17 @@
-# Hermes 飞书流式卡片插件 V3.4.1
+# Hermes 飞书流式卡片插件 V3.4.2
 
 [中文](README.md) | [English](README.en.md)
 
 ![Hermes Feishu Streaming Card 封面](docs/assets/readme-cover.png)
 
-为 Hermes Agent Gateway 的飞书/Lark 平台提供流式卡片消息。V3.4.1 **sidecar-only** 架构，支持 Hermes 0.13.0+ 兼容、多 Profile 进程内隔离、多 Bot 路由、DeepSeek 思维链兼容和表格超限保护，并修复 Hermes v2026.5.7 fallback message id 生命周期一致性。向后兼容 V3.2 及更早配置。
+为 Hermes Agent Gateway 的飞书/Lark 平台提供流式卡片消息。V3.4.2 **sidecar-only** 架构，支持 Hermes 0.13.0+ 兼容、多 Profile 进程内隔离、多 Bot 路由、DeepSeek 思维链兼容和表格超限保护，并修复流式卡片更新乱序导致的思考/答案内容回退。向后兼容 V3.2 及更早配置。
 
 ![飞书流式卡片真实效果截图](docs/assets/feishu-weather-card.png)
 
-## V3.4.1 更新重点
+## V3.4.2 更新重点
 
+- **修复 issue #31**：同一张飞书卡片的 PATCH 更新按 session 串行执行，避免旧内容后到覆盖新内容，导致思考过程漏字、截断或闪烁回退。
+- **并发事件 sequence 更稳**：Hermes 多线程回调同时产生 `thinking.delta` / `answer.delta` 时，运行时会安全分配递增 sequence，避免有效增量被误判为旧事件。
 - **修复 issue #25**：Hermes v2026.5.7 started hook 的 `event_message_id` 会作为显式 `message_id` 使用，避免 `message.started` 和 `message.completed` fallback 卡片 ID 不一致。
 - **适配 Hermes 0.13.0+ 和后续新版本**：安装器会根据 Hermes 版本和代码 anchor 选择 `gateway_run_013_plus` hook strategy。
 - **旧版本 Hermes 继续兼容**：`v2026.4.23` 到 `0.12.x` 使用 `legacy_gateway_run` strategy，不需要用户降级插件。
@@ -47,7 +49,7 @@ python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --ye
 
 ## 升级
 
-从 V3.2.x/V3.3.0/V3.4.0 升级到 V3.4.1 向后兼容，**单 Profile 配置无需任何修改**。如果升级的是 Hermes 0.13.0+，必须重新执行 `install --hermes-dir ... --yes`，让安装器写入 `gateway_run_013_plus` hook strategy；旧版本 Hermes 会继续使用 `legacy_gateway_run`。
+从 V3.2.x/V3.3.0/V3.4.x 升级到 V3.4.2 向后兼容，**单 Profile 配置无需任何修改**。如果升级的是 Hermes 0.13.0+，必须重新执行 `install --hermes-dir ... --yes`，让安装器写入 `gateway_run_013_plus` hook strategy；旧版本 Hermes 会继续使用 `legacy_gateway_run`。
 
 ```bash
 # 1. 停止 sidecar
@@ -55,12 +57,12 @@ python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yam
 
 # 2. 更新代码
 cd /path/to/hermes-feishu-streaming-card
-git checkout v3.4.1 && pip install -e ".[test]" --upgrade
+git checkout v3.4.2 && pip install -e ".[test]" --upgrade
 
 # 3. 诊断 Hermes hook strategy 与 anchors
 python3 -m hermes_feishu_card.cli doctor --config ~/.hermes_feishu_card/config.yaml --hermes-dir ~/.hermes/hermes-agent
 
-# 4. 重新安装 hook（V3.4.1 会按 Hermes 版本选择 hook_strategy）
+# 4. 重新安装 hook（V3.4.2 会按 Hermes 版本选择 hook_strategy）
 python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --yes
 
 # 5. 启动 sidecar
@@ -219,6 +221,7 @@ Hermes hook 将 `message.started` / `thinking.delta` / `answer.delta` / `tool.up
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v3.4.2](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.4.2) | 2026-05 | 修复 issue #31，避免并发 PATCH 和 sequence 竞争导致流式卡片内容回退/漏字 |
 | [v3.4.1](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.4.1) | 2026-05 | 修复 issue #25，Hermes v2026.5.7 fallback message id 生命周期一致 |
 | [v3.4.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.4.0) | 2026-05 | Hermes 0.13.0+ 兼容、旧版本 strategy 保留、issue #23、多 profile/multi bot、附件与回复上下文 |
 | [v3.3.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.3.0) | 2026-05 | 多 Profile、DeepSeek 兼容、表格保护、Footer 动画、平台判断修复 |

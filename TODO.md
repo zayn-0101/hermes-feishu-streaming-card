@@ -39,6 +39,7 @@
 
 ## V3.4 (计划)
 
+- [x] issue #31：修复并发 PATCH / sequence 竞争导致的流式卡片内容回退与漏字（V3.4.2）
 - [x] issue #25：修复 Hermes v2026.5.7 fallback `message_id` 生命周期一致性（V3.4.1）
 - [ ] **媒体/文件消息处理**：图片、文件等非文本消息不走流式卡片，由 sidecar 拦截后直接发送原始文件（P0）
 - [ ] CLI 命令支持多 Profile 模式（`smoke-feishu-card`、`bots test` 等）
