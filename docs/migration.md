@@ -59,7 +59,7 @@ python3 -m hermes_feishu_card.cli status --config config.yaml.example
 
 ## 升级到 V3.4.0
 
-V3.4.0 会根据 Hermes 版本和 `gateway/run.py` 代码 anchor 选择 hook strategy。Hermes `0.13.0+` 使用 `gateway_run_013_plus`，旧版本 Hermes `v2026.4.23` 到 `0.12.x` 继续使用 `legacy_gateway_run`。升级插件后必须重新安装 hook，不能只重启 sidecar。
+V3.4.0+ 会根据 Hermes 版本和 `gateway/run.py` 代码 anchor 选择 hook strategy。Hermes `0.13.0+`、`0.14.0` / `v2026.5.16+` 使用 `gateway_run_013_plus`，旧版本 Hermes `v2026.4.23` 到 `v2026.4.x` 继续使用 `legacy_gateway_run`。升级插件后必须重新安装 hook，不能只重启 sidecar。
 
 ```bash
 python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yaml
@@ -69,7 +69,7 @@ python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --
 python3 -m hermes_feishu_card.cli start --config ~/.hermes_feishu_card/config.yaml
 ```
 
-`doctor` 输出应包含 `hook_strategy`、`compatibility` 和 anchors。若 Hermes 已升级到 `0.13.0+`，确认 `hook_strategy: gateway_run_013_plus` 后再安装；旧版本 Hermes 应继续显示 `legacy_gateway_run`。
+`doctor` 输出应包含 `hook_strategy`、`compatibility` 和 anchors。若 Hermes 已升级到 `0.13.0+`、`0.14.0` 或 `v2026.5.16+`，确认 `hook_strategy: gateway_run_013_plus` 后再安装；`v2026.4.x` 旧版本 Hermes 应继续显示 `legacy_gateway_run`。
 
 多个独立 Hermes profile 以多个进程运行时，推荐为每个进程设置稳定的 `HERMES_FEISHU_CARD_PROFILE_ID`，避免依赖自动推断导致 profile 与 bot 路由不明确。单个 sidecar 服务多 profile 的配置仍使用 `profiles` 段管理各自凭据、bot 和 card title。
 

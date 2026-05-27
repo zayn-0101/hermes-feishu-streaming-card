@@ -134,6 +134,24 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None):
     assert detection.capabilities["cron_delivery"] is True
 
 
+def test_detect_semver_014_strategy_matches_calendar_v2026_5_16(tmp_path):
+    _write_hermes_root(tmp_path, version="v0.14.0")
+
+    detection = detect_hermes(tmp_path)
+
+    assert detection.supported is True
+    assert detection.hook_strategy == "gateway_run_013_plus"
+
+
+def test_detect_calendar_v2026_4_30_stays_on_legacy_strategy(tmp_path):
+    _write_hermes_root(tmp_path, version="v2026.4.30")
+
+    detection = detect_hermes(tmp_path)
+
+    assert detection.supported is True
+    assert detection.hook_strategy == "legacy_gateway_run"
+
+
 def test_detect_cron_delivery_in_scheduler_py_for_latest_layout(tmp_path):
     root = tmp_path / "hermes"
     run_py = root / "gateway" / "run.py"

@@ -89,7 +89,9 @@ class CardSession:
                 self.reply_to_message_id = reply_to_message_id
         elif event.event == "message.completed":
             self.status = "completed"
-            self.answer_text = normalize_stream_text(str(event.data.get("answer") or self.answer_text))
+            completed_answer = normalize_stream_text(str(event.data.get("answer") or ""))
+            if completed_answer.strip():
+                self.answer_text = completed_answer
             delivery_kind = event.data.get("delivery_kind")
             if isinstance(delivery_kind, str) and delivery_kind.strip():
                 self.delivery_kind = delivery_kind.strip()

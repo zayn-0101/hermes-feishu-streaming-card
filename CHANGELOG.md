@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V3.4.3 — 2026-05-27
+
+### Fixed
+- issue #39: blank or whitespace-only `message.completed` answers no longer clear an answer that already arrived through `answer.delta`, preventing DeepSeek V4 Pro tool-call flows from ending with an empty Feishu card.
+- Long Markdown card content is split at paragraph, table, and fenced-code boundaries instead of raw character offsets, so Feishu does not render split table/code fragments as broken raw Markdown.
+- issue #34 follow-up: compatibility tests now cover Hermes `v0.14.0` / `v2026.5.16+` selecting the `gateway_run_013_plus` strategy, while `v2026.4.x` remains on `legacy_gateway_run`.
+
+### Tests
+- Added regression coverage for blank completed answers after streamed deltas, Markdown-aware card splitting, Hermes `v0.14.0`, and Hermes `v2026.4.30`.
+
 ## V3.4.2 — 2026-05-21
 
 ### Fixed

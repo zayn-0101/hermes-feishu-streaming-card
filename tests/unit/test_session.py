@@ -44,6 +44,16 @@ def test_terminal_completion_applies_even_when_streaming_delta_sequence_arrived_
     assert session.last_sequence == 100
 
 
+def test_blank_completion_preserves_streamed_answer_delta():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    assert session.apply(event("answer.delta", 10, {"text": "DeepSeek 已生成答案"}))
+
+    assert session.apply(event("message.completed", 11, {"answer": "   "}))
+
+    assert session.status == "completed"
+    assert session.visible_main_text == "DeepSeek 已生成答案"
+
+
 def test_tool_updates_count_all_events():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     session.apply(event("tool.updated", 1, {"tool_id": "t1", "name": "search", "status": "running"}))

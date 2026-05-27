@@ -39,6 +39,9 @@
 
 ## V3.4 (计划)
 
+- [x] issue #39：修复 DeepSeek V4 Pro 工具调用后 blank completed answer 清空流式答案（V3.4.3）
+- [x] PR #38 核心能力：Markdown 长内容按表格/代码块结构边界切分（V3.4.3）
+- [x] Hermes `v0.14.0` / `v2026.5.16+`：确认使用 `gateway_run_013_plus`，`v2026.4.x` 保持 legacy（V3.4.3）
 - [x] issue #31：修复并发 PATCH / sequence 竞争导致的流式卡片内容回退与漏字（V3.4.2）
 - [x] issue #25：修复 Hermes v2026.5.7 fallback `message_id` 生命周期一致性（V3.4.1）
 - [ ] **媒体/文件消息处理**：图片、文件等非文本消息不走流式卡片，由 sidecar 拦截后直接发送原始文件（P0）

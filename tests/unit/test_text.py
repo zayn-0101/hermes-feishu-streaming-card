@@ -2,6 +2,7 @@ from hermes_feishu_card.text import (
     StreamingTextNormalizer,
     normalize_stream_text,
     should_flush_text,
+    split_markdown_blocks,
 )
 
 
@@ -105,3 +106,35 @@ def test_count_markdown_tables_seven():
 def test_max_card_tables_constant():
     from hermes_feishu_card.text import MAX_CARD_TABLES
     assert MAX_CARD_TABLES == 5
+
+
+def test_split_markdown_blocks_preserves_table_structure():
+    table = "| 功能 | 说明 |\n| --- | --- |\n| ASR | 中文识别 |\n| VAD | 静音切割 |"
+    text = "A" * 1000 + "\n\n" + table + "\n\n" + "B" * 1000
+
+    chunks = split_markdown_blocks(text, 1200)
+
+    table_chunks = [chunk for chunk in chunks if "| ASR |" in chunk]
+    assert len(table_chunks) == 1
+    assert table in table_chunks[0]
+
+
+def test_split_markdown_blocks_preserves_fenced_code_block():
+    code = "```python\nprint('hello')\nprint('world')\n```"
+    text = "X" * 1000 + "\n\n" + code + "\n\n" + "Y" * 1000
+
+    chunks = split_markdown_blocks(text, 1100)
+
+    code_chunks = [chunk for chunk in chunks if "```python" in chunk]
+    assert len(code_chunks) == 1
+    assert code in code_chunks[0]
+
+
+def test_split_markdown_blocks_splits_oversized_plain_text():
+    text = "Hello world " * 500
+
+    chunks = split_markdown_blocks(text, 1000)
+
+    assert len(chunks) > 1
+    assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+    assert all(len(chunk) <= 1000 for chunk in chunks)

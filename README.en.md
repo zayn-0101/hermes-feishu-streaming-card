@@ -1,19 +1,22 @@
-# Hermes Feishu Streaming Card Plugin V3.4.2
+# Hermes Feishu Streaming Card Plugin V3.4.3
 
 [中文](README.md) | [English](README.en.md)
 
 ![Hermes Feishu Streaming Card cover](docs/assets/readme-cover.png)
 
-Streaming card messages for the Feishu/Lark platform in Hermes Agent Gateway. V3.4.2 **sidecar-only** architecture with Hermes 0.13.0+ compatibility, multi-profile in-process isolation, multi-bot routing, DeepSeek chain-of-thought compatibility, table limit protection, and a streaming card update-order fix for thinking/answer text rollback.
+Streaming card messages for the Feishu/Lark platform in Hermes Agent Gateway. V3.4.3 **sidecar-only** architecture with Hermes 0.13.0+/0.14.0 and `v2026.5.16+` compatibility, multi-profile in-process isolation, multi-bot routing, DeepSeek chain-of-thought compatibility, and structure-aware Markdown table/code rendering.
 
 ![Real Feishu streaming card screenshot](docs/assets/feishu-weather-card.png)
 
-## V3.4.2 Highlights
+## V3.4.3 Highlights
 
+- **issue #39 fixed**: whitespace-only `message.completed.answer` values no longer clear answers already streamed through `answer.delta`, preventing DeepSeek V4 Pro tool-call flows from ending with an empty Feishu card.
+- **PR #38 core behavior included**: long Markdown content is split at paragraph, table, and fenced-code boundaries instead of raw character offsets.
+- **Hermes `v0.14.0` / `v2026.5.16+` support verified**: the installer selects `gateway_run_013_plus`; `v2026.4.x` remains on `legacy_gateway_run`.
 - **issue #31 fixed**: PATCH updates for the same Feishu card are serialized per session, preventing older snapshots from landing after newer content and making thinking/answer text flicker, truncate, or roll back.
 - **safer concurrent event sequences**: runtime sequence allocation is locked so concurrent Hermes callbacks cannot produce duplicate sequence ids for valid `thinking.delta` / `answer.delta` chunks.
 - **issue #25 fixed**: Hermes v2026.5.7 started hooks now treat `event_message_id` as the explicit `message_id`, preventing `message.started` and `message.completed` fallback card ids from diverging.
-- **Hermes 0.13.0+ and later**: the installer selects the `gateway_run_013_plus` hook strategy from the Hermes version and code anchors.
+- **Hermes 0.13.0+/0.14.0 and later**: the installer selects the `gateway_run_013_plus` hook strategy from the Hermes version and code anchors.
 - **older Hermes remains supported**: Hermes `v2026.4.23` through `0.12.x` continues to use the `legacy_gateway_run` strategy; no plugin downgrade is required.
 - **doctor reports compatibility**: `doctor` prints `hook_strategy`, `compatibility`, and anchor detection results so you can confirm the selected path.
 - **Reinstall the hook after upgrading**: run `install --hermes-dir ... --yes` after upgrading so Hermes uses the matching hook implementation.
@@ -29,7 +32,7 @@ export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx
 python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --yes
 ```
 
-`setup` generates config, validates Hermes (older Hermes from `v2026.4.23` through `0.12.x`, plus Hermes `0.13.0+` anchors), installs the hook, starts the sidecar, and checks health — all in one pass. See the CLI table below for step-by-step commands.
+`setup` generates config, validates Hermes (older Hermes from `v2026.4.23` through `v2026.4.x`, plus Hermes `0.13.0+`, `0.14.0` / `v2026.5.16+` anchors), installs the hook, starts the sidecar, and checks health — all in one pass. See the CLI table below for step-by-step commands.
 
 ## Core Features
 
@@ -49,7 +52,7 @@ python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --ye
 
 ## Upgrading
 
-Upgrading from V3.2.x/V3.3.0/V3.4.x to V3.4.2 is backward-compatible. **Single-profile configs need no changes.** For Hermes 0.13.0+, you must run `install --hermes-dir ... --yes` again so the installer writes the `gateway_run_013_plus` hook strategy; older Hermes continues to use `legacy_gateway_run`.
+Upgrading from V3.2.x/V3.3.0/V3.4.x to V3.4.3 is backward-compatible. **Single-profile configs need no changes.** For Hermes 0.13.0+/0.14.0 or `v2026.5.16+`, you must run `install --hermes-dir ... --yes` again so the installer writes the `gateway_run_013_plus` hook strategy; Hermes `v2026.4.x` continues to use `legacy_gateway_run`.
 
 ```bash
 # 1. Stop sidecar
@@ -57,12 +60,12 @@ python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yam
 
 # 2. Update code
 cd /path/to/hermes-feishu-streaming-card
-git checkout v3.4.2 && pip install -e ".[test]" --upgrade
+git checkout v3.4.3 && pip install -e ".[test]" --upgrade
 
 # 3. Diagnose Hermes hook strategy and anchors
 python3 -m hermes_feishu_card.cli doctor --config ~/.hermes_feishu_card/config.yaml --hermes-dir ~/.hermes/hermes-agent
 
-# 4. Reinstall hook (V3.4.2 selects hook_strategy by Hermes version)
+# 4. Reinstall hook (V3.4.3 selects hook_strategy by Hermes version)
 python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --yes
 
 # 5. Start sidecar
@@ -212,7 +215,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 - **Duplicate cards**: inspect `/health` metrics (`events_received`, `feishu_send_successes`). V3.3.0 per-message lock + `profile_id:message_id` keys ensure one card per message.
 - **Gray native text**: after sidecar accepts `message.completed`, Hermes hook suppresses native text; fail-open on sidecar unavailable. V3.3.0 fixes non-Feishu platforms being swallowed.
 - **`doctor` unsupported**: Hermes ≥ `v2026.4.23` (reads `VERSION` or Git tag `v2026.4.23+`), `gateway/run.py` must exist.
-- **No cards after upgrading Hermes 0.13.0+**: run `doctor --config ... --hermes-dir ...` to inspect `hook_strategy`, `compatibility`, and anchors, then re-run `install --hermes-dir ... --yes`.
+- **No cards after upgrading Hermes 0.13.0+/0.14.0**: run `doctor --config ... --hermes-dir ...` to inspect `hook_strategy`, `compatibility`, and anchors, then re-run `install --hermes-dir ... --yes`.
 - **Restore fails**: file modified → `restore`/`uninstall` refuse to overwrite. Back up, then manually diff.
 - **Footer tokens wrong**: abnormal values filtered; if still wrong, inspect Hermes `tokens`/`context` metadata.
 - **Table limit exceeded**: V3.3.0 auto-truncates >5 tables with a notice. Reduce Markdown tables.
@@ -221,6 +224,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v3.4.3](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.4.3) | 2026-05 | Fixes issue #39, adds structure-aware Markdown splitting, and verifies Hermes v0.14.0/v2026.5.16+ support |
 | [v3.4.2](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.4.2) | 2026-05 | Fixes issue #31, preventing concurrent PATCH and sequence races from rolling back or dropping streaming card text |
 | [v3.4.1](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.4.1) | 2026-05 | Fixes issue #25, keeping Hermes v2026.5.7 fallback message ids lifecycle-stable |
 | [v3.4.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.4.0) | 2026-05 | Hermes 0.13.0+ compatibility, older Hermes strategy preserved, issue #23, multi-profile/multi-bot, attachments and reply context |
