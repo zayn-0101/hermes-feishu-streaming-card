@@ -22,7 +22,7 @@
 - [x] **P1 health routing 分组**：`/health.routing` 在多 Profile 下按 profile 分组展示 bot、chat binding、last_route、last_route_error 和 events。
 - [x] **P1 E2E 矩阵**：覆盖 Hermes `v2026.4.23`、`v2026.5.7`、`v2026.5.16+`、`v2026.5.29`、`0.13.x`、`0.14.x`。
 - [x] **P1 发布矩阵**：CI 验证 Release 打包 dry run、macOS/Linux install dry run、Windows PowerShell parser。
-- [ ] **P2 Docker 部署**：本版按用户要求暂不考虑，移入后续版本候选。
+- [x] **P2 Docker 部署 / issue #70**：V3.7.0 提供 `install-docker.sh`、`docker-compose.example.yml`、容器路径/venv Python/权限诊断和发布包文档。
 
 ### V3.7.0：体验增强候选
 
