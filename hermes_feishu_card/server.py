@@ -674,6 +674,12 @@ def _safe_positive_int(value: Any, default: int) -> int:
 def _safe_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
+    if isinstance(value, int | float):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return default
     if isinstance(value, str):
         normalized = value.strip().lower()
         if normalized in {"true", "1", "yes", "on"}:

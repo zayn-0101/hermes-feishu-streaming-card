@@ -376,15 +376,30 @@ async def test_card_config_controls_timeline_rendering():
     assert "内容已折叠" in str(timeline)
 
 
-async def test_card_config_string_booleans_control_timeline_rendering():
+@pytest.mark.parametrize(
+    ("card_config", "expect_timeline", "expected_expanded", "thought_text"),
+    [
+        ({"show_reasoning": 0}, False, None, "数值 0 应该隐藏"),
+        ({"show_reasoning": "0"}, False, None, "字符串 0 应该隐藏"),
+        (
+            {"show_reasoning": True, "timeline_expanded": 1},
+            True,
+            True,
+            "数值 1 应该展开",
+        ),
+        (
+            {"show_reasoning": True, "timeline_expanded": "1"},
+            True,
+            True,
+            "字符串 1 应该展开",
+        ),
+    ],
+)
+async def test_card_config_string_booleans_control_timeline_rendering(
+    card_config, expect_timeline, expected_expanded, thought_text
+):
     feishu_client = FakeFeishuClient()
-    app = create_app(
-        feishu_client,
-        card_config={
-            "show_reasoning": "false",
-            "timeline_expanded": "true",
-        },
-    )
+    app = create_app(feishu_client, card_config=card_config)
     server = TestServer(app)
     test_client = TestClient(server)
     await test_client.start_server()
@@ -392,7 +407,7 @@ async def test_card_config_string_booleans_control_timeline_rendering():
         await test_client.post("/events", json=event_payload("message.started", 0))
         await test_client.post(
             "/events",
-            json=event_payload("thinking.delta", 1, {"text": "这段思考应该被隐藏"}),
+            json=event_payload("thinking.delta", 1, {"text": thought_text}),
         )
         await wait_for_card_update(feishu_client, "正在思考...")
     finally:
@@ -400,38 +415,18 @@ async def test_card_config_string_booleans_control_timeline_rendering():
 
     card = feishu_client.updated[-1][1]
     content = str(card)
-    assert "auxiliary_timeline" not in content
-    assert "这段思考应该被隐藏" not in content
+    if not expect_timeline:
+        assert "auxiliary_timeline" not in content
+        assert thought_text not in content
+        return
 
-    feishu_client = FakeFeishuClient()
-    app = create_app(
-        feishu_client,
-        card_config={
-            "show_reasoning": "true",
-            "timeline_expanded": "true",
-        },
-    )
-    server = TestServer(app)
-    test_client = TestClient(server)
-    await test_client.start_server()
-    try:
-        await test_client.post("/events", json=event_payload("message.started", 0))
-        await test_client.post(
-            "/events",
-            json=event_payload("thinking.delta", 1, {"text": "这段思考应该展示"}),
-        )
-        await wait_for_card_update(feishu_client, "正在思考...")
-    finally:
-        await test_client.close()
-
-    card = feishu_client.updated[-1][1]
     timeline = next(
         item
         for item in card["body"]["elements"]
         if item.get("element_id") == "auxiliary_timeline"
     )
-    assert timeline["expanded"] is True
-    assert "这段思考应该展示" in str(timeline)
+    assert timeline["expanded"] is expected_expanded
+    assert thought_text in str(timeline)
 
 
 async def test_message_started_sends_card_as_thread_reply(client):
