@@ -46,7 +46,7 @@
 - 测试：`tests/unit/test_session.py`
 
 **Interfaces:**
-- 产出：`TimelineEntry`、`CardTimeline`、`CardTimeline.record_reasoning(text: str) -> None`、`CardTimeline.record_answer_started() -> None`、`CardTimeline.record_tool(tool_id: str, name: str, status: str, detail: str = "") -> None`、`CardTimeline.snapshot(max_items: int | None = None) -> list[TimelineEntry]`、`CardTimeline.folded_count(max_items: int | None = None) -> int`。
+- 产出：`TimelineEntry`、`CardTimeline`、`CardTimeline.record_reasoning(text: str, replace: bool = False) -> None`、`CardTimeline.record_answer_started() -> None`、`CardTimeline.record_tool(tool_id: str, name: str, status: str, detail: str = "") -> None`、`CardTimeline.snapshot(max_items: int | None = None) -> list[TimelineEntry]`、`CardTimeline.folded_count(max_items: int | None = None) -> int`。
 - 消费：`CardSession.apply` 里已有的 `SidecarEvent` 数据。
 
 - [ ] **Step 1：写失败的 timeline 单元测试**
@@ -82,6 +82,18 @@ def test_session_timeline_appends_reasoning_blocks_without_losing_text():
     assert entries[0].kind == "reasoning"
     assert entries[0].content == "第一句\n\n第二句"
     assert session.thinking_text == "第一句\n\n第二句"
+
+
+def test_session_timeline_replace_mode_replaces_open_reasoning_without_duplication():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(event("thinking.delta", 1, {"text": "我先看"}))
+    assert session.apply(event("thinking.delta", 2, {"text": "我先看看今天的变更", "mode": "replace"}))
+
+    entries = session.timeline.snapshot()
+    assert len(entries) == 1
+    assert entries[0].content == "我先看看今天的变更"
+    assert session.thinking_text == "我先看看今天的变更"
 
 
 def test_session_timeline_folded_count_reports_hidden_old_entries():
@@ -131,8 +143,11 @@ class CardTimeline:
         self._reasoning_count = 0
         self._tool_entry_by_id: dict[str, int] = {}
 
-    def record_reasoning(self, text: str) -> None:
+    def record_reasoning(self, text: str, replace: bool = False) -> None:
         if not text:
+            return
+        if replace and self._open_reasoning_index is not None:
+            self._entries[self._open_reasoning_index].content = text
             return
         if self._open_reasoning_index is None:
             self._reasoning_count += 1
@@ -219,7 +234,7 @@ from .card_timeline import CardTimeline
             if mode == "replace":
                 normalized = normalize_stream_text(raw_text)
                 self.thinking_text = normalized
-                self.timeline.record_reasoning(normalized)
+                self.timeline.record_reasoning(normalized, replace=True)
             elif mode == "append_block":
                 text = normalize_stream_text(raw_text).strip()
                 if text:
@@ -288,7 +303,7 @@ git commit -m "feat: track card reasoning timeline"
 
 **Interfaces:**
 - 消费：`CardSession.timeline.snapshot(max_items)` 和 `CardSession.timeline.folded_count(max_items)`。
-- 产出：`render_card(..., timeline_expanded: bool = False, max_timeline_items: int = 12, max_reasoning_chars: int = 1200, max_tool_result_chars: int = 600) -> dict[str, Any]`。
+- 产出：`render_card(..., show_reasoning: bool = True, timeline_expanded: bool = False, max_timeline_items: int = 12, max_reasoning_chars: int = 1200, max_tool_result_chars: int = 600) -> dict[str, Any]`。
 
 - [ ] **Step 1：写失败的 render 测试**
 
@@ -376,6 +391,33 @@ def test_render_timeline_folds_old_entries_before_answer():
     assert "已折叠 12 条早期思考/工具记录" in content
     assert "tool_7" in content
     assert "tool_0" not in content
+
+
+def test_render_can_hide_reasoning_timeline_when_configured():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="thinking.delta",
+            conversation_id="chat-1",
+            message_id="msg-1",
+            chat_id="oc_abc",
+            platform="feishu",
+            sequence=1,
+            created_at=0.0,
+            data={"text": "隐藏的思考"},
+        )
+    )
+    session.answer_text = "主回答"
+
+    card = render_card(session, show_reasoning=False)
+
+    content = str(card)
+    assert "主回答" in content
+    assert "隐藏的思考" not in content
+    assert "auxiliary_timeline" not in content
 ```
 
 - [ ] **Step 2：运行测试，确认当前失败**
@@ -398,6 +440,7 @@ def render_card(
     footer_fields: list[str] | tuple[str, ...] | None = None,
     title: str = DEFAULT_TITLE,
     interaction_mode: str = "callback",
+    show_reasoning: bool = True,
     timeline_expanded: bool = False,
     max_timeline_items: int = 12,
     max_reasoning_chars: int = 1200,
@@ -412,15 +455,16 @@ def render_card(
     if not primary_text:
         primary_text = "正在思考..." if session.status == "thinking" else normalize_stream_text(session.visible_main_text)
     elements = _render_main_content_elements(primary_text)
-    elements.extend(
-        _render_timeline_elements(
-            session,
-            expanded=timeline_expanded,
-            max_items=max_timeline_items,
-            max_reasoning_chars=max_reasoning_chars,
-            max_tool_result_chars=max_tool_result_chars,
+    if show_reasoning:
+        elements.extend(
+            _render_timeline_elements(
+                session,
+                expanded=timeline_expanded,
+                max_items=max_timeline_items,
+                max_reasoning_chars=max_reasoning_chars,
+                max_tool_result_chars=max_tool_result_chars,
+            )
         )
-    )
 ```
 
 在 `render.py` 中新增 helper：
@@ -519,7 +563,7 @@ git commit -m "feat: render auxiliary card timeline"
 - 测试：`tests/integration/test_server.py`
 
 **Interfaces:**
-- 在 `card` 下产出配置字段：`flush_interval_ms`、`final_drain_timeout_ms`、`timeline_expanded`、`max_timeline_items`、`max_reasoning_chars`、`max_tool_result_chars`。
+- 在 `card` 下产出配置字段：`flush_interval_ms`、`final_drain_timeout_ms`、`show_reasoning`、`timeline_expanded`、`max_timeline_items`、`max_reasoning_chars`、`max_tool_result_chars`。
 - 在 `_render_session_card` 中消费这些字段。
 
 - [ ] **Step 1：写失败的配置测试**
@@ -532,6 +576,7 @@ def test_load_config_defaults_include_v38_card_options(tmp_path):
 
     assert config["card"]["flush_interval_ms"] == 200
     assert config["card"]["final_drain_timeout_ms"] == 900
+    assert config["card"]["show_reasoning"] is True
     assert config["card"]["timeline_expanded"] is False
     assert config["card"]["max_timeline_items"] == 12
     assert config["card"]["max_reasoning_chars"] == 1200
@@ -544,6 +589,7 @@ def test_load_config_accepts_v38_card_options(tmp_path):
         "card:\n"
         "  flush_interval_ms: 80\n"
         "  final_drain_timeout_ms: 1500\n"
+        "  show_reasoning: false\n"
         "  timeline_expanded: true\n"
         "  max_timeline_items: 6\n"
         "  max_reasoning_chars: 800\n"
@@ -555,6 +601,7 @@ def test_load_config_accepts_v38_card_options(tmp_path):
 
     assert config["card"]["flush_interval_ms"] == 80
     assert config["card"]["final_drain_timeout_ms"] == 1500
+    assert config["card"]["show_reasoning"] is False
     assert config["card"]["timeline_expanded"] is True
     assert config["card"]["max_timeline_items"] == 6
     assert config["card"]["max_reasoning_chars"] == 800
@@ -572,6 +619,7 @@ async def test_card_config_controls_timeline_rendering():
         feishu_client,
         card_config={
             "timeline_expanded": True,
+            "show_reasoning": True,
             "max_timeline_items": 1,
             "max_reasoning_chars": 20,
             "max_tool_result_chars": 20,
@@ -612,6 +660,7 @@ python -m pytest tests/unit/test_config.py::test_load_config_defaults_include_v3
 ```python
         "flush_interval_ms": 200,
         "final_drain_timeout_ms": 900,
+        "show_reasoning": True,
         "timeline_expanded": False,
         "max_timeline_items": 12,
         "max_reasoning_chars": 1200,
@@ -626,6 +675,7 @@ python -m pytest tests/unit/test_config.py::test_load_config_defaults_include_v3
         footer_fields=footer_fields,
         title=title,
         interaction_mode=interaction_mode,
+        show_reasoning=bool(card_config.get("show_reasoning", True)),
         timeline_expanded=bool(card_config.get("timeline_expanded", False)),
         max_timeline_items=_safe_positive_int(card_config.get("max_timeline_items"), 12),
         max_reasoning_chars=_safe_positive_int(card_config.get("max_reasoning_chars"), 1200),
