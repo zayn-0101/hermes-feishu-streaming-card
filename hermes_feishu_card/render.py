@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
+import json
+import re
+import time as _time
 from typing import Any, Dict
 
 from .session import CardSession
 from .text import normalize_stream_text, split_markdown_blocks
-import time as _time
 
 DEFAULT_FOOTER_FIELDS = (
     "duration",
@@ -14,9 +17,36 @@ DEFAULT_FOOTER_FIELDS = (
     "context",
 )
 MAIN_CONTENT_CHUNK_CHARS = 2400
+AUXILIARY_TIMELINE_MAX_CHARS = 280
 DEFAULT_TITLE = "Hermes Agent"
 
 _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_REDACTABLE_TOOL_DETAIL_KEYS = (
+    "tenant_access_token",
+    "app_secret",
+    "chat_id",
+    "open_id",
+    "message_id",
+    "password",
+    "token",
+    "secret",
+)
+_TOOL_DETAIL_KEY_PATTERN = (
+    r"[A-Za-z0-9_]*(?:"
+    + "|".join(re.escape(key) for key in _REDACTABLE_TOOL_DETAIL_KEYS)
+    + r")[A-Za-z0-9_]*"
+)
+_TOOL_DETAIL_REDACTION_RE = re.compile(
+    r"(?i)([\"']?"
+    + _TOOL_DETAIL_KEY_PATTERN
+    + r"[\"']?\s*[:=]\s*)([^\s,;&}\]]+)"
+)
+_TOOL_DETAIL_QUOTED_REDACTION_RE = re.compile(
+    r"(?is)([\"']?"
+    + _TOOL_DETAIL_KEY_PATTERN
+    + r"[\"']?\s*[:=]\s*)([\"'])(.*?)(\2)"
+)
+_TOOL_DETAIL_REDACTED = "[REDACTED]"
 
 def _spinner_text(label: str = "生成中") -> str:
     frame = _SPINNER_FRAMES[int(_time.time() * 8) % len(_SPINNER_FRAMES)]
@@ -27,14 +57,37 @@ def render_card(
     footer_fields: list[str] | tuple[str, ...] | None = None,
     title: str = DEFAULT_TITLE,
     interaction_mode: str = "callback",
+    show_reasoning: bool = True,
+    timeline_expanded: bool = False,
+    max_timeline_items: int = 12,
+    max_reasoning_chars: int = 1200,
+    max_tool_result_chars: int = 600,
 ) -> Dict[str, Any]:
     status = _render_status(session)
-    main_text = normalize_stream_text(session.visible_main_text) or ("正在思考..." if session.status == "thinking" else "")
-    tool_summary = _render_tool_summary(session)
+    primary_text = normalize_stream_text(session.answer_text)
+    if not primary_text:
+        has_reasoning_timeline = bool(
+            getattr(session, "timeline", None)
+            and any(item.kind == "reasoning" for item in session.timeline.snapshot())
+        )
+        if session.status == "thinking" and has_reasoning_timeline:
+            primary_text = "正在思考..."
+        else:
+            primary_text = normalize_stream_text(session.visible_main_text)
     attachment_summary = _render_attachment_summary(session)
     footer = _render_footer(session, footer_fields)
     header_title = title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE
-    elements = _render_main_content_elements(main_text)
+    elements = _render_main_content_elements(primary_text)
+    timeline_elements: list[Dict[str, Any]] = []
+    if show_reasoning:
+        timeline_elements = _render_timeline_elements(
+            session,
+            expanded=timeline_expanded,
+            max_items=max_timeline_items,
+            max_reasoning_chars=max_reasoning_chars,
+            max_tool_result_chars=max_tool_result_chars,
+        )
+        elements.extend(timeline_elements)
     elements.extend(_render_interaction_elements(session, interaction_mode=interaction_mode))
     if attachment_summary:
         elements.append(
@@ -44,13 +97,16 @@ def render_card(
                 "content": attachment_summary,
             }
         )
-    elements.extend(
-        [
-            {"tag": "hr", "element_id": "main_divider"},
-            {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary},
-            {"tag": "markdown", "element_id": "footer", "content": footer, "text_size": "x-small"},
-        ]
-    )
+    elements.append({"tag": "hr", "element_id": "main_divider"})
+    if not timeline_elements:
+        elements.append(
+            {
+                "tag": "markdown",
+                "element_id": "tool_summary",
+                "content": _render_tool_summary(session),
+            }
+        )
+    elements.append({"tag": "markdown", "element_id": "footer", "content": footer, "text_size": "x-small"})
     return {
         "schema": "2.0",
         "config": {
@@ -211,6 +267,65 @@ def _render_tool_summary(session: CardSession) -> str:
     return "\n".join(lines)
 
 
+def _render_timeline_elements(
+    session: CardSession,
+    *,
+    expanded: bool,
+    max_items: int,
+    max_reasoning_chars: int,
+    max_tool_result_chars: int,
+) -> list[Dict[str, Any]]:
+    if not getattr(session, "timeline", None):
+        return []
+    entries = session.timeline.snapshot(max_items=max_items)
+    folded = session.timeline.folded_count(max_items=max_items)
+    if not entries and not folded:
+        return []
+    lines: list[str] = []
+    if folded:
+        lines.append(f"> 已折叠 {folded} 条早期思考/工具记录")
+        lines.append("")
+    for item in entries:
+        if item.kind == "reasoning":
+            content = _limit_text(item.content, max_reasoning_chars)
+            lines.append(f"**{item.title}** · {item.status}")
+            if content:
+                lines.append(content)
+        elif item.kind == "tool":
+            detail = _limit_text(_redact_tool_detail(item.detail), max_tool_result_chars)
+            lines.append(f"- `{item.title}`: {item.status}")
+            if detail:
+                lines.append(f"  - {detail}")
+        lines.append("")
+    panel_content = "\n".join(lines).strip()
+    if not panel_content:
+        return []
+    panel_content = _limit_text(panel_content, AUXILIARY_TIMELINE_MAX_CHARS)
+    return [
+        {
+            "tag": "collapsible_panel",
+            "element_id": "auxiliary_timeline",
+            "expanded": expanded,
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"思考与工具 · {session.tool_count} 次工具调用",
+                },
+                "vertical_align": "center",
+            },
+            "border": {"color": "grey", "corner_radius": "5px"},
+            "padding": "8px 8px 8px 8px",
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "element_id": "auxiliary_timeline_content",
+                    "content": panel_content,
+                }
+            ],
+        }
+    ]
+
+
 def _render_attachment_summary(session: CardSession) -> str:
     items = []
     for item in session.attachments:
@@ -295,3 +410,61 @@ def _format_scaled(value: int, factor: int, suffix: str) -> str:
     if scaled >= 100 or scaled.is_integer():
         return f"{int(round(scaled))}{suffix}"
     return f"{scaled:.1f}".rstrip("0").rstrip(".") + suffix
+
+
+def _limit_text(text: str, limit: int) -> str:
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[: max(0, limit - 18)].rstrip() + "\n> 内容已折叠"
+
+
+def _redact_tool_detail(text: str) -> str:
+    if not text:
+        return text
+    structured = _parse_tool_detail(text)
+    if structured is not None:
+        return _dump_redacted_tool_detail(structured)
+    redacted = _TOOL_DETAIL_QUOTED_REDACTION_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{_TOOL_DETAIL_REDACTED}{match.group(4)}",
+        text,
+    )
+    return _TOOL_DETAIL_REDACTION_RE.sub(r"\1[REDACTED]", redacted)
+
+
+def _parse_tool_detail(text: str) -> tuple[str, Any] | None:
+    try:
+        return ("json", _redact_tool_detail_value(json.loads(text)))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    try:
+        return ("python", _redact_tool_detail_value(ast.literal_eval(text)))
+    except (SyntaxError, ValueError):
+        return None
+
+
+def _redact_tool_detail_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            if _is_sensitive_tool_detail_key(str(key)):
+                redacted[key] = _TOOL_DETAIL_REDACTED
+            else:
+                redacted[key] = _redact_tool_detail_value(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_tool_detail_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_tool_detail_value(item) for item in value)
+    return value
+
+
+def _dump_redacted_tool_detail(parsed: tuple[str, Any]) -> str:
+    format_name, value = parsed
+    if format_name == "json":
+        return json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
+    return repr(value)
+
+
+def _is_sensitive_tool_detail_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(part in lowered for part in _REDACTABLE_TOOL_DETAIL_KEYS)

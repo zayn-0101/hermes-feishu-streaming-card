@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V3.8.0 — 2026-06-30
+
+See also: [docs/release-notes-v3.8.0.md](docs/release-notes-v3.8.0.md)
+
+### Added
+- Separated the primary answer area from the reasoning/tool timeline so the card keeps the final response prominent while auxiliary progress remains readable.
+- Added card update metrics for queue depth, burst coalescing, terminal drain latency, and Feishu update latency to make streaming regressions easier to observe.
+
+### Fixed
+- Burst update coalescing now merges queued card refreshes more aggressively, reducing duplicated PATCH churn during fast thinking/tool bursts.
+- Terminal completion now drains pending updates before rendering the final card, preventing stale intermediate content from winning the last PATCH.
+- Long Markdown tables and fenced code blocks keep safe structural boundaries across card chunking, reducing raw Markdown leaks and half-open fences.
+
+### Docs
+- Added `docs/release-notes-v3.8.0.md` and refreshed release-planning notes for the V3.8.x line.
+
 ## V3.7.0 — 2026-06-29
 
 ### Added

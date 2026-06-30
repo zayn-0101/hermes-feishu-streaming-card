@@ -418,7 +418,7 @@ streaming:
 | `restore --hermes-dir ... --yes` | 恢复原始 Hermes 文件 |
 | `uninstall --hermes-dir ... --yes` | 卸载并恢复 |
 | `start --config ...` | 启动 sidecar |
-| `stop --config ...` | 停止 sidecar；校验 PID/token 与 `/health` 的 `process_pid/process_token` 后才停止 |
+| `stop --config ...` | 停止 sidecar；校验 PID/token 与 `/health` 的 `process_pid/process_token_hash` 后才停止 |
 | `status --config ...` | 查看 sidecar 状态、routing、profile diagnostics 与 metrics |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | 按指定 profile 发送真实飞书 smoke 卡片 |
 | `bots list|show|add|remove --config ...` | 管理飞书 Bot 注册 |

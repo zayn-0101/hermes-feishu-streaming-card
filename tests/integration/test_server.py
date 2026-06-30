@@ -4,6 +4,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from hermes_feishu_card.bots import RouteResult
+from hermes_feishu_card import flush as flush_module
 from hermes_feishu_card import server as sidecar_server
 from hermes_feishu_card.server import FEISHU_MESSAGE_IDS_KEY, create_app
 
@@ -160,6 +161,13 @@ async def test_health_reports_healthy_status_and_active_sessions(client):
         "feishu_update_successes": 0,
         "feishu_update_failures": 0,
         "feishu_update_retries": 0,
+        "update_scheduled": 0,
+        "update_coalesced": 0,
+        "update_queue_peak": 0,
+        "terminal_drains": 0,
+        "terminal_drain_timeouts": 0,
+        "terminal_drain_latency_ms": 0,
+        "feishu_update_latency_ms": 0,
         "cron_cards_sent": 0,
         "cron_fallbacks": 0,
     }
@@ -318,9 +326,118 @@ async def test_completed_without_deltas_updates_started_card(client):
 
     health = await test_client.get("/health")
     body = await health.json()
-    assert body["sessions"]["hermes-message-1"]["status"] == "completed"
-    assert body["sessions"]["hermes-message-1"]["answer_chars"] > 0
+    assert "hermes-message-1" not in body["sessions"]
+    assert len(body["sessions"]) == 1
+    session_snapshot = next(iter(body["sessions"].values()))
+    assert session_snapshot["status"] == "completed"
+    assert session_snapshot["answer_chars"] > 0
     assert body["metrics"]["feishu_update_attempts"] == 1
+
+
+async def test_card_config_controls_timeline_rendering():
+    feishu_client = FakeFeishuClient()
+    app = create_app(
+        feishu_client,
+        card_config={
+            "timeline_expanded": True,
+            "show_reasoning": True,
+            "max_timeline_items": 1,
+            "max_reasoning_chars": 20,
+            "max_tool_result_chars": 20,
+        },
+    )
+    server = TestServer(app)
+    test_client = TestClient(server)
+    await test_client.start_server()
+    try:
+        await test_client.post("/events", json=event_payload("message.started", 0))
+        await test_client.post(
+            "/events",
+            json=event_payload(
+                "thinking.delta", 1, {"text": "第一段很长很长很长很长很长"}
+            ),
+        )
+        await wait_for_card_update(feishu_client, "正在思考...")
+        await _REAL_ASYNCIO_SLEEP(0.25)
+        await test_client.post(
+            "/events",
+            json=event_payload(
+                "tool.updated",
+                2,
+                {
+                    "tool_id": "read",
+                    "name": "read_file",
+                    "status": "completed",
+                    "detail": "abcdefghijklmnopqrstuvwxyz1234567890",
+                },
+            ),
+        )
+        await wait_for_card_update(feishu_client, "read_file")
+    finally:
+        await test_client.close()
+
+    card = feishu_client.updated[-1][1]
+    timeline = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "auxiliary_timeline"
+    )
+    assert timeline["expanded"] is True
+    assert "已折叠 1 条早期思考/工具记录" in str(timeline)
+    assert "内容已折叠" in str(timeline)
+
+
+@pytest.mark.parametrize(
+    ("card_config", "expect_timeline", "expected_expanded", "thought_text"),
+    [
+        ({"show_reasoning": 0}, False, None, "数值 0 应该隐藏"),
+        ({"show_reasoning": "0"}, False, None, "字符串 0 应该隐藏"),
+        (
+            {"show_reasoning": True, "timeline_expanded": 1},
+            True,
+            True,
+            "数值 1 应该展开",
+        ),
+        (
+            {"show_reasoning": True, "timeline_expanded": "1"},
+            True,
+            True,
+            "字符串 1 应该展开",
+        ),
+    ],
+)
+async def test_card_config_string_booleans_control_timeline_rendering(
+    card_config, expect_timeline, expected_expanded, thought_text
+):
+    feishu_client = FakeFeishuClient()
+    app = create_app(feishu_client, card_config=card_config)
+    server = TestServer(app)
+    test_client = TestClient(server)
+    await test_client.start_server()
+    try:
+        await test_client.post("/events", json=event_payload("message.started", 0))
+        await test_client.post(
+            "/events",
+            json=event_payload("thinking.delta", 1, {"text": thought_text}),
+        )
+        await wait_for_card_update(feishu_client, "正在思考...")
+    finally:
+        await test_client.close()
+
+    card = feishu_client.updated[-1][1]
+    content = str(card)
+    if not expect_timeline:
+        assert "auxiliary_timeline" not in content
+        assert thought_text not in content
+        return
+
+    timeline = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "auxiliary_timeline"
+    )
+    assert timeline["expanded"] is expected_expanded
+    assert thought_text in str(timeline)
 
 
 async def test_message_started_sends_card_as_thread_reply(client):
@@ -757,17 +874,17 @@ async def test_streaming_deltas_are_throttled_but_terminal_event_updates(client)
 
     assert len(feishu_client.sent) == 1
     await wait_for_card_update(feishu_client, "最终答案")
-    assert len(feishu_client.updated) == 2
+    assert len(feishu_client.updated) == 3
     assert "第一段" in str(feishu_client.updated[0][1])
-    assert "第二段" not in str(feishu_client.updated[0][1])
     assert "最终答案" in str(feishu_client.updated[-1][1])
     health = await test_client.get("/health")
     metrics = (await health.json())["metrics"]
     assert metrics["events_received"] == 4
     assert metrics["events_applied"] == 4
     assert metrics["events_rejected"] == 0
-    assert metrics["feishu_update_attempts"] == 2
-    assert metrics["feishu_update_successes"] == 2
+    assert metrics["feishu_update_attempts"] == 3
+    assert metrics["feishu_update_successes"] == 3
+    assert metrics["terminal_drains"] == 1
 
 
 async def test_terminal_event_with_stale_sequence_still_finalizes_card(client):
@@ -897,43 +1014,106 @@ async def test_terminal_update_is_not_blocked_by_streaming_update_backlog(client
     assert metrics["feishu_update_failures"] == 0
 
 
-async def test_terminal_event_ack_does_not_wait_for_slow_card_patch(client, monkeypatch):
+async def test_burst_updates_are_coalesced_and_reported_in_health(client, monkeypatch):
     test_client, feishu_client = client
-    feishu_client.update_delay = 0.25
+    feishu_client.update_delay = 0.03
     monkeypatch.setattr(sidecar_server, "UPDATE_MIN_INTERVAL_SECONDS", 0)
 
     await test_client.post("/events", json=event_payload("message.started", 0))
+    responses = await asyncio.gather(
+        *[
+            test_client.post(
+                "/events",
+                json=event_payload("answer.delta", index, {"text": f"片段{index}"}),
+            )
+            for index in range(1, 25)
+        ]
+    )
 
-    started_at = asyncio.get_running_loop().time()
+    assert all(response.status == 200 for response in responses)
+    await wait_for_card_update(feishu_client, "片段24")
+    health = await test_client.get("/health")
+    body = await health.json()
+    assert body["metrics"]["update_coalesced"] > 0
+    assert body["metrics"]["update_queue_peak"] == 1
+    assert body["metrics"]["feishu_update_attempts"] < 24
+
+
+async def test_terminal_event_ack_does_not_wait_for_slow_card_patch(client, monkeypatch):
+    del monkeypatch
+    feishu_client = FakeFeishuClient()
+    feishu_client.update_delay = 0.25
+    app = create_app(
+        feishu_client,
+        card_config={"flush_interval_ms": 0, "final_drain_timeout_ms": 120},
+    )
+    server = TestServer(app)
+    test_client = TestClient(server)
+    await test_client.start_server()
+    try:
+        await test_client.post("/events", json=event_payload("message.started", 0))
+
+        started_at = asyncio.get_running_loop().time()
+        completed = await test_client.post(
+            "/events",
+            json=event_payload("message.completed", 1, {"answer": "最终答案"}),
+        )
+        elapsed = asyncio.get_running_loop().time() - started_at
+
+        assert completed.status == 200
+        assert await completed.json() == {"ok": True, "applied": True}
+        assert elapsed < 0.12
+        assert elapsed < feishu_client.update_delay
+        assert feishu_client.updated == []
+
+        for _ in range(40):
+            if feishu_client.updated:
+                break
+            await asyncio.sleep(0.01)
+        assert "最终答案" in str(feishu_client.updated[-1][1])
+    finally:
+        await test_client.close()
+
+
+async def test_terminal_event_drains_latest_pending_content_before_final_card(client, monkeypatch):
+    test_client, feishu_client = client
+    feishu_client.update_delay = 0.04
+    monkeypatch.setattr(sidecar_server, "UPDATE_MIN_INTERVAL_SECONDS", 0)
+
+    await test_client.post("/events", json=event_payload("message.started", 0))
+    await asyncio.gather(
+        *[
+            test_client.post(
+                "/events",
+                json=event_payload("answer.delta", index, {"text": f"片段{index}"}),
+            )
+            for index in range(1, 15)
+        ]
+    )
     completed = await test_client.post(
         "/events",
-        json=event_payload("message.completed", 1, {"answer": "最终答案"}),
+        json=event_payload("message.completed", 15, {"answer": ""}),
     )
-    elapsed = asyncio.get_running_loop().time() - started_at
 
     assert completed.status == 200
-    assert await completed.json() == {"ok": True, "applied": True}
-    assert elapsed < 0.1
-    assert feishu_client.updated == []
-
-    for _ in range(40):
-        if feishu_client.updated:
-            break
-        await asyncio.sleep(0.01)
-    assert "最终答案" in str(feishu_client.updated[-1][1])
+    await wait_for_card_update(feishu_client, "片段14")
+    health = await test_client.get("/health")
+    metrics = (await health.json())["metrics"]
+    assert metrics["terminal_drains"] == 1
+    assert metrics["terminal_drain_timeouts"] == 0
+    assert "片段14" in str(feishu_client.updated[-1][1])
 
 
-async def test_terminal_event_waits_for_update_window(client, monkeypatch):
+async def test_terminal_event_does_not_wait_for_update_window_without_pending_flush(
+    client, monkeypatch
+):
     test_client, feishu_client = client
-    now = [100.0]
     sleeps = []
-    monkeypatch.setattr(sidecar_server.time, "monotonic", lambda: now[0])
 
     async def fake_sleep(delay):
         sleeps.append(delay)
-        now[0] += delay
 
-    monkeypatch.setattr(sidecar_server.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(flush_module.asyncio, "sleep", fake_sleep)
 
     await test_client.post("/events", json=event_payload("message.started", 0))
     await test_client.post("/events", json=event_payload("answer.delta", 1, {"text": "片段"}))
@@ -945,7 +1125,7 @@ async def test_terminal_event_waits_for_update_window(client, monkeypatch):
     assert completed.status == 200
     assert await completed.json() == {"ok": True, "applied": True}
     await wait_for_card_update(feishu_client, "最终答案")
-    assert sleeps == [sidecar_server.UPDATE_MIN_INTERVAL_SECONDS]
+    assert sleeps == []
     assert len(feishu_client.updated) == 2
     assert "最终答案" in str(feishu_client.updated[-1][1])
 
@@ -1036,12 +1216,11 @@ async def test_health_reports_last_attachment_event_for_native_delivery(client):
     assert completed.status == 200
     health = await test_client.get("/health")
     diagnostics = (await health.json())["diagnostics"]
-    assert diagnostics["last_attachment_event"] == {
-        "message_id": "hermes-message-1",
-        "event": "message.completed",
-        "attachment_count": 1,
-        "native_delivery": "allowed",
-    }
+    assert diagnostics["last_attachment_event"]["event"] == "message.completed"
+    assert diagnostics["last_attachment_event"]["attachment_count"] == 1
+    assert diagnostics["last_attachment_event"]["native_delivery"] == "allowed"
+    assert diagnostics["last_attachment_event"]["message_id_hash"]
+    assert "message_id" not in diagnostics["last_attachment_event"]
 
 
 async def test_terminal_update_failure_is_retried_in_background(client, monkeypatch):
@@ -1067,6 +1246,35 @@ async def test_terminal_update_failure_is_retried_in_background(client, monkeypa
 
     assert len(feishu_client.updated) == 1
     assert "最终答案" in str(feishu_client.updated[-1][1])
+
+
+async def test_terminal_retry_backoff_does_not_inflate_patch_latency_metric(
+    client, monkeypatch
+):
+    test_client, feishu_client = client
+    feishu_client.update_failures_remaining = sidecar_server.UPDATE_MAX_ATTEMPTS
+    now = [100.0]
+
+    async def fake_sleep(delay):
+        now[0] += delay
+
+    monkeypatch.setattr(sidecar_server.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(sidecar_server.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(flush_module.time, "monotonic", lambda: now[0])
+
+    await test_client.post("/events", json=event_payload("message.started", 0))
+    completed = await test_client.post(
+        "/events",
+        json=event_payload("message.completed", 1, {"answer": "最终答案"}),
+    )
+
+    assert completed.status == 200
+    await wait_for_card_update(feishu_client, "最终答案")
+    health = await test_client.get("/health")
+    metrics = (await health.json())["metrics"]
+    assert metrics["feishu_update_attempts"] == sidecar_server.UPDATE_MAX_ATTEMPTS + 1
+    assert metrics["feishu_update_failures"] == sidecar_server.UPDATE_MAX_ATTEMPTS
+    assert metrics["feishu_update_latency_ms"] < 1000
 
 
 async def test_send_failure_returns_json_error_and_allows_started_retry(client):
@@ -1259,14 +1467,16 @@ async def test_health_reports_safe_routing_diagnostics_without_secrets():
     assert routing["default_bot"] == "default"
     assert routing["bot_count"] == 2
     assert routing["chat_binding_count"] == 1
-    assert routing["last_route"] == {
-        "message_id": "hermes-message-1",
-        "chat_id": "oc_sales",
-        "bot_id": "sales",
-        "reason": "bindings.chats",
-    }
+    assert routing["last_route"]["bot_id"] == "sales"
+    assert routing["last_route"]["reason"] == "bindings.chats"
+    assert routing["last_route"]["chat_id_hash"]
+    assert routing["last_route"]["message_id_hash"]
     assert routing["last_route_error"] == ""
+    assert "chat_id" not in routing["last_route"]
+    assert "message_id" not in routing["last_route"]
     assert "registry-secret" not in str(body)
+    assert "oc_sales" not in str(body)
+    assert "hermes-message-1" not in str(body)
     assert "secret" not in routing
 
 
@@ -1302,18 +1512,22 @@ async def test_health_routing_groups_multi_profile_diagnostics_without_secrets()
     assert routing["profile_count"] == 2
     assert routing["bot_count"] == 4
     assert routing["chat_binding_count"] == 2
-    assert routing["last_route"] == {
-        "message_id": "hermes-message-1",
-        "chat_id": "oc_sales",
-        "profile_id": "work",
-        "bot_id": "sales",
-        "reason": "bindings.chats",
-    }
+    assert routing["last_route"]["profile_id"] == "work"
+    assert routing["last_route"]["bot_id"] == "sales"
+    assert routing["last_route"]["reason"] == "bindings.chats"
+    assert routing["last_route"]["chat_id_hash"]
+    assert routing["last_route"]["message_id_hash"]
     assert routing["profiles"]["work"]["bot_count"] == 2
     assert routing["profiles"]["work"]["chat_binding_count"] == 1
     assert routing["profiles"]["work"]["last_route"]["bot_id"] == "sales"
+    assert routing["profiles"]["work"]["last_route"]["chat_id_hash"]
+    assert routing["profiles"]["work"]["last_route"]["message_id_hash"]
     assert routing["profiles"]["work"]["last_route_error"] == ""
+    assert "chat_id" not in routing["profiles"]["work"]["last_route"]
+    assert "message_id" not in routing["profiles"]["work"]["last_route"]
     assert "registry-secret" not in str(routing)
+    assert "oc_sales" not in str(body)
+    assert "hermes-message-1" not in str(body)
     assert "secret" not in routing["profiles"]["work"]
 
 

@@ -125,8 +125,9 @@ def test_stop_rejects_matching_token_with_wrong_pid(tmp_path):
     try:
         assert start.returncode == 0, start.stderr
         health = read_health(port)
+        assert "process_token" not in health
         pidfile_path(tmp_path).write_text(
-            json.dumps({"pid": sleeper.pid, "token": health["process_token"]}) + "\n",
+            json.dumps({"pid": sleeper.pid, "token": "not-the-sidecar-token"}) + "\n",
             encoding="utf-8",
         )
 
@@ -151,7 +152,10 @@ def test_start_status_and_stop_manage_sidecar_process(tmp_path):
     try:
         assert start.returncode == 0, start.stderr
         assert "start ok" in start.stdout
-        assert read_health(port)["status"] == "healthy"
+        health = read_health(port)
+        assert health["status"] == "healthy"
+        assert health["process_token_hash"]
+        assert "process_token" not in health
         assert post_started_event(port) == {"ok": True, "applied": True}
 
         status = run_cli("status", "--config", str(config), env=env)

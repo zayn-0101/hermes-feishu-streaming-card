@@ -16,7 +16,7 @@ The installer only modifies Hermes `gateway/run.py` by inserting a marked hook b
 
 `hermes_feishu_card.server` exposes local HTTP endpoints that receive events from the Hermes hook. The sidecar runs independently from the Hermes process, so card delivery failures should not bring down the Agent.
 
-`hermes_feishu_card.cli start/status/stop` manages the local sidecar process. Process state is stored in a user-level pidfile. `status` uses `/health` as the source of truth. `stop` only terminates the process when the PID/token in the pidfile matches `process_pid/process_token` returned by `/health`, avoiding stale pidfiles and PID-reuse hazards. This process model targets POSIX environments such as macOS and Linux.
+`hermes_feishu_card.cli start/status/stop` manages the local sidecar process. Process state is stored in a user-level pidfile. `status` uses `/health` as the source of truth. `stop` only terminates the process when the PID/token in the pidfile matches `process_pid/process_token_hash` returned by `/health`, avoiding stale pidfiles and PID-reuse hazards. This process model targets POSIX environments such as macOS and Linux.
 
 When Feishu credentials are missing, advanced sidecar starts use a no-op client that accepts events and maintains session state without sending real Feishu cards. When credentials are configured, the runner uses the real Feishu HTTP client. The ordinary-user `setup` command requires credentials before installing the Hermes hook.
 

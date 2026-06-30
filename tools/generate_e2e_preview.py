@@ -136,12 +136,17 @@ def render_preview_svg(cards: dict[str, dict[str, Any]]) -> str:
 
 def _card_parts(card: dict[str, Any]) -> dict[str, str]:
     elements = card["body"]["elements"]
+    main = _element_content(elements, "main_content")
+    tool_summary = _element_content(elements, "tool_summary")
+    footer = _element_content(elements, "footer")
+    timeline = _panel_content(elements, "auxiliary_timeline")
     return {
         "title": card["header"]["title"]["content"],
         "subtitle": card["header"]["subtitle"]["content"],
-        "main": elements[0]["content"],
-        "tools": elements[2]["content"],
-        "footer": elements[3]["content"],
+        "main": main,
+        "timeline": timeline,
+        "tools": tool_summary,
+        "footer": footer,
     }
 
 
@@ -161,13 +166,35 @@ def _render_card_panel(
     ]
     cursor = y + 116
     lines.extend(_text_block(x + 28, cursor, parts["main"], 22, 14, "#111827"))
-    cursor += 184
+    cursor += 162
+    lines.append(f'<line x1="{x + 28}" y1="{cursor}" x2="{x + 456}" y2="{cursor}" stroke="#e5e7eb"/>')
+    cursor += 28
+    lines.extend(_text_block(x + 28, cursor, parts["timeline"], 20, 13, "#374151"))
+    cursor += 118
     lines.append(f'<line x1="{x + 28}" y1="{cursor}" x2="{x + 456}" y2="{cursor}" stroke="#e5e7eb"/>')
     cursor += 38
     lines.extend(_text_block(x + 28, cursor, parts["tools"], 22, 14, "#374151"))
     cursor = y + 520
     lines.append(f'<text x="{x + 28}" y="{cursor}" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">{escape(parts["footer"])}</text>')
     return "\n".join(lines)
+
+
+def _element_content(elements: list[dict[str, Any]], element_id: str) -> str:
+    for element in elements:
+        if element.get("element_id") == element_id:
+            return str(element.get("content", ""))
+    return ""
+
+
+def _panel_content(elements: list[dict[str, Any]], element_id: str) -> str:
+    for element in elements:
+        if element.get("element_id") != element_id:
+            continue
+        panel_elements = element.get("elements") or []
+        if not panel_elements:
+            return ""
+        return str(panel_elements[0].get("content", ""))
+    return ""
 
 
 def _text_block(

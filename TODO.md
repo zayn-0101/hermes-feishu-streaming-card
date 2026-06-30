@@ -2,35 +2,33 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## 下一版计划：V3.6.0 / V3.7.0
+## 下一版计划：V3.8.0 / V3.8.1 / V3.8.2
 
-详细路线见 [docs/roadmap-v3.6.0.md](docs/roadmap-v3.6.0.md)。
+详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
-### V3.5.2：安装补丁版
+### V3.8.0：卡片体验与流式稳定性（已完成）
 
-- [x] 更新 CHANGELOG、README 和 Release notes，说明一行安装、Release 包、checksum。
-- [x] 发布 tag 后验证 `.github/workflows/release-assets.yml` 能上传 macOS/Linux/Windows 安装包。
-- [x] 确认 `install.sh` 在 macOS 临时 Hermes fixture 上完整跑通。
-- [x] 补 Windows PowerShell 安装脚本的语法验证路径。
+- [x] 主回答与 reasoning / tool timeline 分离，默认突出最终答案。
+- [x] burst update coalescing 收敛高频 PATCH，减少快速 thinking / tool burst 下的重复更新。
+- [x] terminal completion 前 drain pending updates，避免终态卡片被陈旧中间态覆盖。
+- [x] 长 Markdown 表格和 fenced code block 跨卡片分块时保持结构安全。
+- [x] 可观测性补充 update queue length、coalesce count、terminal drain latency、Feishu API latency。
 
-### V3.6.0：安装与运维产品化
+### V3.8.1：卡片内命令与诊断（待办）
 
-- [x] **P0 安装自救**：新增 `doctor --explain` / `doctor --json`，解释 hook strategy、manifest、backup 和 anchor 状态。
-- [x] **P0 安装修复**：新增 `setup --repair` 和 `repair` 子命令，处理 manifest/backup 缺失等可验证修复场景，并拒绝用户改动。
-- [x] **P0 媒体/文件消息处理**：识别结构化 attachments/files/media_files，在卡片中保留摘要，同时不抑制 Hermes 原生媒体/文件投递路径。
-- [x] **P1 多 Profile CLI**：`smoke-feishu-card`、`bots test` 支持 `--profile-id` 和 profile 维度排障。
-- [x] **P1 health routing 分组**：`/health.routing` 在多 Profile 下按 profile 分组展示 bot、chat binding、last_route、last_route_error 和 events。
-- [x] **P1 E2E 矩阵**：覆盖 Hermes `v2026.4.23`、`v2026.5.7`、`v2026.5.16+`、`v2026.5.29`、`0.13.x`、`0.14.x`。
-- [x] **P1 发布矩阵**：CI 验证 Release 打包 dry run、macOS/Linux install dry run、Windows PowerShell parser。
-- [x] **P2 Docker 部署 / issue #70**：V3.7.0 提供 `install-docker.sh`、`docker-compose.example.yml`、容器路径/venv Python/权限诊断和发布包文档。
-
-### V3.7.0：体验增强候选
-
-- [ ] 卡片思考过程折叠/展开，默认突出最终答案和关键工具状态。
-- [ ] 工具调用详情支持查看参数摘要、耗时、失败原因。
 - [ ] 卡片内提供“继续”“重试”“取消”等操作入口。
+- [ ] 工具调用详情支持查看参数摘要、耗时、失败原因。
+- [ ] 卡片内运维命令支持安全诊断与可控执行。
+- [ ] 安全清理：`/messages/{message_id}/summary` 返回中的 `chat_id` / Feishu `message_id` 改为 hash 或移除。
 - [ ] 群聊规则支持 @机器人触发、白名单、chat binding 自动提示。
-- [ ] 可观测性补充 update queue length、coalesce count、terminal drain latency、Feishu API latency。
+
+### V3.8.2：维护体系与扩展面（待办）
+
+- [ ] 补齐 E2E / fixture 覆盖，验证 V3.8.x 卡片体验和终态 drain 主链路。
+- [ ] 完成 agent guide、维护手册和开放扩展面的文档整理。
+- [ ] 评估卡片 timeline/metrics 的长期兼容边界，并补发布回归清单。
+- [ ] 完全兜住极端 Markdown table 边界：当结构化拆分失败时输出安全折叠提示，避免回退 plain split。
+- [ ] 清理 terminal 后的 closed `FlushController`，并评估更有诊断价值的 queue depth / coalesced backlog 指标。
 
 ## V3.3.0 (已完成)
 

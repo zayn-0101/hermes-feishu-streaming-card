@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import secrets
 from typing import Any, Dict
 
+from .card_timeline import CardTimeline
 from .events import SidecarEvent
 from .text import StreamingTextNormalizer, normalize_stream_text
 
@@ -57,6 +58,7 @@ class CardSession:
     delivery_kind: str = "chat"
     reply_to_message_id: str = ""
     _tool_call_count: int = field(default=0)
+    timeline: CardTimeline = field(default_factory=CardTimeline)
     thinking_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
     answer_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
 
@@ -90,17 +92,25 @@ class CardSession:
             mode = str(event.data.get("mode") or "delta").strip().lower()
             raw_text = str(event.data.get("text", ""))
             if mode == "replace":
-                self.thinking_text = normalize_stream_text(raw_text)
+                normalized = normalize_stream_text(raw_text)
+                self.thinking_text = normalized
+                self.timeline.record_reasoning(normalized, replace=True)
             elif mode == "append_block":
                 text = normalize_stream_text(raw_text).strip()
                 if text:
                     if self.thinking_text:
                         self.thinking_text = self.thinking_text.rstrip() + "\n\n" + text
+                        self.timeline.record_reasoning("\n\n" + text)
                     else:
                         self.thinking_text = text
+                        self.timeline.record_reasoning(text)
             else:
-                self.thinking_text += self.thinking_normalizer.feed(raw_text)
+                delta = self.thinking_normalizer.feed(raw_text)
+                if delta:
+                    self.thinking_text += delta
+                    self.timeline.record_reasoning(delta)
         elif event.event == "answer.delta":
+            self.timeline.record_answer_started()
             self.answer_text += self.answer_normalizer.feed(str(event.data.get("text", "")))
         elif event.event == "tool.updated":
             tool_id = event.data.get("tool_id")
@@ -109,12 +119,16 @@ class CardSession:
             name = event.data.get("name")
             status = event.data.get("status")
             detail = event.data.get("detail")
+            resolved_name = name if isinstance(name, str) else tool_id
+            resolved_status = status if isinstance(status, str) else "running"
+            resolved_detail = detail if isinstance(detail, str) else ""
             self.tools[tool_id] = ToolState(
                 tool_id=tool_id,
-                name=name if isinstance(name, str) else tool_id,
-                status=status if isinstance(status, str) else "running",
-                detail=detail if isinstance(detail, str) else "",
+                name=resolved_name,
+                status=resolved_status,
+                detail=resolved_detail,
             )
+            self.timeline.record_tool(tool_id, resolved_name, resolved_status, resolved_detail)
             self._tool_call_count += 1
         elif event.event == "message.started":
             delivery_kind = event.data.get("delivery_kind")
@@ -130,6 +144,7 @@ class CardSession:
         elif event.event == "interaction.failed":
             self._fail_interaction(event.data)
         elif event.event == "message.completed":
+            self.timeline.complete()
             self.status = "completed"
             completed_answer = normalize_stream_text(str(event.data.get("answer") or ""))
             if completed_answer.strip():
@@ -158,6 +173,7 @@ class CardSession:
                     if isinstance(attachment, dict) and isinstance(attachment.get("name"), str)
                 ]
         elif event.event == "message.failed":
+            self.timeline.complete()
             self.status = "failed"
             error = event.data.get("error")
             self.answer_text = error if isinstance(error, str) else "消息处理失败"

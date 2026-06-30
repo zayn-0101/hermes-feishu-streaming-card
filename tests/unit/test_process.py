@@ -5,6 +5,14 @@ import subprocess
 from hermes_feishu_card import process
 
 
+def test_process_token_hash_is_stable_and_empty_safe():
+    assert process.process_token_hash("") == ""
+    assert process.process_token_hash(None) == ""
+    assert process.process_token_hash("sidecar-token")
+    assert process.process_token_hash("sidecar-token") == process.process_token_hash("sidecar-token")
+    assert process.process_token_hash("sidecar-token") != process.process_token_hash("other-token")
+
+
 def test_pid_is_running_uses_windows_process_probe(monkeypatch):
     calls: list[int] = []
 

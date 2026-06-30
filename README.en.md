@@ -350,7 +350,7 @@ Ensure Hermes `config.yaml` has `streaming.enabled: true` and `streaming.transpo
 | `restore --hermes-dir ... --yes` | Restore original Hermes files |
 | `uninstall --hermes-dir ... --yes` | Uninstall and restore |
 | `start --config ...` | Start sidecar |
-| `stop --config ...` | Stop sidecar (validates PID/token against `/health` `process_pid/process_token`) |
+| `stop --config ...` | Stop sidecar (validates PID/token against `/health` `process_pid/process_token_hash`) |
 | `status --config ...` | Sidecar status, routing, profile diagnostics, and metrics |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | Send a real Feishu smoke card for a specific profile |
 | `bots list|show|add|remove --config ...` | Manage bot registry |

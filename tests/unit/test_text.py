@@ -1,3 +1,4 @@
+from hermes_feishu_card.render import MAIN_CONTENT_CHUNK_CHARS
 from hermes_feishu_card.text import (
     StreamingTextNormalizer,
     normalize_stream_text,
@@ -138,3 +139,42 @@ def test_split_markdown_blocks_splits_oversized_plain_text():
     assert len(chunks) > 1
     assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
     assert all(len(chunk) <= 1000 for chunk in chunks)
+
+
+def test_split_markdown_blocks_prefers_list_item_boundaries():
+    text = "\n".join(f"1. item {index} {'甲' * 40}" for index in range(80))
+
+    chunks = split_markdown_blocks(text, 120)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 120 for chunk in chunks)
+    assert all(chunk.startswith("1. ") for chunk in chunks[1:])
+    assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+
+def test_split_markdown_blocks_avoids_inline_code_split_when_possible():
+    text = "前言\n\n" + " ".join("`alpha beta gamma delta epsilon`" for _ in range(80))
+
+    chunks = split_markdown_blocks(text, 120)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 120 for chunk in chunks)
+    for chunk in chunks:
+        assert chunk.count("`") % 2 == 0
+
+
+def test_split_markdown_blocks_handles_oversized_table_row_without_plain_fragments():
+    oversized_value = "超长字段" * 700
+    table = f"| 字段 | 内容 |\n| --- | --- |\n| key | {oversized_value} |\n"
+
+    chunks = split_markdown_blocks(table, MAIN_CONTENT_CHUNK_CHARS)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= MAIN_CONTENT_CHUNK_CHARS for chunk in chunks)
+    for chunk in chunks:
+        if "| --- | --- |" in chunk:
+            lines = [line for line in chunk.splitlines() if line.strip()]
+            assert len(lines) >= 3
+            assert lines[0].startswith("|")
+            assert lines[1].startswith("|")
+            assert all(line.startswith("|") and line.endswith("|") for line in lines[2:])
