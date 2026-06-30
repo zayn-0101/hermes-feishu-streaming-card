@@ -25,6 +25,7 @@ def test_readme_documents_sidecar_only_and_supported_hermes_version():
     assert "img.shields.io/badge/Feishu%20%2F%20Lark-Streaming%20Cards" in readme
     assert "img.shields.io/badge/Runtime-Sidecar--only" in readme
     assert "docs/assets/readme-cover.png" in readme
+    assert "docs/assets/feishu-v38-card-timeline.png" in readme
     assert "项目亮点" in readme
     assert "解决的真实痛点" in readme
     assert "Hermes Agent Gateway 的飞书/Lark 回复变成一张持续更新的交互式卡片" in readme
@@ -39,6 +40,7 @@ def test_readme_documents_sidecar_only_and_supported_hermes_version():
     assert "Git tag `v2026.4.23+`" in readme
     assert "docs/assets/feishu-weather-card.png" in readme
     assert (ROOT / "docs/assets/readme-cover.png").exists()
+    assert (ROOT / "docs/assets/feishu-v38-card-timeline.png").exists()
     assert (ROOT / "docs/assets/feishu-weather-card.png").exists()
     assert "V3.2" in readme
     assert "多 bot" in readme
@@ -127,7 +129,8 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "install-docker.sh" in readme
     assert "docker-compose.example.yml" in readme
     assert "Docker" in install_doc
-    assert "v3.7.0" in install_doc
+    assert "v3.8.0" in install_doc
+    assert "docs/release-notes-v3.8.0.md" in readme
     assert "docs/release-notes-v3.6.6.md" in readme
     assert "docs/release-notes-v3.6.5.md" in readme
     assert "docs/release-notes-v3.6.4.md" in readme
@@ -146,6 +149,7 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "bash install.sh" in install_doc
     assert "install.ps1" in install_doc
     assert "HFC_VERSION" in install_doc
+    assert "v3.8.0" in install_doc
     assert "v3.6.6" in install_doc
 
     assert (ROOT / "install.sh").exists()
@@ -162,6 +166,7 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert (ROOT / "docs/roadmap-v3.6.0.md").exists()
     assert (ROOT / "install-docker.sh").exists()
     assert (ROOT / "docker-compose.example.yml").exists()
+    assert (ROOT / "docs/release-notes-v3.8.0.md").exists()
     assert (ROOT / "docs/release-notes-v3.7.0.md").exists()
     assert (ROOT / ".github/workflows/release-assets.yml").exists()
     assert "gh release upload" in workflow
@@ -176,8 +181,13 @@ def test_v38_release_notes_are_linked():
     release_notes = Path("docs/release-notes-v3.8.0.md")
 
     assert release_notes.exists()
+    assert "## V3.8.0 — 2026-07-01" in changelog
     assert "V3.8.0" in changelog
     assert "[docs/release-notes-v3.8.0.md](docs/release-notes-v3.8.0.md)" in changelog
+    release_text = release_notes.read_text(encoding="utf-8")
+    assert "feishu-v38-card-timeline.png" in release_text
+    assert "HFC_VERSION=${HFC_VERSION:-v3.8.0}" in release_text
+    assert "hermes-feishu-card-v3.8.0-macos.tar.gz" in release_text
 
 
 def test_todo_points_to_v38_public_plan_docs():
@@ -209,6 +219,7 @@ def test_english_readme_and_docs_are_linked():
     assert "Pain Points Solved" in english_readme
     assert "img.shields.io/github/stars/baileyh8/hermes-feishu-streaming-card" in english_readme
     assert "docs/assets/readme-cover.png" in english_readme
+    assert "docs/assets/feishu-v38-card-timeline.png" in english_readme
     assert "setup --hermes-dir" in english_readme
     assert "Hermes Gateway Streaming And Thinking" in english_readme
     assert "streaming.enabled" in english_readme

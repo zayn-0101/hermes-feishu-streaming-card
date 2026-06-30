@@ -17,6 +17,11 @@ From V3.6.6, if `--hermes-dir` points at the wrong directory and
 `gateway/run.py` is missing, `doctor --explain` and `install` read `hermes -V`
 and suggest the `Project:` path reported by the Hermes CLI.
 
+From V3.8.0, card rendering separates the primary answer from the auxiliary
+reasoning/tool timeline, removes duplicate footer tool summaries, and runs the
+Hermes runtime import check from the Hermes project root. Re-run `setup` or
+`install` after upgrading so the refreshed hook and runtime package match.
+
 ## macOS / Linux
 
 ```bash
@@ -33,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.6.6` or `main`. |
+| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.0`, `v3.6.6`, or `main`. |
 | `HFC_REPO` | `baileyh8/hermes-feishu-streaming-card` | GitHub repository to install from. |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent root directory. |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | Sidecar config path. |
@@ -53,7 +58,7 @@ script selects Hermes venv Python and does not fall back to system Python unless
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.7.0
+export HFC_VERSION=v3.8.0
 bash install-docker.sh
 ```
 

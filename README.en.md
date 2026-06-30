@@ -18,6 +18,10 @@ Hermes Feishu Streaming Card turns Hermes Agent Gateway replies in Feishu/Lark i
 
 It targets the real pain points of using Hermes inside Feishu: missing or out-of-order streaming text, long tables/code blocks rendered as raw Markdown, invisible tool progress, manual approval replies, sidecar troubleshooting, multi-bot/profile routing, and uncertain hook compatibility after Hermes upgrades.
 
+![V3.8.0 Feishu card with primary answer and reasoning/tool timeline](docs/assets/feishu-v38-card-timeline.png)
+
+Since V3.8.0, the final answer stays in the primary content area while reasoning and tool progress move into a collapsible auxiliary timeline. The footer no longer repeats the same tool-call summary when that timeline is visible.
+
 ![Real Feishu streaming card screenshot](docs/assets/feishu-weather-card.png)
 
 ## Project Highlights
@@ -39,6 +43,18 @@ It targets the real pain points of using Hermes inside Feishu: missing or out-of
 | Long tables/code blocks render as raw Markdown | Markdown-aware table/code splitting with repeated headers and complete fences |
 | Multi-bot, group, and profile routing is hard to inspect | `bindings.chats`, profile-aware sessions, and `/health.routing` diagnostics |
 | Hook or sidecar failures are hard to debug | `doctor`, runtime import checks, `/health` metrics, fail-closed installer, restore/uninstall |
+
+## V3.8.0 Card UX and Streaming Stability Upgrade
+
+V3.8.0 focuses on the real Feishu reading experience. The final answer remains in the main content area, reasoning / tool timeline data moves into the auxiliary area, and terminal rendering drains pending updates before writing the final card.
+
+- **Clearer primary answer**: long reasoning and tool lists no longer push the final response out of the main reading area.
+- **Less duplication**: when the auxiliary timeline is visible, the footer does not render another "N tool calls" summary.
+- **More stable terminal state**: pending card updates are drained before the terminal card render so stale intermediate snapshots do not win the last PATCH.
+- **More accurate diagnostics**: `doctor` runs the Hermes runtime import check from the Hermes project root, avoiding false positives from the current repository path.
+- **Docker examples updated**: `docker-compose.example.yml` now pins the example install to `v3.8.0` while still using `install-docker.sh` inside existing Hermes containers.
+
+Full release notes: [docs/release-notes-v3.8.0.md](docs/release-notes-v3.8.0.md).
 
 ## V3.6.6 Interrupt Dedupe and Install Diagnostics Patch
 
@@ -159,7 +175,7 @@ Common environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Version to install, such as `v3.6.6` or `main` |
+| `HFC_VERSION` | `latest` | Version to install, such as `v3.8.0`, `v3.6.6`, or `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway directory |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar config path |
 | `HFC_ENV_FILE` | `.env` next to `HFC_CONFIG` | Feishu credential file |
@@ -178,7 +194,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.7.0
+export HFC_VERSION=v3.8.0
 bash install-docker.sh
 ```
 
@@ -214,7 +230,7 @@ python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --ye
 
 ## Upgrading
 
-Upgrading from V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x to V3.6.6 is backward-compatible. **Single-profile configs need no changes.** If Hermes uses its own venv, rerun `setup` or `install` after upgrading so the package also lands in the Hermes runtime Python and the hook is refreshed.
+Upgrading from V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x to V3.8.0 is backward-compatible. **Single-profile configs need no changes.** If Hermes uses its own venv, rerun `setup` or `install` after upgrading so the package also lands in the Hermes runtime Python and the hook is refreshed. V3.8.0 also changes card rendering and runtime import diagnostics, so run `doctor --explain` once after upgrading.
 
 ```bash
 # 1. Stop sidecar
@@ -222,7 +238,7 @@ python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yam
 
 # 2. Update code
 cd /path/to/hermes-feishu-streaming-card
-git checkout v3.6.6 && pip install -e ".[test]" --upgrade
+git checkout v3.8.0 && pip install -e ".[test]" --upgrade
 
 # 3. Diagnose Hermes hook strategy and anchors
 python3 -m hermes_feishu_card.cli doctor --config ~/.hermes_feishu_card/config.yaml --hermes-dir ~/.hermes/hermes-agent
@@ -391,6 +407,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v3.8.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.0) | 2026-07 | Separates the primary answer from the auxiliary timeline, removes duplicate tool summaries, drains terminal updates, fixes runtime import diagnostics, and updates Docker examples |
 | [v3.7.0](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.7.0) | 2026-06 | Adds issue #70 Docker container install/update support with `/opt/hermes` and `/opt/data` defaults |
 | [v3.6.6](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.6.6) | 2026-06 | Fixes issues #67/#68 by preventing interrupt/slow-PATCH card + native double replies and by suggesting the real Hermes `Project:` path from `hermes -V` |
 | [v3.6.5](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.6.5) | 2026-06 | Fixes issues #64/#65 with Feishu thread `message_id` normalization and DeepSeek completed-only final-answer backfill |
