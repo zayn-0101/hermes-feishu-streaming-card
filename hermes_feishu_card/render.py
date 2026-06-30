@@ -27,14 +27,32 @@ def render_card(
     footer_fields: list[str] | tuple[str, ...] | None = None,
     title: str = DEFAULT_TITLE,
     interaction_mode: str = "callback",
+    show_reasoning: bool = True,
+    timeline_expanded: bool = False,
+    max_timeline_items: int = 12,
+    max_reasoning_chars: int = 1200,
+    max_tool_result_chars: int = 600,
 ) -> Dict[str, Any]:
     status = _render_status(session)
-    main_text = normalize_stream_text(session.visible_main_text) or ("正在思考..." if session.status == "thinking" else "")
+    primary_text = normalize_stream_text(session.answer_text)
+    if not primary_text:
+        fallback_text = normalize_stream_text(session.visible_main_text)
+        primary_text = fallback_text or ("正在思考..." if session.status == "thinking" else "")
     tool_summary = _render_tool_summary(session)
     attachment_summary = _render_attachment_summary(session)
     footer = _render_footer(session, footer_fields)
     header_title = title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE
-    elements = _render_main_content_elements(main_text)
+    elements = _render_main_content_elements(primary_text)
+    if show_reasoning:
+        elements.extend(
+            _render_timeline_elements(
+                session,
+                expanded=timeline_expanded,
+                max_items=max_timeline_items,
+                max_reasoning_chars=max_reasoning_chars,
+                max_tool_result_chars=max_tool_result_chars,
+            )
+        )
     elements.extend(_render_interaction_elements(session, interaction_mode=interaction_mode))
     if attachment_summary:
         elements.append(
@@ -205,10 +223,70 @@ def _button_type(style: str) -> str:
 def _render_tool_summary(session: CardSession) -> str:
     if not session.tools:
         return "工具调用 0 次"
+    if getattr(session, "timeline", None) and session.timeline.snapshot():
+        return f"工具调用 {session.tool_count} 次"
     lines = [f"工具调用 {session.tool_count} 次"]
     for tool in session.tools.values():
         lines.append(f"- `{tool.name}`: {tool.status}")
     return "\n".join(lines)
+
+
+def _render_timeline_elements(
+    session: CardSession,
+    *,
+    expanded: bool,
+    max_items: int,
+    max_reasoning_chars: int,
+    max_tool_result_chars: int,
+) -> list[Dict[str, Any]]:
+    if not getattr(session, "timeline", None):
+        return []
+    entries = session.timeline.snapshot(max_items=max_items)
+    folded = session.timeline.folded_count(max_items=max_items)
+    if not entries and not folded:
+        return []
+    lines: list[str] = []
+    if folded:
+        lines.append(f"> 已折叠 {folded} 条早期思考/工具记录")
+        lines.append("")
+    for item in entries:
+        if item.kind == "reasoning":
+            content = _limit_text(item.content, max_reasoning_chars)
+            lines.append(f"**{item.title}** · {item.status}")
+            if content:
+                lines.append(content)
+        elif item.kind == "tool":
+            detail = _limit_text(item.detail, max_tool_result_chars)
+            lines.append(f"- `{item.title}`: {item.status}")
+            if detail:
+                lines.append(f"  - {detail}")
+        lines.append("")
+    panel_content = "\n".join(lines).strip()
+    if not panel_content:
+        return []
+    return [
+        {
+            "tag": "collapsible_panel",
+            "element_id": "auxiliary_timeline",
+            "expanded": expanded,
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"思考与工具 · {session.tool_count} 次工具调用",
+                },
+                "vertical_align": "center",
+            },
+            "border": {"color": "grey", "corner_radius": "5px"},
+            "padding": "8px 8px 8px 8px",
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "element_id": "auxiliary_timeline_content",
+                    "content": panel_content,
+                }
+            ],
+        }
+    ]
 
 
 def _render_attachment_summary(session: CardSession) -> str:
@@ -295,3 +373,9 @@ def _format_scaled(value: int, factor: int, suffix: str) -> str:
     if scaled >= 100 or scaled.is_integer():
         return f"{int(round(scaled))}{suffix}"
     return f"{scaled:.1f}".rstrip("0").rstrip(".") + suffix
+
+
+def _limit_text(text: str, limit: int) -> str:
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[: max(0, limit - 18)].rstrip() + "\n> 内容已折叠"

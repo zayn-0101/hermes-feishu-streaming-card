@@ -406,3 +406,113 @@ def test_render_card_truncates_tables_over_limit():
         if el.get("tag") == "markdown"
     )
     assert "超出部分已省略" in body_text
+
+
+def test_render_answer_stays_primary_and_reasoning_moves_to_timeline():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="thinking.delta",
+            conversation_id="chat-1",
+            message_id="msg-1",
+            chat_id="oc_abc",
+            platform="feishu",
+            sequence=1,
+            created_at=0.0,
+            data={"text": "先分析约束。"},
+        )
+    )
+    session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="answer.delta",
+            conversation_id="chat-1",
+            message_id="msg-1",
+            chat_id="oc_abc",
+            platform="feishu",
+            sequence=2,
+            created_at=0.0,
+            data={"text": "这是主回答。"},
+        )
+    )
+
+    card = render_card(session)
+    main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
+    timeline = next(item for item in card["body"]["elements"] if item.get("element_id") == "auxiliary_timeline")
+
+    assert main["content"] == "这是主回答。"
+    assert timeline["tag"] == "collapsible_panel"
+    assert timeline["expanded"] is False
+    assert "先分析约束。" in str(timeline)
+
+
+def test_render_timeline_folds_old_entries_before_answer():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    for index in range(8):
+        session.apply(
+            SidecarEvent(
+                schema_version="1",
+                event="thinking.delta",
+                conversation_id="chat-1",
+                message_id="msg-1",
+                chat_id="oc_abc",
+                platform="feishu",
+                sequence=index * 2 + 1,
+                created_at=0.0,
+                data={"text": f"思考{index}"},
+            )
+        )
+        session.apply(
+            SidecarEvent(
+                schema_version="1",
+                event="tool.updated",
+                conversation_id="chat-1",
+                message_id="msg-1",
+                chat_id="oc_abc",
+                platform="feishu",
+                sequence=index * 2 + 2,
+                created_at=0.0,
+                data={"tool_id": f"tool-{index}", "name": f"tool_{index}", "status": "completed"},
+            )
+        )
+    session.answer_text = "最终回答不能被折叠"
+
+    card = render_card(session, max_timeline_items=4)
+    content = str(card)
+
+    assert "最终回答不能被折叠" in content
+    assert "已折叠 12 条早期思考/工具记录" in content
+    assert "tool_7" in content
+    assert "tool_0" not in content
+
+
+def test_render_can_hide_reasoning_timeline_when_configured():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="thinking.delta",
+            conversation_id="chat-1",
+            message_id="msg-1",
+            chat_id="oc_abc",
+            platform="feishu",
+            sequence=1,
+            created_at=0.0,
+            data={"text": "隐藏的思考"},
+        )
+    )
+    session.answer_text = "主回答"
+
+    card = render_card(session, show_reasoning=False)
+
+    content = str(card)
+    assert "主回答" in content
+    assert "隐藏的思考" not in content
+    assert "auxiliary_timeline" not in content
