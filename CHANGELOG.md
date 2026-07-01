@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V3.8.3 — 2026-07-01
+
+See also: [docs/release-notes-v3.8.3.md](docs/release-notes-v3.8.3.md)
+
+### Added
+- Added standalone Feishu command-card handling for Hermes slash confirmations such as `/new`, `/reset`, `/undo`, and high-cost `/model <model>` confirmation prompts.
+- Added a Feishu-only `send_model_picker(...)` adapter method when Hermes asks the Feishu adapter to render `/model` choices and the native adapter has no picker implementation.
+- Added async command-card polling and terminal command-card completion updates without blocking the Hermes Gateway event loop.
+
+### Changed
+- Slash-command cards are intentionally separate from active Agent streaming cards. Approval, clarify, and Agent-turn options remain attached to the active card; independent slash commands render their own command surfaces.
+- `/update` remains Hermes's background upgrade command and does not render an interactive command card.
+
+### Fixed
+- If command-card posting, polling, or completion updates fail, Hermes falls back to its native text path instead of swallowing command results.
+- Local/private text fallback no longer creates a residual command card before handing slash confirmation back to Hermes native text prompts.
+- Gateway patching now installs Feishu command-card adapter methods before slash command dispatch while preserving idempotent patch/remove behavior.
+
+### Tests
+- Added unit/integration coverage for async slash-confirm card requests, model picker callbacks, command-card completion events, text-mode native fallback non-application, patch insertion/removal, and fallback-preserving slash confirm flow.
+
 ## V3.8.2 — 2026-07-01
 
 See also: [docs/release-notes-v3.8.2.md](docs/release-notes-v3.8.2.md)

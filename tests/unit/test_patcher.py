@@ -106,6 +106,75 @@ def test_apply_patch_013_plus_inserts_cron_delivery_hook():
     assert patcher.remove_patch(patched) == content
 
 
+def test_apply_patch_inserts_slash_confirm_card_hook():
+    content = (
+        "class GatewayRunner:\n"
+        "    async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "        response = 'ok'\n"
+        "        _response_time = 1\n"
+        "        agent_result = {}\n"
+        "        return response\n"
+        "\n"
+        "    async def _request_slash_confirm(self, *, event, command, title, message, handler):\n"
+        "        from tools import slash_confirm as _slash_confirm_mod\n"
+        "        source = event.source\n"
+        "        session_key = self._session_key_for_source(source)\n"
+        "        confirm_id = 'confirm-1'\n"
+        "        _slash_confirm_mod.register(session_key, confirm_id, command, handler)\n"
+        "        adapter = self.adapters.get(source.platform)\n"
+        "        metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))\n"
+        "        return message\n"
+    )
+
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    assert "# HERMES_FEISHU_CARD_SLASH_CONFIRM_PATCH_BEGIN" in patched
+    assert "request_slash_confirm_from_hermes_locals_async" in patched
+    assert "complete_command_card_from_hermes_locals_async" in patched
+    assert "await _hfc_request_slash_confirm(" in patched
+    assert '"message_id": _hfc_slash_reply_to' in patched
+    assert '_hfc_slash_interaction_id = "slash_"' in patched
+    assert "interaction_id=_hfc_slash_interaction_id" in patched
+    assert "_hfc_slash_result = await handler(_hfc_slash_choice)" in patched
+    assert "if await _hfc_complete_command_card(" in patched
+    assert "return None" in patched
+    assert "return _hfc_slash_result" in patched
+    assert patched.index("_slash_confirm_mod.register") < patched.index(
+        "# HERMES_FEISHU_CARD_SLASH_CONFIRM_PATCH_BEGIN"
+    )
+    assert patcher.apply_patch(patched, strategy="gateway_run_013_plus") == patched
+    assert patcher.remove_patch(patched) == content
+
+
+def test_apply_patch_installs_feishu_command_card_adapter_methods():
+    content = (
+        "class GatewayRunner:\n"
+        "    async def _handle_message(self, event):\n"
+        "        source = event.source\n"
+        "        command = event.get_command()\n"
+        "        if command == 'model':\n"
+        "            return await self._handle_model_command(event)\n"
+        "        return None\n"
+        "\n"
+        "    async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "        response = 'ok'\n"
+        "        _response_time = 1\n"
+        "        agent_result = {}\n"
+        "        return response\n"
+    )
+
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    assert "# HERMES_FEISHU_CARD_COMMAND_CARD_PATCH_BEGIN" in patched
+    assert "install_feishu_command_card_adapter_methods" in patched
+    assert "_hfc_install_command_cards(self)" in patched
+    assert patched.index("source = event.source") < patched.index(
+        "# HERMES_FEISHU_CARD_COMMAND_CARD_PATCH_BEGIN"
+    )
+    assert patcher.apply_patch(patched, strategy="gateway_run_013_plus") == patched
+    assert patcher.remove_patch(patched) == content
+
+
 def test_cron_marker_block_in_other_function_is_not_owned():
     content = (
         "def other():\n"

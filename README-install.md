@@ -32,6 +32,11 @@ next pre-tool answer or terminal event arrives, then move into the auxiliary
 timeline. Completed cards strip already archived intermediate prefaces, and the
 timeline renders reasoning and tool details with separate compact hierarchy.
 
+From V3.8.3, independent slash-command prompts such as `/new`, `/reset`,
+`/undo`, and `/model` can render as standalone Feishu command cards. `/update`
+remains Hermes' background upgrade command and does not use an interactive
+command card.
+
 ## macOS / Linux
 
 ```bash
@@ -48,7 +53,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.2`, `v3.6.6`, or `main`. |
+| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.3`, `v3.6.6`, or `main`. |
 | `HFC_REPO` | `baileyh8/hermes-feishu-streaming-card` | GitHub repository to install from. |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent root directory. |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | Sidecar config path. |
@@ -68,7 +73,7 @@ script selects Hermes venv Python and does not fall back to system Python unless
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.2
+export HFC_VERSION=v3.8.3
 bash install-docker.sh
 ```
 

@@ -2,7 +2,7 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2
+## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
@@ -29,6 +29,15 @@
 - [x] raw `thinking.delta` 继续隐藏，不混入正文区或用户可见 timeline。
 - [x] 折叠区中思考和工具使用不同字号与灰度层级，工具详情更紧凑。
 - [x] README 增加 V3.8.2 折叠态和展开态真实截图。
+
+### V3.8.3：独立命令卡片（进行中）
+
+- [x] 明确职责边界：Agent 原卡片只承接授权、clarify / 对话选项等当前任务内交互；slash command 使用独立命令卡片。
+- [x] `/new`、`/reset`、`/undo` 以及 `/model <model>` 高成本模型确认走独立三按钮卡片，点击后执行 Hermes 原 handler，并把结果更新回同一张命令卡片。
+- [x] `/model` 无参数选择器走独立模型选择卡片；用户选择后调用 Hermes 原 `on_model_selected` callback，并在同一卡片展示切换结果。
+- [x] sidecar 不可用、卡片未发送或配置为文本模式时保留 Hermes 原生 text fallback。
+- [x] `/update` 不做交互卡片；后续单独评估后台升级完成/失败通知是否可靠送达飞书。
+- [x] 真实 Hermes + Feishu 本地 smoke：当前本机为私有 text fallback 模式，已确认 `/new`、`/model` 不额外生成 sidecar 命令卡、不双发；独立命令卡点击闭环由 mock sidecar / pytest 覆盖，公网 callback 模式可后续单独做实机按钮验收。
 
 ### V3.8.x 后续维护与扩展面（待办）
 

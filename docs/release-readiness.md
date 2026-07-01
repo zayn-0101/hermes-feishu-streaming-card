@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前包版本为 `3.8.2`。这一版延续 sidecar-only 主线，在 V3.8.0 卡片体验升级和 V3.8.1 高频 delta 合并基础上，修复 pre-tool answer 的归档节奏、完成态正文去重，并优化“思考与工具”折叠区的阅读层级。
+当前包版本为 `3.8.3`。这一版延续 sidecar-only 主线，在 V3.8.0 卡片体验升级、V3.8.1 高频 delta 合并和 V3.8.2 timeline 阅读体验基础上，补齐 `/new`、`/reset`、`/model` 等独立 slash 命令的飞书命令卡片交互，并保持 `/update` 后台升级命令不弹交互卡片。
 
 ## 已具备
 
@@ -26,6 +26,9 @@
 - 飞书内 `/hfc help/status/doctor/monitor` 提供只读诊断卡片，且只展示 hash 后的上下文 id。
 - pre-tool answer 会先显示在正文区，并在下一段 answer 或终态到来时归档进辅助 timeline；终态卡片会剥离已归档的中间说明。
 - 辅助 timeline 中思考条目和工具详情使用不同字号和灰度层级，raw `thinking.delta` 不进入用户可见 timeline。
+- 独立 slash 命令确认支持 Feishu command card：`/new`、`/reset`、`/undo` 和高成本 `/model <model>` 确认会优先渲染为独立命令卡片。
+- `/model` 无参数选择可通过 Feishu-only `send_model_picker(...)` 卡片呈现；选择后回调 Hermes 并更新同一张命令卡片。
+- `/update` 保持 Hermes 后台升级命令语义，不渲染交互命令卡片；sidecar 不可用或卡片完成态更新失败时退回 Hermes 原生文本路径。
 - terminal 事件会快速 ACK Hermes，慢 Feishu PATCH 在后台完成，避免中断或更新堆积后触发重复原生答复。
 - `load_config()` 会读取 config 同目录 `.env`，真实环境变量仍保持最高优先级。
 - `install.sh` 白名单读取 `.env` 中的飞书/sidecar 变量，不会执行带空格路径等无关配置。

@@ -490,6 +490,19 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
     _record_attachment_diagnostics(request.app, event)
     session = sessions.get(_session_key(event))
 
+    if _skip_native_text_fallback_interaction(request.app, event):
+        metrics.events_ignored += 1
+        return web.json_response(
+            {
+                "ok": True,
+                "applied": False,
+                "interaction_mode": _interaction_mode_for_session_key(
+                    request.app,
+                    _session_key(event),
+                ),
+            }
+        ), None
+
     if event.event == "message.started":
         if session is not None:
             metrics.events_ignored += 1
@@ -828,6 +841,19 @@ def _record_attachment_diagnostics(app: web.Application, event: SidecarEvent) ->
 def _delivery_kind(event: SidecarEvent) -> str:
     data = event.data if isinstance(event.data, dict) else {}
     return str(data.get("delivery_kind") or "").strip().lower()
+
+
+def _skip_native_text_fallback_interaction(
+    app: web.Application,
+    event: SidecarEvent,
+) -> bool:
+    if event.event != "interaction.requested":
+        return False
+    data = event.data if isinstance(event.data, dict) else {}
+    fallback_policy = str(data.get("fallback_policy") or "").strip().lower()
+    if fallback_policy != "native_text":
+        return False
+    return _interaction_mode_for_session_key(app, _session_key(event)) == "text"
 
 
 def _should_await_card_update(event: SidecarEvent) -> bool:

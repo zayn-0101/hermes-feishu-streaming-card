@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+from types import SimpleNamespace
 import threading
 import time
 from typing import Any
@@ -574,6 +575,7 @@ def build_interaction_event(
     options: list[dict[str, Any]] | None = None,
     description: str = "",
     timeout_seconds: float | None = None,
+    fallback_policy: str = "",
 ) -> dict[str, Any] | None:
     event_locals = {
         **local_vars,
@@ -583,6 +585,7 @@ def build_interaction_event(
         "_hfc_interaction_description": description,
         "_hfc_interaction_options": options or [],
         "_hfc_interaction_timeout_seconds": timeout_seconds,
+        "_hfc_interaction_fallback_policy": fallback_policy,
     }
     return build_event("interaction.requested", event_locals)
 
@@ -681,12 +684,337 @@ def request_interaction_from_hermes_locals(
         return None
 
 
+async def request_slash_confirm_from_hermes_locals_async(
+    local_vars: dict[str, Any],
+    *,
+    command: str,
+    title: str,
+    message: str,
+    interaction_id: str,
+    timeout_seconds: float | None = None,
+    poll_interval_seconds: float | None = None,
+) -> str | None:
+    try:
+        config = load_runtime_config()
+        if not config.enabled:
+            return None
+        command_text = str(command or "").strip().lstrip("/")
+        prompt = str(title or "").strip() or f"Confirm /{command_text or 'command'}"
+        payload = build_interaction_event(
+            local_vars,
+            kind="slash_confirm",
+            interaction_id=interaction_id,
+            prompt=prompt,
+            description=str(message or "").strip(),
+            options=[
+                {"label": "允许一次", "value": "once", "style": "primary"},
+                {"label": "始终允许", "value": "always"},
+                {"label": "取消", "value": "cancel", "style": "danger"},
+            ],
+            timeout_seconds=timeout_seconds,
+            fallback_policy="native_text",
+        )
+        if payload is None:
+            return None
+        try:
+            post_result = await _post_json_ordered_response(
+                config.event_url,
+                payload,
+                _timeout_for_event(config, payload["event"]),
+            )
+        except Exception:
+            return None
+        if isinstance(post_result, dict) and post_result.get("ok") is False:
+            return None
+        if _uses_text_interaction_fallback(post_result):
+            return None
+        if isinstance(post_result, dict) and post_result.get("applied") is False:
+            for _ in range(2):
+                await asyncio.sleep(0.05)
+                payload = build_interaction_event(
+                    local_vars,
+                    kind="slash_confirm",
+                    interaction_id=interaction_id,
+                    prompt=prompt,
+                    description=str(message or "").strip(),
+                    options=[
+                        {"label": "允许一次", "value": "once", "style": "primary"},
+                        {"label": "始终允许", "value": "always"},
+                        {"label": "取消", "value": "cancel", "style": "danger"},
+                    ],
+                    timeout_seconds=timeout_seconds,
+                    fallback_policy="native_text",
+                )
+                if payload is None:
+                    return None
+                try:
+                    post_result = await _post_json_ordered_response(
+                        config.event_url,
+                        payload,
+                        _timeout_for_event(config, payload["event"]),
+                    )
+                except Exception:
+                    return None
+                if isinstance(post_result, dict) and post_result.get("ok") is False:
+                    return None
+                if _uses_text_interaction_fallback(post_result):
+                    return None
+                if not (
+                    isinstance(post_result, dict)
+                    and post_result.get("applied") is False
+                ):
+                    break
+            else:
+                return None
+        base_url = _summary_base_url(config.event_url)
+        url = f"{base_url}/interactions/{parse.quote(interaction_id, safe='')}"
+        timeout = _interaction_timeout(timeout_seconds)
+        poll_interval = _interaction_poll_interval(poll_interval_seconds)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                result = await _get_json(url, config.timeout_seconds)
+            except Exception:
+                result = None
+            if isinstance(result, dict) and result.get("status") == "completed":
+                choice = str(result.get("choice") or "").strip()
+                if choice in {"once", "always", "cancel"}:
+                    return choice
+                return None
+            if isinstance(result, dict) and result.get("status") == "failed":
+                return None
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(poll_interval)
+    except Exception:
+        return None
+
+
 def _uses_text_interaction_fallback(result: Any) -> bool:
     return (
         isinstance(result, dict)
         and str(result.get("interaction_mode") or "").strip().lower()
         in {"text", "markdown", "reply"}
     )
+
+
+def _is_feishu_adapter_key(key: Any, adapter: Any) -> bool:
+    key_text = str(getattr(key, "value", key) or "").strip().lower()
+    if key_text == "feishu":
+        return True
+    name = str(getattr(adapter, "name", "") or "").strip().lower()
+    if name == "feishu":
+        return True
+    platform = getattr(adapter, "platform", None)
+    return str(getattr(platform, "value", platform) or "").strip().lower() == "feishu"
+
+
+async def _hfc_send_model_picker(
+    self,
+    chat_id: str,
+    providers: Any,
+    current_model: str = "",
+    current_provider: str = "",
+    session_key: str = "",
+    on_model_selected: Any = None,
+    metadata: dict[str, Any] | None = None,
+):
+    try:
+        options = _model_picker_options(providers, current_model=current_model)
+        if not options:
+            return _send_result(False, error="no model options")
+        reply_to = _metadata_reply_to(metadata)
+        message_id = reply_to or "model_" + sha256(
+            f"{chat_id}:{session_key}:{time.time()}".encode("utf-8")
+        ).hexdigest()[:16]
+        interaction_id = "model_" + sha256(
+            f"{chat_id}:{session_key}:{message_id}".encode("utf-8")
+        ).hexdigest()[:16]
+        prompt = "选择模型"
+        description_parts = []
+        if current_model:
+            description_parts.append(f"当前模型：`{current_model}`")
+        if current_provider:
+            description_parts.append(f"当前 provider：`{current_provider}`")
+        choice = await _request_command_card_choice_async(
+            {
+                "chat_id": chat_id,
+                "conversation_id": session_key or chat_id,
+                "message_id": message_id,
+                "reply_to_message_id": reply_to,
+            },
+            kind="model_picker",
+            interaction_id=interaction_id,
+            prompt=prompt,
+            description="\n".join(description_parts),
+            options=options,
+        )
+        if choice is None:
+            return _send_result(False, error="model picker card unavailable")
+        selected = _parse_model_picker_choice(choice)
+        if selected is None:
+            await complete_command_card_from_hermes_locals_async(
+                {
+                    "chat_id": chat_id,
+                    "conversation_id": session_key or chat_id,
+                    "message_id": message_id,
+                },
+                answer="模型选择无效，请重新发送 `/model`。",
+            )
+            return _send_result(True, message_id=message_id)
+        provider_slug, model_id = selected
+        if on_model_selected is None:
+            result_text = f"已选择 {provider_slug}/{model_id}"
+        else:
+            result_text = await on_model_selected(chat_id, model_id, provider_slug)
+        await complete_command_card_from_hermes_locals_async(
+            {
+                "chat_id": chat_id,
+                "conversation_id": session_key or chat_id,
+                "message_id": message_id,
+            },
+            answer=result_text,
+        )
+        return _send_result(True, message_id=message_id)
+    except Exception as exc:
+        return _send_result(False, error=str(exc))
+
+
+async def _request_command_card_choice_async(
+    local_vars: dict[str, Any],
+    *,
+    kind: str,
+    interaction_id: str,
+    prompt: str,
+    options: list[dict[str, Any]],
+    description: str = "",
+    timeout_seconds: float | None = None,
+    poll_interval_seconds: float | None = None,
+) -> str | None:
+    try:
+        config = load_runtime_config()
+        if not config.enabled:
+            return None
+        payload = build_interaction_event(
+            local_vars,
+            kind=kind,
+            interaction_id=interaction_id,
+            prompt=prompt,
+            options=options,
+            description=description,
+            timeout_seconds=timeout_seconds,
+            fallback_policy="native_text",
+        )
+        if payload is None:
+            return None
+        try:
+            post_result = await _post_json_ordered_response(
+                config.event_url,
+                payload,
+                _timeout_for_event(config, payload["event"]),
+            )
+        except Exception:
+            return None
+        if isinstance(post_result, dict) and post_result.get("ok") is False:
+            return None
+        if _uses_text_interaction_fallback(post_result):
+            return None
+        base_url = _summary_base_url(config.event_url)
+        url = f"{base_url}/interactions/{parse.quote(interaction_id, safe='')}"
+        timeout = _interaction_timeout(timeout_seconds)
+        poll_interval = _interaction_poll_interval(poll_interval_seconds)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                result = await _get_json(url, config.timeout_seconds)
+            except Exception:
+                result = None
+            if isinstance(result, dict) and result.get("status") == "completed":
+                choice = str(result.get("choice") or "").strip()
+                return choice or None
+            if isinstance(result, dict) and result.get("status") == "failed":
+                return None
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(poll_interval)
+    except Exception:
+        return None
+
+
+def _model_picker_options(
+    providers: Any,
+    *,
+    current_model: str = "",
+    max_options: int = 24,
+) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    if not isinstance(providers, list):
+        return options
+    current = str(current_model or "").strip()
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        provider_slug = str(provider.get("slug") or provider.get("provider") or "").strip()
+        provider_name = str(provider.get("name") or provider_slug or "provider").strip()
+        models = provider.get("models")
+        if not isinstance(models, list):
+            continue
+        for model in models:
+            model_id = str(model or "").strip()
+            if not model_id:
+                continue
+            label = f"{provider_name} · {model_id}"
+            if model_id == current:
+                label = f"当前 · {label}"
+            options.append(
+                {
+                    "label": label[:80],
+                    "value": json.dumps(
+                        {"provider": provider_slug, "model": model_id},
+                        ensure_ascii=False,
+                    ),
+                    "style": "primary" if model_id == current else "default",
+                }
+            )
+            if len(options) >= max_options:
+                return options
+    return options
+
+
+def _parse_model_picker_choice(choice: str) -> tuple[str, str] | None:
+    try:
+        data = json.loads(choice)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    provider = str(data.get("provider") or "").strip()
+    model = str(data.get("model") or "").strip()
+    if not provider or not model:
+        return None
+    return provider, model
+
+
+def _metadata_reply_to(metadata: dict[str, Any] | None) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    return str(
+        metadata.get("reply_to_message_id")
+        or metadata.get("message_id")
+        or metadata.get("reply_to")
+        or ""
+    ).strip()
+
+
+def _send_result(success: bool, message_id: str | None = None, error: str | None = None):
+    return SimpleNamespace(success=success, message_id=message_id, error=error)
+
+
+def _command_card_answer_text(answer: Any) -> str:
+    if answer is None:
+        return ""
+    text = str(answer).strip()
+    return text
 
 
 def request_approval_choice_from_hermes_locals(
@@ -716,6 +1044,56 @@ def request_approval_choice_from_hermes_locals(
         choice = str(result.get("choice") or "").strip()
         return choice or None
     return None
+
+
+async def complete_command_card_from_hermes_locals_async(
+    local_vars: dict[str, Any],
+    *,
+    answer: Any,
+) -> bool:
+    try:
+        config = load_runtime_config()
+        if not config.enabled:
+            return False
+        payload = build_event(
+            "message.completed",
+            {
+                **local_vars,
+                "answer": _command_card_answer_text(answer),
+                "delivery_kind": "command",
+            },
+        )
+        post_result = await _post_json_ordered_response(
+            config.event_url,
+            payload,
+            _timeout_for_event(config, payload["event"]),
+        )
+        return not (isinstance(post_result, dict) and post_result.get("ok") is False)
+    except Exception:
+        return False
+
+
+def install_feishu_command_card_adapter_methods(runner: Any) -> bool:
+    try:
+        adapters = getattr(runner, "adapters", None)
+        if not isinstance(adapters, dict):
+            return False
+        installed = False
+        for key, adapter in list(adapters.items()):
+            if not _is_feishu_adapter_key(key, adapter):
+                continue
+            adapter_type = type(adapter)
+            if getattr(adapter_type, "_hfc_command_card_methods_installed", False):
+                installed = True
+                continue
+            if getattr(adapter_type, "send_model_picker", None) is None:
+                setattr(adapter_type, "send_model_picker", _hfc_send_model_picker)
+                installed = True
+            if installed:
+                setattr(adapter_type, "_hfc_command_card_methods_installed", True)
+        return installed
+    except Exception:
+        return False
 
 
 def request_clarify_response_from_hermes_locals(
@@ -1313,6 +1691,12 @@ def _event_data(
         timeout_value = _finite_float(local_vars.get("_hfc_interaction_timeout_seconds"))
         if timeout_value is not None:
             data["timeout_seconds"] = timeout_value
+        fallback_policy = _first_string(
+            local_vars,
+            ("_hfc_interaction_fallback_policy", "fallback_policy"),
+        )
+        if fallback_policy:
+            data["fallback_policy"] = fallback_policy
         return data
     if event_name == "tool.updated":
         tool_id = _first_string(local_vars, ("tool_id", "tool_call_id", "name")) or "tool"
@@ -1331,6 +1715,9 @@ def _event_data(
             "tokens": _completion_tokens(local_vars, answer),
             "context": _completion_context(local_vars),
         })
+        delivery_kind = _first_string(local_vars, ("delivery_kind",))
+        if delivery_kind:
+            data["delivery_kind"] = delivery_kind
         return data
     if event_name == "message.failed":
         error = _first_string(local_vars, ("error", "exception")) or "消息处理失败"

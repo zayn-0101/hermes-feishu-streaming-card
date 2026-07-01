@@ -4,6 +4,7 @@ import json
 import math
 import threading
 import time
+from types import SimpleNamespace
 from urllib import error
 
 import pytest
@@ -461,6 +462,176 @@ def test_request_interaction_posts_event_and_polls_until_completed(monkeypatch):
     }
     assert posted[0][1] == "http://sidecar.test/events"
     assert posted[0][2]["event"] == "interaction.requested"
+
+
+def test_request_slash_confirm_async_posts_event_and_polls_until_completed(monkeypatch):
+    posted = []
+    polls = iter(
+        [
+            {"ok": True, "status": "pending", "interaction_id": "slash-new-1"},
+            {
+                "ok": True,
+                "status": "completed",
+                "interaction_id": "slash-new-1",
+                "choice": "once",
+                "choice_label": "允许一次",
+            },
+        ]
+    )
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+
+    async def fake_post(url, payload, timeout):
+        posted.append((url, payload, timeout))
+        return {"ok": True, "applied": True, "interaction_mode": "card"}
+
+    async def fake_get(url, timeout):
+        assert url == "http://sidecar.test/interactions/slash-new-1"
+        return next(polls)
+
+    monkeypatch.setattr(hook_runtime, "_post_json_ordered_response", fake_post)
+    monkeypatch.setattr(hook_runtime, "_get_json", fake_get)
+
+    async def run():
+        return await hook_runtime.request_slash_confirm_from_hermes_locals_async(
+            {
+                "chat_id": "oc_abc",
+                "message_id": "msg_1",
+                "conversation_id": "conv_abc",
+            },
+            command="new",
+            title="Confirm /new",
+            message="This starts a fresh session.",
+            interaction_id="slash-new-1",
+            timeout_seconds=1,
+            poll_interval_seconds=0,
+        )
+
+    result = asyncio.run(run())
+
+    assert result == "once"
+    assert posted[0][0] == "http://sidecar.test/events"
+    payload = posted[0][1]
+    assert payload["event"] == "interaction.requested"
+    assert payload["data"]["kind"] == "slash_confirm"
+    assert payload["data"]["fallback_policy"] == "native_text"
+    assert payload["data"]["interaction_id"] == "slash-new-1"
+    assert payload["data"]["prompt"] == "Confirm /new"
+    assert payload["data"]["description"] == "This starts a fresh session."
+    assert [option["value"] for option in payload["data"]["options"]] == [
+        "once",
+        "always",
+        "cancel",
+    ]
+    assert payload["data"]["options"][0]["label"] == "允许一次"
+    assert payload["data"]["options"][2]["style"] == "danger"
+
+
+def test_install_feishu_command_card_methods_adds_model_picker(monkeypatch):
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+    posted = []
+    adapter = DummyFeishuAdapter()
+    runner = SimpleNamespace(adapters={"feishu": adapter})
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+
+    async def fake_post(url, payload, timeout):
+        posted.append((url, payload, timeout))
+        return {"ok": True, "applied": True, "interaction_mode": "card"}
+
+    async def fake_get(url, timeout):
+        assert url.startswith("http://sidecar.test/interactions/model_")
+        requested_payload = posted[0][1]
+        option_value = requested_payload["data"]["options"][0]["value"]
+        return {
+            "ok": True,
+            "status": "completed",
+            "interaction_id": requested_payload["data"]["interaction_id"],
+            "choice": option_value,
+            "choice_label": requested_payload["data"]["options"][0]["label"],
+        }
+
+    monkeypatch.setattr(hook_runtime, "_post_json_ordered_response", fake_post)
+    monkeypatch.setattr(hook_runtime, "_get_json", fake_get)
+
+    installed = hook_runtime.install_feishu_command_card_adapter_methods(runner)
+
+    selected = []
+
+    async def on_model_selected(chat_id, model_id, provider_slug):
+        selected.append((chat_id, model_id, provider_slug))
+        return f"Switched to {provider_slug}/{model_id}"
+
+    async def run():
+        return await adapter.send_model_picker(
+            chat_id="oc_abc",
+            providers=[
+                {
+                    "name": "OpenRouter",
+                    "slug": "openrouter",
+                    "models": ["deepseek/deepseek-v4-pro"],
+                    "is_current": False,
+                }
+            ],
+            current_model="deepseek/deepseek-v4-flash",
+            current_provider="openrouter",
+            session_key="feishu:oc_abc",
+            on_model_selected=on_model_selected,
+            metadata={"reply_to_message_id": "om_model_command"},
+        )
+
+    result = asyncio.run(run())
+
+    assert installed is True
+    assert result.success is True
+    assert selected == [("oc_abc", "deepseek/deepseek-v4-pro", "openrouter")]
+    assert [payload["event"] for _, payload, _ in posted] == [
+        "interaction.requested",
+        "message.completed",
+    ]
+    requested = posted[0][1]
+    assert requested["message_id"] == "om_model_command"
+    assert requested["data"]["kind"] == "model_picker"
+    assert requested["data"]["fallback_policy"] == "native_text"
+    assert requested["data"]["prompt"] == "选择模型"
+    option_value = json.loads(requested["data"]["options"][0]["value"])
+    assert option_value == {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v4-pro",
+    }
+    completed = posted[1][1]
+    assert completed["message_id"] == "om_model_command"
+    assert completed["data"]["answer"] == "Switched to openrouter/deepseek/deepseek-v4-pro"
+
+
+def test_complete_command_card_async_posts_completed_event(monkeypatch):
+    posted = []
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+
+    async def fake_post(url, payload, timeout):
+        posted.append((url, payload, timeout))
+        return {"ok": True, "applied": True}
+
+    monkeypatch.setattr(hook_runtime, "_post_json_ordered_response", fake_post)
+
+    async def run():
+        return await hook_runtime.complete_command_card_from_hermes_locals_async(
+            {
+                "chat_id": "oc_abc",
+                "message_id": "om_command",
+                "conversation_id": "feishu:oc_abc",
+            },
+            answer="New session started.",
+        )
+
+    assert asyncio.run(run()) is True
+    assert posted[0][0] == "http://sidecar.test/events"
+    payload = posted[0][1]
+    assert payload["event"] == "message.completed"
+    assert payload["message_id"] == "om_command"
+    assert payload["conversation_id"] == "feishu:oc_abc"
+    assert payload["data"]["answer"] == "New session started."
+    assert payload["data"]["delivery_kind"] == "command"
 
 
 def test_request_interaction_retries_when_sidecar_reports_not_applied(monkeypatch):

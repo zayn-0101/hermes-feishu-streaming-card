@@ -646,6 +646,44 @@ async def test_interaction_request_uses_text_fallback_when_configured():
         await test_client.close()
 
 
+async def test_native_text_fallback_interaction_is_not_applied_in_text_mode():
+    feishu_client = FakeFeishuClient()
+    app = create_app(feishu_client, card_config={"interaction_mode": "text"})
+    server = TestServer(app)
+    test_client = TestClient(server)
+    await test_client.start_server()
+    try:
+        requested = await test_client.post(
+            "/events",
+            json=event_payload(
+                "interaction.requested",
+                1,
+                {
+                    "interaction_id": "slash-new-1",
+                    "kind": "slash_confirm",
+                    "prompt": "Confirm /new",
+                    "fallback_policy": "native_text",
+                    "options": [
+                        {"label": "Approve Once", "value": "once"},
+                        {"label": "Always Approve", "value": "always"},
+                        {"label": "Cancel", "value": "cancel"},
+                    ],
+                },
+            ),
+        )
+
+        assert requested.status == 200
+        assert await requested.json() == {
+            "ok": True,
+            "applied": False,
+            "interaction_mode": "text",
+        }
+        assert feishu_client.sent == []
+        assert feishu_client.updated == []
+    finally:
+        await test_client.close()
+
+
 async def test_completed_card_summary_can_be_looked_up_by_feishu_message_id(client):
     test_client, _ = client
     long_answer = "最终答案" * 1000
