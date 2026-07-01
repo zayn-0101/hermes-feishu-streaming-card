@@ -40,7 +40,6 @@ def test_readme_documents_sidecar_only_and_supported_hermes_version():
     assert "thinking.delta" in readme
     assert "v2026.4.23" in readme
     assert "Git tag `v2026.4.23+`" in readme
-    assert "docs/assets/feishu-weather-card.png" in readme
     assert (ROOT / "docs/assets/readme-cover.png").exists()
     assert (ROOT / "docs/assets/feishu-v382-readme-showcase.png").exists()
     assert (ROOT / "docs/assets/feishu-weather-card.png").exists()

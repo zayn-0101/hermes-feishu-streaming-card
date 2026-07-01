@@ -22,8 +22,6 @@ It targets the real pain points of using Hermes inside Feishu: missing or out-of
 
 Since V3.8.2, the final answer stays in the primary content area while pre-tool answer blocks follow a "show in main body -> archive when the next block arrives" rhythm. Reasoning and tools use different text sizes and visual weight inside the collapsible auxiliary timeline, and the footer no longer repeats the same tool-call summary.
 
-![Real Feishu streaming card screenshot](docs/assets/feishu-weather-card.png)
-
 ## Project Highlights
 
 - **Streaming card UX**: `thinking.delta`, `answer.delta`, `tool.updated`, and terminal events update one Feishu card.
