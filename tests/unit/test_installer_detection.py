@@ -318,7 +318,7 @@ def test_detect_hermes_supports_git_tag_when_version_file_missing(tmp_path):
     assert result.run_py_exists is True
 
 
-def test_detect_hermes_rejects_parent_git_tag_when_version_file_missing(tmp_path):
+def test_detect_hermes_ignores_parent_git_tag_when_version_file_missing(tmp_path):
     if shutil.which("git") is None:
         pytest.skip("git is required for git tag fallback detection")
     hermes_root = tmp_path / "nested-hermes"
@@ -339,10 +339,10 @@ def test_detect_hermes_rejects_parent_git_tag_when_version_file_missing(tmp_path
 
     result = detect_hermes(hermes_root)
 
-    assert result.supported is False
+    assert result.supported is True
     assert result.version == "unknown"
-    assert result.version_source == "unknown"
-    assert "version" in result.reason.lower()
+    assert result.version_source == "gateway anchors"
+    assert result.reason == "supported"
 
 
 def test_detect_hermes_accepts_self_hooks_emit_inside_handler(tmp_path):
@@ -441,6 +441,9 @@ def test_detect_hermes_uses_numeric_version_comparison(tmp_path):
         ("v0.14.0", "gateway_run_013_plus"),
         ("0.15.1", "gateway_run_013_plus"),
         ("v0.15.1", "gateway_run_013_plus"),
+        ("v2026.7.1", "gateway_run_013_plus"),
+        ("0.18.0", "gateway_run_013_plus"),
+        ("v0.18.0", "gateway_run_013_plus"),
     ],
 )
 def test_detect_hermes_key_release_matrix(tmp_path, version, expected_strategy):
@@ -460,8 +463,54 @@ def test_detect_hermes_version_components_are_semantic_not_calendar_bounds(tmp_p
     assert result.supported is True
 
 
-def test_detect_hermes_rejects_unknown_or_bad_version(tmp_path):
+def test_detect_hermes_supports_gateway_anchors_when_version_file_missing(tmp_path):
     _write_hermes_root(tmp_path, version=None)
+
+    result = detect_hermes(tmp_path)
+
+    assert result.supported is True
+    assert result.version == "unknown"
+    assert result.version_source == "gateway anchors"
+    assert result.hook_strategy == "legacy_gateway_run"
+
+
+def test_detect_hermes_supports_modern_gateway_anchors_when_version_file_missing(tmp_path):
+    _write_hermes_root(
+        tmp_path,
+        version=None,
+        run_py=(
+            "class GatewayRunner:\n"
+            "    async def _handle_message_with_agent(self, event, source):\n"
+            "        response = 'ok'\n"
+            "        agent_result = {'model': 'm'}\n"
+            "        _response_time = 1.0\n"
+            "        await self.hooks.emit('agent:end', {'response': response})\n"
+            "        return response\n"
+            "    async def _run_agent(self, source, event_message_id=None):\n"
+            "        _loop_for_step = None\n"
+            "        def _run_still_current():\n"
+            "            return True\n"
+            "        def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):\n"
+            "            return None\n"
+            "        def _stream_delta_cb(text: str) -> None:\n"
+            "            return None\n"
+            "        def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:\n"
+            "            return None\n"
+            "        return {}\n"
+        ),
+    )
+
+    result = detect_hermes(tmp_path)
+
+    assert result.supported is True
+    assert result.version == "unknown"
+    assert result.version_source == "gateway anchors"
+    assert result.hook_strategy == "gateway_run_013_plus"
+    assert result.compatibility == "partial"
+
+
+def test_detect_hermes_rejects_bad_explicit_version(tmp_path):
+    _write_hermes_root(tmp_path, version="not-a-version")
 
     result = detect_hermes(tmp_path)
 

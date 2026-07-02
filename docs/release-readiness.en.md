@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current package version: `3.8.5`. This release keeps the sidecar-only mainline, builds on V3.8.0 card UX, V3.8.1 high-frequency delta coalescing, V3.8.2 timeline readability, V3.8.3 standalone command cards, and V3.8.4 WebSocket-native command cards, then keeps always-allowed/no-confirm `/new`-style command results in Feishu/Lark cards. `/update` remains a non-interactive background upgrade command.
+Current package version: `3.8.6`. This release keeps the sidecar-only mainline, builds on V3.8.0 card UX, V3.8.1 high-frequency delta coalescing, V3.8.2 timeline readability, V3.8.3 standalone command cards, V3.8.4 WebSocket-native command cards, and V3.8.5 command result cards, then adds Gateway-anchor fallback for Docker/source-stripped Hermes roots without `VERSION` / `.git` metadata and verifies Hermes v0.18.0 / `v2026.7.1` compatibility.
 
 ## Ready
 
@@ -14,7 +14,7 @@ Current package version: `3.8.5`. This release keeps the sidecar-only mainline, 
 - E2E preview artifacts and generator.
 - Real long-card stress test: one Feishu card updated to 16k Chinese characters.
 - Real Hermes `v2026.4.23` `restore -> install` loop verification.
-- Hermes `0.13.0+` / `0.14.0` / `0.15.x` / `0.17.x` / `v2026.5.16+` / `v2026.6.19+` use the `gateway_run_013_plus` hook strategy, while older `v2026.4.x` keeps `legacy_gateway_run`.
+- Hermes `0.13.0+` / `0.14.0` / `0.15.x` / `0.17.x` / `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` use the `gateway_run_013_plus` hook strategy, while older `v2026.4.x` keeps `legacy_gateway_run`.
 - Feishu card button interactions are covered through local mock acceptance for `interaction.requested`, `/card/actions`, and `/interactions/{interaction_id}`; localhost/private sidecar text fallback is covered through `card.interaction_mode: text`.
 - Feishu thread messages can carry optional `thread_id`; with a reply anchor, the sidecar uses the Feishu reply API to create the initial card in the original thread, and later updates keep PATCHing the same card.
 - Cron delivery can extract chat ids from `deliver: "feishu:oc_xxx"`, avoiding plain-text fallback for scheduled Feishu deliveries.
@@ -41,11 +41,12 @@ Current package version: `3.8.5`. This release keeps the sidecar-only mainline, 
 - `setup` / `install` detect the Hermes runtime venv Python and install the same plugin release there; `doctor` reports `runtime_import`.
 - `install-docker.sh` supports installer/update workflows inside existing Hermes Docker containers with defaults `HERMES_DIR=/opt/hermes`, `HFC_CONFIG=/opt/data/config.yaml`, and `HFC_ENV_FILE=/opt/data/.env`.
 - `docker-compose.example.yml` documents bind mounts and one-shot `bash install-docker.sh` execution for container topologies.
+- Docker/source-stripped Hermes roots without `VERSION` and `.git` metadata can fall back to `gateway/run.py` anchors in `doctor`, `install`, and `setup`; diagnostics report `version_source: gateway anchors`.
 - Hook import/emit failures remain fail-open but write `[hermes-feishu-card] hook failed: ...` diagnostic warnings to Hermes stderr.
 - `repair --hermes-dir ... --yes` and `setup --repair` repair verifiable manifest/backup state and refuse unverifiable user edits.
 - Structured attachment, media, and file objects keep card summaries while preserving Hermes native media/file delivery paths.
 - `smoke-feishu-card --profile-id`, `bots test --profile-id`, CLI `status`, and `/health.routing.profiles` support profile-scoped troubleshooting.
-- Hermes key release matrix covers `v2026.4.23`, `v2026.5.7`, `v2026.5.16+`, `v2026.5.29`, `v2026.6.19+`, `0.13.x`, `0.14.x`, `0.15.x`, `0.17.x`, and semantic versions with or without a `v` prefix.
+- Hermes key release matrix covers `v2026.4.23`, `v2026.5.7`, `v2026.5.16+`, `v2026.5.29`, `v2026.6.19+`, `v2026.7.1+`, `0.13.x`, `0.14.x`, `0.15.x`, `0.17.x`, `0.18.x`, and semantic versions with or without a `v` prefix.
 - GitHub Actions Python 3.9 / 3.12 test matrix for PRs and pushes, plus Windows parser validation for `install.ps1`.
 - Release assets workflow packages macOS/Linux/Windows installers and checksums for tags.
 

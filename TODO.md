@@ -2,7 +2,7 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5
+## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
@@ -57,6 +57,13 @@
 - [x] `/update` 保持 Hermes 后台升级命令，不纳入命令结果卡片化。
 - [x] 移除 card action 后额外调用 direct interactive `message.update` 的路径，改由 Feishu callback response 更新原卡片。
 - [x] 补齐 `/new` 直通结果卡片、一次性上下文、`/update` 保持普通路径和 V3.8.4 hook block 升级兼容测试。
+
+### V3.8.6：Docker / Hermes v0.18.0 兼容补丁（已完成）
+
+- [x] issue #70：Docker/source-stripped Hermes 缺少 `VERSION` 和 `.git` 元数据时，`doctor` / `install` / `setup` 用 `gateway/run.py` anchor 兜底识别。
+- [x] Hermes `v2026.7.1` / `0.18.0` / `v0.18.0` 加入兼容矩阵，继续使用 `gateway_run_013_plus`。
+- [x] 显式非法 `VERSION` 仍 fail-closed，只对缺失版本元数据启用 anchor fallback。
+- [x] README 首屏换成真实横向效果展示图，覆盖命令交互、命令结果反馈和工具 timeline。
 
 ### V3.8.x 后续维护与扩展面（待办）
 

@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前包版本为 `3.8.5`。这一版延续 sidecar-only 主线，在 V3.8.0 卡片体验升级、V3.8.1 高频 delta 合并、V3.8.2 timeline 阅读体验、V3.8.3 独立命令卡片和 V3.8.4 WebSocket 原生命令卡片基础上，补齐 `/new` 等始终允许/无需确认直通命令的结果卡片反馈，并保持 `/update` 后台升级命令不弹交互卡片。
+当前包版本为 `3.8.6`。这一版延续 sidecar-only 主线，在 V3.8.0 卡片体验升级、V3.8.1 高频 delta 合并、V3.8.2 timeline 阅读体验、V3.8.3 独立命令卡片、V3.8.4 WebSocket 原生命令卡片和 V3.8.5 命令结果反馈基础上，补齐 Docker/source-stripped Hermes 缺少 `VERSION` / `.git` 元数据时的 Gateway anchor 兜底，并确认 Hermes v0.18.0 / `v2026.7.1` 兼容。
 
 ## 已具备
 
@@ -14,7 +14,7 @@
 - E2E 预览材料和生成器。
 - 真实长卡压力测试：同一张 Feishu 卡片更新到 16k 中文字符成功。
 - 真实 Hermes `v2026.4.23` 目录 `restore -> install` 循环验证。
-- Hermes `0.13.0+` / `0.14.0` / `0.15.x` / `0.17.x` / `v2026.5.16+` / `v2026.6.19+` 使用 `gateway_run_013_plus` hook strategy，旧版 `v2026.4.x` 保持 `legacy_gateway_run`。
+- Hermes `0.13.0+` / `0.14.0` / `0.15.x` / `0.17.x` / `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` 使用 `gateway_run_013_plus` hook strategy，旧版 `v2026.4.x` 保持 `legacy_gateway_run`。
 - 飞书卡片按钮交互覆盖 `interaction.requested`、`/card/actions`、`/interactions/{interaction_id}` 的本地 mock 验收；localhost/private sidecar 覆盖 `card.interaction_mode: text` fallback。
 - 飞书 thread 消息会携带可选 `thread_id`，有 reply anchor 时通过 Feishu reply API 把初始卡片放回原 thread，后续更新继续 PATCH 同一张卡片。
 - cron delivery 支持从 `deliver: "feishu:oc_xxx"` 提取 chat id，避免定时投递退回 plain text。
@@ -41,11 +41,12 @@
 - `setup` / `install` 会检测 Hermes runtime venv Python 并安装同一插件版本；`doctor` 会报告 `runtime_import`。
 - `install-docker.sh` 支持既有 Hermes Docker 容器内一键安装/更新，默认使用 `HERMES_DIR=/opt/hermes`、`HFC_CONFIG=/opt/data/config.yaml`、`HFC_ENV_FILE=/opt/data/.env`。
 - `docker-compose.example.yml` 覆盖 `/opt/hermes`、`/opt/data` 挂载与非交互安装执行路径，支持 compose 场景验证。
+- Docker/source-stripped Hermes 根目录缺少 `VERSION` 和 `.git` 元数据时，`doctor` / `install` / `setup` 会用 `gateway/run.py` anchor 兜底，并显示 `version_source: gateway anchors`。
 - hook import/emit 失败保持 fail-open，但会向 Hermes stderr 写入 `[hermes-feishu-card] hook failed: ...` 诊断 warning。
 - `repair --hermes-dir ... --yes` 和 `setup --repair` 能修复可验证的 manifest/backup 状态，无法验证用户改动时拒绝覆盖。
 - 结构化附件、媒体和文件对象会在卡片保留摘要，同时不抑制 Hermes 原生媒体/文件投递路径。
 - `smoke-feishu-card --profile-id`、`bots test --profile-id`、CLI `status` 和 `/health.routing.profiles` 支持 profile 维度排障。
-- Hermes key release matrix 覆盖 `v2026.4.23`、`v2026.5.7`、`v2026.5.16+`、`v2026.5.29`、`v2026.6.19+`、`0.13.x`、`0.14.x`、`0.15.x`、`0.17.x`，并覆盖语义版本带/不带 `v` 前缀。
+- Hermes key release matrix 覆盖 `v2026.4.23`、`v2026.5.7`、`v2026.5.16+`、`v2026.5.29`、`v2026.6.19+`、`v2026.7.1+`、`0.13.x`、`0.14.x`、`0.15.x`、`0.17.x`、`0.18.x`，并覆盖语义版本带/不带 `v` 前缀。
 - GitHub Actions 会在 PR/push 上运行 Python 3.9/3.12 的测试矩阵，并在 Windows 上解析验证 `install.ps1`。
 - Release assets workflow 会为 tag 生成 macOS/Linux/Windows 安装包和 checksum。
 

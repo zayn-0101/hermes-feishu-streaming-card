@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V3.8.6 — 2026-07-02
+
+See also: [docs/release-notes-v3.8.6.md](docs/release-notes-v3.8.6.md)
+
+### Fixed
+- Fixed issue #70 Docker/source-stripped installs where Hermes has `gateway/run.py` but no top-level `VERSION` file and no local `.git` tag metadata. `doctor --explain`, `install`, and `setup` now fall back to verified Gateway code anchors instead of failing with `Hermes VERSION missing, unknown, or invalid`.
+- When the fallback is used, diagnostics now report `version_source: gateway anchors`, `version: unknown`, and the inferred `hook_strategy` (`gateway_run_013_plus` for modern Hermes anchors, `legacy_gateway_run` for legacy anchors).
+- Added Hermes v0.18.0 / `v2026.7.1` compatibility coverage; it stays on `gateway_run_013_plus`.
+
+### Changed
+- Docker examples now default to `HFC_VERSION=v3.8.6`.
+- README showcase image now uses the combined horizontal real-UI card collage for command cards, command result feedback, and the answer/tool timeline.
+
+### Tests
+- Added regression coverage for missing-`VERSION` Hermes roots with legacy and modern Gateway anchors, explicit invalid VERSION rejection, and parent-git-tag isolation while still accepting verified anchors.
+
 ## V3.8.5 — 2026-07-02
 
 See also: [docs/release-notes-v3.8.5.md](docs/release-notes-v3.8.5.md)
