@@ -38,6 +38,8 @@ This test starts a real local sidecar process and checks `/health`, `status`, ev
 
 `/health` and `status` metrics are covered by `tests/integration/test_server.py` and `tests/integration/test_cli_process.py`, including `events_received`, `events_applied`, `events_rejected`, `feishu_send_successes`, `feishu_update_failures`, and `feishu_update_retries`. Card update retry behavior is tested with a limited retry; card creation failure returns a JSON error and clears local session state to avoid duplicate cards.
 
+V3.8.7 adds a newer-Hermes compatibility regression: if the first normal message event is `answer.delta`, `thinking.delta`, `tool.updated`, or `message.completed`, the sidecar should create the initial card instead of counting the event as `events_ignored`.
+
 ## Feishu HTTP Client Tests
 
 ```bash

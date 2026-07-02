@@ -37,6 +37,14 @@ FLUSH_CONTROLLERS_KEY = web.AppKey("flush_controllers", dict)
 UPDATE_MAX_ATTEMPTS = 3
 UPDATE_MIN_INTERVAL_SECONDS = 0.2
 TERMINAL_EVENTS = {"message.completed", "message.failed"}
+SESSION_CREATING_EVENTS = {
+    "thinking.delta",
+    "tool.updated",
+    "answer.delta",
+    "message.completed",
+    "message.failed",
+    "interaction.requested",
+}
 DIAGNOSTICS_KEY = web.AppKey("diagnostics", dict)
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 logger = logging.getLogger(__name__)
@@ -551,7 +559,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         return web.json_response({"ok": True, "applied": applied}), None
 
     if session is None:
-        if event.event == "interaction.requested":
+        if event.event in SESSION_CREATING_EVENTS:
             session = CardSession(
                 conversation_id=event.conversation_id,
                 message_id=event.message_id,
@@ -560,9 +568,14 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             sessions[_session_key(event)] = session
             applied = session.apply(event)
             if applied:
+                is_cron_completed = (
+                    event.event == "message.completed" and _delivery_kind(event) == "cron"
+                )
                 route = _resolve_route(request, event)
                 if route is None:
                     sessions.pop(_session_key(event), None)
+                    if is_cron_completed:
+                        metrics.cron_fallbacks += 1
                     metrics.events_rejected += 1
                     return web.json_response(
                         {"ok": False, "error": "bot route failed"},
@@ -582,6 +595,8 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 if message_id is None:
                     sessions.pop(_session_key(event), None)
                     request.app[SESSION_CARD_CONFIGS_KEY].pop(_session_key(event), None)
+                    if is_cron_completed:
+                        metrics.cron_fallbacks += 1
                     metrics.events_rejected += 1
                     return web.json_response(
                         {"ok": False, "error": "feishu send failed"},
@@ -589,7 +604,20 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     ), None
                 feishu_message_ids[_session_key(event)] = message_id
                 message_bot_ids[_session_key(event)] = route.bot_id
-                _store_interaction_result(request.app, session)
+                if event.event == "interaction.requested":
+                    _store_interaction_result(request.app, session)
+                if event.event in TERMINAL_EVENTS:
+                    _store_card_summary(request.app, event, session, message_id)
+                    request.app[DIAGNOSTICS_KEY]["last_terminal_event"] = {
+                        "message_id_hash": _diagnostic_id_hash(event.message_id),
+                        "event": event.event,
+                        "sequence": event.sequence,
+                        "applied": applied,
+                        "session_status": session.status,
+                        "answer_chars": len(session.answer_text),
+                    }
+                if is_cron_completed:
+                    metrics.cron_cards_sent += 1
                 metrics.events_applied += 1
             else:
                 metrics.events_ignored += 1
@@ -600,60 +628,6 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     _session_key(event),
                 )
             return web.json_response(response_payload), None
-        if event.event == "message.completed" and _delivery_kind(event) == "cron":
-            session = CardSession(
-                conversation_id=event.conversation_id,
-                message_id=event.message_id,
-                chat_id=event.chat_id,
-            )
-            sessions[_session_key(event)] = session
-            applied = session.apply(event)
-            if applied:
-                route = _resolve_route(request, event)
-                if route is None:
-                    sessions.pop(_session_key(event), None)
-                    metrics.cron_fallbacks += 1
-                    metrics.events_rejected += 1
-                    return web.json_response(
-                        {"ok": False, "error": "bot route failed"},
-                        status=502,
-                    ), None
-                request.app[SESSION_CARD_CONFIGS_KEY][_session_key(event)] = (
-                    _resolve_session_card_config(request.app, route.bot_id, event)
-                )
-                message_id = await _send_card(
-                    request,
-                    event.chat_id,
-                    _render_session_card(request, session),
-                    route.bot_id,
-                    thread_id=_thread_id_for_event(event),
-                    reply_to_message_id=_reply_to_message_id_for_event(event),
-                )
-                if message_id is None:
-                    sessions.pop(_session_key(event), None)
-                    request.app[SESSION_CARD_CONFIGS_KEY].pop(_session_key(event), None)
-                    metrics.cron_fallbacks += 1
-                    metrics.events_rejected += 1
-                    return web.json_response(
-                        {"ok": False, "error": "feishu send failed"},
-                        status=502,
-                    ), None
-                feishu_message_ids[_session_key(event)] = message_id
-                message_bot_ids[_session_key(event)] = route.bot_id
-                _store_card_summary(request.app, event, session, message_id)
-                request.app[DIAGNOSTICS_KEY]["last_terminal_event"] = {
-                    "message_id_hash": _diagnostic_id_hash(event.message_id),
-                    "event": event.event,
-                    "sequence": event.sequence,
-                    "applied": applied,
-                    "session_status": session.status,
-                    "answer_chars": len(session.answer_text),
-                }
-                metrics.events_applied += 1
-                metrics.cron_cards_sent += 1
-            else:
-                metrics.events_ignored += 1
-            return web.json_response({"ok": True, "applied": applied}), None
         metrics.events_ignored += 1
         return web.json_response({"ok": True, "applied": False}), None
 

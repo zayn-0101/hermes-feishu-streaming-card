@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V3.8.7 — 2026-07-02
+
+See also: [docs/release-notes-v3.8.7.md](docs/release-notes-v3.8.7.md)
+
+### Fixed
+- Fixed issue #75 for newer Hermes event streams that can start with `answer.delta`, `thinking.delta`, `tool.updated`, or `message.completed` without a prior `message.started`. The sidecar now creates the card session and sends the initial Feishu/Lark card from those first events instead of ignoring the whole stream.
+- Preserved the existing cron completion behavior while sharing the same first-event session creation path, including card summary and terminal diagnostics.
+
+### Tests
+- Added regression coverage for missing-`message.started` first events across answer delta, thinking delta, tool update, and completed answer cases.
+
 ## V3.8.6 — 2026-07-02
 
 See also: [docs/release-notes-v3.8.6.md](docs/release-notes-v3.8.6.md)

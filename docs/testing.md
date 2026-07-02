@@ -38,6 +38,8 @@ python3 -m pytest tests/integration/test_cli_process.py -q
 
 `/health` 和 `status` 指标由 `tests/integration/test_server.py` 与 `tests/integration/test_cli_process.py` 覆盖，包括 `events_received`、`events_applied`、`events_rejected`、`feishu_send_successes`、`feishu_update_failures` 和 `feishu_update_retries`。更新卡片会验证一次有限重试；创建卡片失败会返回 JSON 错误并清理本地 session，避免盲目重试造成重复卡片。
 
+V3.8.7 增加新版 Hermes 兼容回归：如果首个普通消息事件直接是 `answer.delta`、`thinking.delta`、`tool.updated` 或 `message.completed`，sidecar 应创建初始卡片而不是把事件计入 `events_ignored`。
+
 ## Feishu HTTP client tests
 
 ```bash

@@ -2,7 +2,7 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6
+## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
@@ -64,6 +64,12 @@
 - [x] Hermes `v2026.7.1` / `0.18.0` / `v0.18.0` 加入兼容矩阵，继续使用 `gateway_run_013_plus`。
 - [x] 显式非法 `VERSION` 仍 fail-closed，只对缺失版本元数据启用 anchor fallback。
 - [x] README 首屏换成真实横向效果展示图，覆盖命令交互、命令结果反馈和工具 timeline。
+
+### V3.8.7：缺失 message.started 的新版 Hermes 流修复（已完成）
+
+- [x] issue #75：新版 Hermes 首事件可能直接是 `answer.delta` / `thinking.delta` / `tool.updated` / `message.completed`，sidecar 不再因没有 session 而全部 ignored。
+- [x] 将普通消息 delta/tool/completed 首事件纳入 session 创建路径，收到首事件即可发送初始 Feishu/Lark 卡片。
+- [x] 保持既有 `message.started`、interaction、cron completion 和终态诊断逻辑兼容。
 
 ### V3.8.x 后续维护与扩展面（待办）
 

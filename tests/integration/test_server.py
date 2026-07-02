@@ -814,23 +814,44 @@ async def test_non_object_json_payload_returns_400_json(client):
     assert feishu_client.updated == []
 
 
-async def test_event_before_started_is_not_applied(client):
+@pytest.mark.parametrize(
+    ("event_name", "data", "expected_text"),
+    [
+        ("answer.delta", {"text": "提前到达的回答"}, "提前到达的回答"),
+        ("thinking.delta", {"text": "提前到达的思考"}, "Hermes Agent"),
+        (
+            "tool.updated",
+            {
+                "tool_id": "tool-1",
+                "name": "search",
+                "status": "running",
+                "detail": "提前到达的工具",
+            },
+            "search",
+        ),
+        ("message.completed", {"answer": "提前完成的回答"}, "提前完成的回答"),
+    ],
+)
+async def test_message_event_without_started_creates_initial_card(
+    client, event_name, data, expected_text
+):
     test_client, feishu_client = client
 
     response = await test_client.post(
         "/events",
-        json=event_payload("thinking.delta", 1, {"text": "提前到达"}),
+        json=event_payload(event_name, 1, data),
     )
 
     assert response.status == 200
-    assert await response.json() == {"ok": True, "applied": False}
-    assert feishu_client.sent == []
+    assert await response.json() == {"ok": True, "applied": True}
+    assert len(feishu_client.sent) == 1
+    assert expected_text in str(feishu_client.sent[0][1])
     assert feishu_client.updated == []
     health = await test_client.get("/health")
     metrics = (await health.json())["metrics"]
     assert metrics["events_received"] == 1
-    assert metrics["events_applied"] == 0
-    assert metrics["events_ignored"] == 1
+    assert metrics["events_applied"] == 1
+    assert metrics["events_ignored"] == 0
 
 
 async def test_cron_completed_event_sends_completed_card_without_started(client):
