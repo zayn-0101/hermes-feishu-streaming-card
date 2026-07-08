@@ -46,6 +46,8 @@ V3.8.9 adds Feishu/Lark topic reply regressions: when the first card is created 
 
 V3.8.10 adds group-diagnostic and tool-detail regressions: `bindings.group_rules` is diagnostic input only and must not leak raw chat/user ids; group `/hfc status` should explain chat binding, fallback/default routing, and slash-command boundaries; `tool.updated` should carry argument summaries, duration, and failure reason into the compact timeline when available.
 
+V3.8.11 adds `/hfc` native unknown suppression regressions: `/commands` must return `handled: true` after accepting `/hfc status` while real Feishu/Lark card sending continues in the background; the patcher's early `/hfc` interception must stay before Hermes' native slash fallback so cards do not double-send with the gray `Unknown command /hfc` reply.
+
 ## Feishu HTTP Client Tests
 
 ```bash

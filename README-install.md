@@ -62,6 +62,10 @@ routing, and slash-command behavior boundaries while leaving real @robot and
 allowlist admission to Hermes Gateway. Tool timeline entries can also show
 argument summaries, duration, and failure reason when Hermes exposes them.
 
+From V3.8.11, accepted `/hfc` diagnostic commands return to Hermes Gateway
+before slow Feishu/Lark card delivery completes. This keeps `/hfc status`
+card-only and prevents the duplicate gray native `Unknown command /hfc` reply.
+
 Current installers default `PIP_ROOT_USER_ACTION=ignore` so Debian/Ubuntu root
 installs do not print pip's root-user warning. If Python reports
 `externally-managed-environment`, `install.sh` and `install-docker.sh` retry with
@@ -84,7 +88,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.10`, `v3.6.6`, or `main`. |
+| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.11`, `v3.6.6`, or `main`. |
 | `HFC_REPO` | `baileyh8/hermes-feishu-streaming-card` | GitHub repository to install from. |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent root directory. |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | Sidecar config path. |
@@ -104,7 +108,7 @@ script selects Hermes venv Python and does not fall back to system Python unless
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.10
+export HFC_VERSION=v3.8.11
 bash install-docker.sh
 ```
 

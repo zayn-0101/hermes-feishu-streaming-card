@@ -29,6 +29,7 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 - **Runtime notices stay tidy**: Since V3.8.8, native Hermes `Working` heartbeats, context/compression notices, automatic session resets, skill loading, and self-improvement reviews prefer cards or compact notice cards instead of scattered gray native text.
 - **Consistent topic replies**: Since V3.8.9, Feishu/Lark topic reply streams and system notices resolve back to the same card, avoiding frozen topic timelines and duplicate gray native notices.
 - **Clearer group diagnostics**: Since V3.8.10, group `/hfc status` explains chat binding, fallback/default routing, the suggested bind command, and slash-command behavior boundaries.
+- **No duplicate diagnostic fallback**: Since V3.8.11, accepted `/hfc status` commands no longer also trigger the gray native `Unknown command /hfc` reply.
 - **Long content protection**: Markdown tables and fenced code blocks split on structure boundaries instead of raw character cuts.
 - **Richer tool details**: `tool.updated` can show argument summaries, duration, and failure reason while keeping long details compact.
 - **Multi-bot / multi-profile**: bot registry, chat bindings, profile-aware session keys, titles, and routing diagnostics.
@@ -44,10 +45,21 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 | Hermes emits separate gray `Working`, context, skill loading, or review notices | `system.notice` cardification: session notices enter the auxiliary timeline; task-external notices use compact standalone cards |
 | Topic replies show the first card but the timeline stops updating, while notices also appear outside the card | Topic events resolve by `reply_to_message_id`, keeping updates on the original card and suppressing duplicate native notice text |
 | Group chats make it unclear whether a bot binding exists or why slash commands behave differently | `/hfc status` reports binding hints, fallback routing, and group slash-command boundaries |
+| `/hfc status` renders a card but Feishu also shows gray `Unknown command /hfc` | Accepted `/hfc` commands ACK Hermes Gateway quickly and send the card in the background, avoiding native unknown fallback |
 | Approval, choice prompts, or slash-command confirmations require manual text replies | Agent-turn choices stay in the active card; independent slash commands use standalone command cards, with numbered text fallback when cards are unavailable |
 | Long tables/code blocks render as raw Markdown | Markdown-aware table/code splitting with repeated headers and complete fences |
 | Multi-bot, group, and profile routing is hard to inspect | `bindings.chats`, safe `group_rules` diagnostics, profile-aware sessions, and `/health.routing` diagnostics |
 | Hook or sidecar failures are hard to debug | `doctor`, runtime import checks, `/health` metrics, fail-closed installer, restore/uninstall |
+
+## V3.8.11 `/hfc` Native Unknown-Command Suppression
+
+V3.8.11 fixes a real Feishu/Lark race where `/hfc status` could render the Hermes Agent card, but Gateway still sent the gray native `Unknown command /hfc` reply. The root cause was that `/commands` waited for real card delivery while the Gateway hook used a short command-claim timeout. The sidecar now returns `handled: true` as soon as it accepts the command and sends the card in the background.
+
+- **Card ownership without duplicate text**: the expected `/hfc status` result is one Hermes Agent diagnostic card and no gray unknown-command reply.
+- **Slow Feishu delivery no longer changes ownership**: tenant-token or card-send latency can be slow without making Gateway treat the command as unhandled.
+- **More robust Gateway text parsing**: hook runtime falls back to `event.text` and `event.content` when command helper metadata is incomplete.
+
+Full release notes: [docs/release-notes-v3.8.11.md](release-notes-v3.8.11.md).
 
 ## V3.8.10 Group Diagnostics and Tool Details
 
@@ -279,7 +291,7 @@ Common environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Version to install, such as `v3.8.10`, `v3.6.6`, or `main` |
+| `HFC_VERSION` | `latest` | Version to install, such as `v3.8.11`, `v3.6.6`, or `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway directory |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar config path |
 | `HFC_ENV_FILE` | `.env` next to `HFC_CONFIG` | Feishu credential file |
@@ -306,7 +318,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.10
+export HFC_VERSION=v3.8.11
 bash install-docker.sh
 ```
 
@@ -342,7 +354,7 @@ python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --ye
 
 ## Upgrading
 
-Upgrading from V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.9 to V3.8.10 is backward-compatible. **Single-profile configs need no changes.** If Hermes uses its own venv, rerun `setup` or `install` after upgrading so the package also lands in the Hermes runtime Python and the hook is refreshed. V3.8.10 keeps V3.8.9 topic continuity and adds group `/hfc status` binding hints, group slash-command guidance, and tool detail arguments/duration/failure rendering; run `doctor --explain` once after upgrading and verify a normal chat, a topic reply, and the target group with a normal prompt, `/hfc status`, `/new`, or `/model`.
+Upgrading from V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.10 to V3.8.11 is backward-compatible. **Single-profile configs need no changes.** If Hermes uses its own venv, rerun `setup` or `install` after upgrading so the package also lands in the Hermes runtime Python and the hook is refreshed. V3.8.11 keeps V3.8.10 group diagnostics and tool details, then fixes the real Feishu/Lark race where an accepted `/hfc status` card could still be followed by a gray `Unknown command /hfc` reply; run `doctor --explain` once after upgrading and verify a normal chat, a topic reply, and the target group with a normal prompt, `/hfc status`, `/new`, or `/model`.
 
 ```bash
 # 1. Stop sidecar
@@ -350,7 +362,7 @@ python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yam
 
 # 2. Update code
 cd /path/to/hermes-feishu-streaming-card
-git checkout v3.8.10 && pip install -e ".[test]" --upgrade
+git checkout v3.8.11 && pip install -e ".[test]" --upgrade
 
 # 3. Diagnose Hermes hook strategy and anchors
 python3 -m hermes_feishu_card.cli doctor --config ~/.hermes_feishu_card/config.yaml --hermes-dir ~/.hermes/hermes-agent
@@ -522,6 +534,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v3.8.11](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.11) | 2026-07 | `/hfc status` no longer triggers the gray native `Unknown command /hfc` reply after the card is accepted |
 | [v3.8.10](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.10) | 2026-07 | Group `/hfc status` binding hints, fallback/default routing and slash-command boundaries; tool details show arguments, duration, and failure reason |
 | [v3.8.9](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.9) | 2026-07 | Feishu/Lark topic card continuity: later stream events and `system.notice` resolve by `reply_to_message_id`, keeping the topic timeline updating and avoiding duplicate gray notices |
 | [v3.8.8](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.8) | 2026-07 | Native Hermes system notice cardification: Working heartbeats, context/compression notices, session resets, skill loading, and self-improvement reviews enter cards or compact notice cards |

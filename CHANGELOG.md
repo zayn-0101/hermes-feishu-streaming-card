@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0
 
 ## Unreleased
 
+## V3.8.11 — 2026-07-08
+
+See also: [docs/release-notes-v3.8.11.md](docs/release-notes-v3.8.11.md)
+
+### Fixed
+- Fixed `/hfc` diagnostics in real Feishu/Lark Gateway flows where `/hfc status` could render the Hermes Agent card and still fall through to Feishu's gray native `Unknown command /hfc` reply when card delivery took longer than the Gateway hook timeout.
+- `/commands` now ACKs accepted `/hfc` requests before slow Feishu card delivery finishes, then sends the command card in the background with failure logging.
+- The Gateway patch intercepts accepted `/hfc` commands before Hermes' native slash-command fallback, and the hook runtime reads command text from `event.text` / `event.content` when Gateway metadata does not expose the command helper.
+
+### Tests
+- Added regression coverage for slow Feishu command-card delivery proving `/commands` returns before the send completes.
+- Added hook runtime and patcher coverage for real Gateway event text extraction and early `/hfc` slash-command interception.
+
 ## V3.8.10 — 2026-07-07
 
 See also: [docs/release-notes-v3.8.10.md](docs/release-notes-v3.8.10.md)

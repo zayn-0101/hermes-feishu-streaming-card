@@ -2,7 +2,7 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10
+## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
@@ -95,6 +95,13 @@
 - [x] 群内 `/hfc status` 提示当前 chat binding、fallback/default 路由、建议 `bots bind-chat` 命令和群内 slash command 行为边界。
 - [x] 明确 @机器人触发和白名单准入仍由 Hermes Gateway 控制，sidecar 只负责卡片路由、诊断和已接管消息的呈现。
 - [x] 补齐 session/render/hook/bot/server 回归测试。
+
+### V3.8.11：`/hfc` 原生未知命令抑制补丁（已完成）
+
+- [x] `/commands` 接受 `/hfc status` 后快速返回 `handled: true`，真实 Feishu/Lark 卡片发送转后台执行。
+- [x] Gateway patch 在 Hermes 原生 unknown slash fallback 前拦截 `/hfc`，避免卡片和灰色 `Unknown command /hfc` 双发。
+- [x] hook runtime 从真实 Gateway `event.text` / `event.content` 补读 slash command 文本。
+- [x] 补齐慢 Feishu 发送、真实 event 文本解析和早期 patch 插入位置回归测试。
 
 ### V3.8.x 后续维护与扩展面（待办）
 

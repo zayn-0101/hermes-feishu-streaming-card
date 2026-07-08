@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前包版本为 `3.8.10`。这一版延续 sidecar-only 主线，保留 V3.8.2 timeline 阅读体验、V3.8.9 飞书/Lark 话题卡片连续更新能力，并补齐群内 `/hfc status` 的 chat binding 自动提示、群内 slash command 行为说明，以及工具详情中的参数摘要、耗时和失败原因展示。
+当前包版本为 `3.8.11`。这一版延续 sidecar-only 主线，保留 V3.8.2 timeline 阅读体验、V3.8.10 群聊诊断和工具详情增强，并修复真实 Feishu/Lark 中 `/hfc status` 已经出卡片但仍触发灰色原生 `Unknown command /hfc` 的竞态。
 
 ## 已具备
 
@@ -27,6 +27,7 @@
 - Gateway runtime 会在 Hermes 进程内合并高频 `thinking.delta` / `answer.delta`，覆盖 V3.8.1 的 issue #74，降低 stream-reader 线程压力。
 - terminal event 前会 flush 同一消息 pending delta，避免最终卡片缺少尾部内容。
 - 飞书内 `/hfc help/status/doctor/monitor` 提供只读诊断卡片，且只展示 hash 后的上下文 id。
+- 已接管的 `/hfc` 诊断命令会快速 ACK Hermes Gateway，真实 Feishu/Lark 卡片发送转入后台，避免 `/hfc status` 卡片和灰色 `Unknown command /hfc` 原生回复双发。
 - 群内 `/hfc status` 会展示 chat binding 状态、fallback/default 路由、建议 `bots bind-chat` 命令和群内 slash command 行为边界；真实 @机器人触发和白名单准入仍由 Hermes Gateway 控制。
 - pre-tool answer 会先显示在正文区，并在下一段 answer 或终态到来时归档进辅助 timeline；终态卡片会剥离已归档的中间说明。
 - 辅助 timeline 中思考条目和工具详情使用不同字号和灰度层级，raw `thinking.delta` 不进入用户可见 timeline。
