@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0
 
 ## Unreleased
 
+## V3.8.13 — 2026-07-08
+
+See also: [docs/release-notes-v3.8.13.md](docs/release-notes-v3.8.13.md)
+
+### Fixed
+- Fixed Hermes upgrade compatibility for `v2026.7.7.2` / `0.18.2`, where the installer could reject a valid Gateway only because the upstream Git tag used four numeric components.
+- Version detection now extracts numeric tokens from descriptive metadata such as `Hermes Agent v0.18.2 (...)` and falls back to verified `gateway/run.py` anchors when readable version metadata is unparseable.
+- Reinstall and repair now handle stale install state left by a Hermes upgrade that replaced `gateway/run.py` with an unpatched upstream file, allowing the hook to be safely installed again without restoring an old Hermes file.
+
+### Tests
+- Added regression coverage for four-component Hermes tags, descriptive version metadata, unparseable-version anchor fallback, and stale unpatched install-state repair/reinstall paths.
+
 ## V3.8.12 — 2026-07-08
 
 See also: [docs/release-notes-v3.8.12.md](docs/release-notes-v3.8.12.md)

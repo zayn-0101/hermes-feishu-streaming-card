@@ -112,7 +112,7 @@ streaming:
 
 Do not set `display.platforms.feishu.streaming: false`. Do not treat `display.show_reasoning` as required for this plugin; it can append reasoning blocks to the final answer and disrupt the streaming card experience. The plugin consumes Hermes `thinking.delta` / `answer.delta` directly.
 
-The compatibility matrix covers older Hermes starting at `v2026.4.23` and Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x. `doctor` prefers `VERSION` or Git tag `v2026.4.23+` when deciding support. After upgrading Hermes or this plugin, rerun `setup` or `install --hermes-dir ... --yes`.
+The compatibility matrix covers older Hermes starting at `v2026.4.23` and Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x. `doctor` prefers `VERSION` or a Git tag, and can fall back to verified `gateway/run.py` anchors when version metadata is missing or unparseable. After upgrading Hermes or this plugin, rerun `setup` or `install --hermes-dir ... --yes`.
 
 ## Docker Container Install
 
@@ -121,7 +121,7 @@ For an existing Hermes container:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.12
+export HFC_VERSION=v3.8.13
 bash install-docker.sh
 ```
 
@@ -163,6 +163,7 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 
 | Version | Highlights |
 |---|---|
+| [v3.8.13](docs/release-notes-v3.8.13.md) | Hermes `v2026.7.7.2` / `0.18.2` upgrades can fall back to anchors and repair stale install state |
 | [v3.8.12](docs/release-notes-v3.8.12.md) | Completed cards with attachment summaries such as `colors.csv` / `styles.csv` no longer duplicate the final native reply |
 | [v3.8.11](docs/release-notes-v3.8.11.md) | `/hfc status` no longer triggers the gray native `Unknown command /hfc` reply after the card is accepted |
 | [v3.8.10](docs/release-notes-v3.8.10.md) | Group `/hfc status` binding hints and slash-command boundaries; tool details show arguments, duration, and failures |

@@ -2,14 +2,14 @@
 
 [中文](installer-safety.md) | [English](installer-safety.en.md)
 
-安装器的目标是只做可验证、可恢复的最小写入。任何版本、结构或校验不确定的情况都应 fail-closed。
+安装器的目标是只做可验证、可恢复的最小写入。版本文案变化可以通过 `gateway/run.py` anchors 兜底，但代码结构、备份、manifest 或文件安全校验不确定时仍应 fail-closed。
 
 ## 安装前检查
 
 安装前必须确认：
 
 - Hermes 目录存在，且包含预期的 `gateway/run.py`。
-- Hermes 版本和代码结构符合默认支持范围：`VERSION=v2026.4.23+` 或 Git tag `v2026.4.23+`，且 `gateway/run.py` 存在当前 hook 可识别的结构。
+- Hermes 版本 metadata 可解析，或 `gateway/run.py` 存在当前 hook 可识别的结构。支持 `VERSION=v2026.4.23+`、Git tag `v2026.4.23+`、`0.18.x` 语义版本、描述型版本字符串，以及不可解析版本配合可验证 anchors 的兜底。
 - `gateway/run.py` 中存在当前 hook 可识别的插入位置。
 - 既有安装状态、备份和 manifest 没有互相矛盾。
 - 若 Hermes 目录中存在 `venv/bin/python`、`.venv/bin/python` 或 Windows `Scripts/python.exe`，该 runtime Python 必须能 import `hermes_feishu_card.hook_runtime`；不能 import 时，安装器会先把当前插件版本安装到该 venv。
@@ -26,7 +26,7 @@ python3 -m hermes_feishu_card.cli doctor --config config.yaml.example --hermes-d
 
 诊断输出会展示 Hermes 是否支持、Hermes root、`gateway/run.py` 路径、`run_py_exists`、`version_source`、`version`、`minimum_supported_version`、`hook_strategy`、`compatibility`、anchors 和 `reason`。V3.6.2 起还会展示 `runtime_import`，用于确认 Hermes Gateway 实际运行的 Python 是否能 import `hermes_feishu_card.hook_runtime`。`--explain` 会把 runtime import、streaming 配置、manifest/backup/run.py 安装状态和下一步建议整理成人可读摘要；`--json` 会输出包含 `schema_version`、顶层 `status`、`runtime_import`、`install_state` 和 `recommendations` 的机器可读报告，适合 issue 模板和自动化排障。`doctor` 所有模式都是只读诊断，不会写入 Hermes 文件。
 
-`install` 在拒绝不支持的目录时也会输出同一组 Hermes 检测信息，便于用户判断是版本过低、版本来源未知、`gateway/run.py` 缺失，还是 hook 锚点结构不兼容。
+`install` 在拒绝不支持的目录时也会输出同一组 Hermes 检测信息，便于用户判断是版本过低、版本文件不可读、`gateway/run.py` 缺失，还是 hook 锚点结构不兼容。
 
 ## Repair 自救
 
@@ -35,7 +35,7 @@ python3 -m hermes_feishu_card.cli repair --hermes-dir ~/.hermes/hermes-agent --y
 python3 -m hermes_feishu_card.cli setup --repair --hermes-dir ~/.hermes/hermes-agent --config ~/.hermes_feishu_card/config.yaml --yes
 ```
 
-`repair` 只修复本项目能验证的安装状态文件：backup 缺失但当前 `run.py` 能安全移除本项目 owned patch 时，会重建 backup；manifest 缺失、损坏或因 backup 重建而过期时，会重建 manifest。它不会直接改写 `gateway/run.py`，也不会覆盖无法验证的用户编辑。若 `run.py changed since install`、backup hash 不匹配、symlink、corrupt markers 或 cron 状态不可判定，命令会 fail-closed。
+`repair` 只修复本项目能验证的安装状态文件：backup 缺失但当前 `run.py` 能安全移除本项目 owned patch 时，会重建 backup；manifest 缺失、损坏或因 backup 重建而过期时，会重建 manifest；Hermes 升级后如果 `run.py` 已经是不含本项目补丁的上游文件，旧 backup/manifest 会被识别为 stale state 并清理，随后可重新安装 hook。它不会直接改写 `gateway/run.py`，也不会覆盖无法验证的用户编辑。若 `run.py changed since install`、backup hash 不匹配、symlink、corrupt markers 或 cron 状态不可判定，命令会 fail-closed。
 
 ## 备份与 manifest
 

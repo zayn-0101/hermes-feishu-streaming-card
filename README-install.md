@@ -71,6 +71,13 @@ From V3.8.12, completed cards that include attachment summaries such as
 delivery. Real file/media paths still keep Hermes' native attachment delivery
 path available.
 
+From V3.8.13, Hermes upgrades are more resilient: version metadata accepts
+`v2026.7.7.2`, `0.18.2`, and descriptive strings such as
+`Hermes Agent v0.18.2 (...)`; if readable version metadata is unparseable,
+verified `gateway/run.py` anchors can still decide support. `repair` also
+clears stale backup/manifest state left after an upstream Hermes upgrade
+replaces `gateway/run.py` with an unpatched file.
+
 Current installers default `PIP_ROOT_USER_ACTION=ignore` so Debian/Ubuntu root
 installs do not print pip's root-user warning. If Python reports
 `externally-managed-environment`, `install.sh` and `install-docker.sh` retry with
@@ -93,7 +100,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.12`, `v3.6.6`, or `main`. |
+| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.13`, `v3.6.6`, or `main`. |
 | `HFC_REPO` | `baileyh8/hermes-feishu-streaming-card` | GitHub repository to install from. |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent root directory. |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | Sidecar config path. |
@@ -113,7 +120,7 @@ script selects Hermes venv Python and does not fall back to system Python unless
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.12
+export HFC_VERSION=v3.8.13
 bash install-docker.sh
 ```
 

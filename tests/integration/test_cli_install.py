@@ -739,6 +739,56 @@ def test_reinstall_refuses_to_bless_user_edited_run_py(tmp_path):
     assert run_py(hermes_dir).read_text(encoding="utf-8") == edited
 
 
+def test_reinstall_after_hermes_upgrade_replaces_stale_unpatched_state(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+    upgraded = (
+        "class GatewayRunner:\n"
+        "    async def _handle_message_with_agent(self, event, source):\n"
+        "        response = await self._run_agent(event, source)\n"
+        "        _response_time = 0.2\n"
+        "        agent_result = {'input_tokens': 1, 'output_tokens': 1}\n"
+        "        await self.hooks.emit('agent:end', {'response': response})\n"
+        "        return response\n"
+        "    async def _run_agent(self, event, source):\n"
+        "        return 'upgraded answer'\n"
+    )
+    (hermes_dir / "VERSION").write_text("v2026.7.7.2\n", encoding="utf-8")
+    run_py(hermes_dir).write_text(upgraded, encoding="utf-8")
+
+    reinstall = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+
+    assert reinstall.returncode == 0, reinstall.stderr
+    current = run_py(hermes_dir).read_text(encoding="utf-8")
+    assert "HERMES_FEISHU_CARD_PATCH_BEGIN" in current
+    assert "upgraded answer" in current
+    assert backup_path(hermes_dir).read_text(encoding="utf-8") == upgraded
+    manifest = json.loads(manifest_path(hermes_dir).read_text(encoding="utf-8"))
+    assert manifest["patched_sha256"] == cli.file_sha256(run_py(hermes_dir))
+    assert manifest["backup_sha256"] == cli.file_sha256(backup_path(hermes_dir))
+
+
+def test_repair_clears_stale_unpatched_state_after_hermes_upgrade(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+    upgraded = patcher.remove_patch(
+        run_py(hermes_dir).read_text(encoding="utf-8")
+    ) + "\n# upstream Hermes changed this file during upgrade\n"
+    run_py(hermes_dir).write_text(upgraded, encoding="utf-8")
+
+    result = run_cli("repair", "--hermes-dir", str(hermes_dir), "--yes")
+
+    assert result.returncode == 0, result.stderr
+    assert "install state: cleared stale unpatched state" in result.stdout
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == upgraded
+    assert not backup_path(hermes_dir).exists()
+    assert not manifest_path(hermes_dir).exists()
+
+
 def test_doctor_json_reports_changed_installed_run_py(tmp_path):
     hermes_dir = copy_hermes(tmp_path)
     config_path = tmp_path / "config.yaml"

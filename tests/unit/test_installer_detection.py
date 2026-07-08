@@ -318,6 +318,70 @@ def test_detect_hermes_supports_git_tag_when_version_file_missing(tmp_path):
     assert result.run_py_exists is True
 
 
+def test_detect_hermes_supports_four_part_git_tag_when_version_file_missing(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git is required for git tag fallback detection")
+    _write_hermes_root(tmp_path, version=None)
+    _git(tmp_path, "init")
+    _git(tmp_path, "add", ".")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=Hermes Test",
+        "-c",
+        "user.email=hermes-test@example.com",
+        "commit",
+        "-m",
+        "fixture",
+    )
+    _git(tmp_path, "tag", "v2026.7.7.2")
+
+    result = detect_hermes(tmp_path)
+
+    assert result.supported is True
+    assert result.version == "v2026.7.7.2"
+    assert result.version_source == "git tag"
+    assert result.hook_strategy == "gateway_run_013_plus"
+
+
+def test_detect_hermes_supports_descriptive_version_metadata(tmp_path):
+    _write_hermes_root(
+        tmp_path,
+        version="Hermes Agent v0.18.2 (2026.7.7.2) · upstream f64e4f4f",
+    )
+
+    result = detect_hermes(tmp_path)
+
+    assert result.supported is True
+    assert result.version_source == "VERSION"
+    assert result.hook_strategy == "gateway_run_013_plus"
+
+
+def test_detect_hermes_uses_gateway_anchors_for_unparseable_version_metadata(tmp_path):
+    _write_hermes_root(
+        tmp_path,
+        version="rolling-nightly",
+        run_py=(
+            "class GatewayRunner:\n"
+            "    async def _handle_message_with_agent(self, event, source):\n"
+            "        response = 'ok'\n"
+            "        agent_result = {'model': 'm'}\n"
+            "        _response_time = 1.0\n"
+            "        await self.hooks.emit('agent:end', {'response': response})\n"
+            "        return response\n"
+            "    async def _run_agent(self, source, event_message_id=None):\n"
+            "        return {}\n"
+        ),
+    )
+
+    result = detect_hermes(tmp_path)
+
+    assert result.supported is True
+    assert result.version == "rolling-nightly"
+    assert result.version_source == "VERSION + gateway anchors"
+    assert result.hook_strategy == "gateway_run_013_plus"
+
+
 def test_detect_hermes_ignores_parent_git_tag_when_version_file_missing(tmp_path):
     if shutil.which("git") is None:
         pytest.skip("git is required for git tag fallback detection")
@@ -442,8 +506,11 @@ def test_detect_hermes_uses_numeric_version_comparison(tmp_path):
         ("0.15.1", "gateway_run_013_plus"),
         ("v0.15.1", "gateway_run_013_plus"),
         ("v2026.7.1", "gateway_run_013_plus"),
+        ("v2026.7.7.2", "gateway_run_013_plus"),
         ("0.18.0", "gateway_run_013_plus"),
         ("v0.18.0", "gateway_run_013_plus"),
+        ("0.18.2", "gateway_run_013_plus"),
+        ("v0.18.2", "gateway_run_013_plus"),
     ],
 )
 def test_detect_hermes_key_release_matrix(tmp_path, version, expected_strategy):
@@ -509,13 +576,14 @@ def test_detect_hermes_supports_modern_gateway_anchors_when_version_file_missing
     assert result.compatibility == "partial"
 
 
-def test_detect_hermes_rejects_bad_explicit_version(tmp_path):
+def test_detect_hermes_uses_gateway_anchors_for_bad_explicit_version(tmp_path):
     _write_hermes_root(tmp_path, version="not-a-version")
 
     result = detect_hermes(tmp_path)
 
-    assert result.supported is False
-    assert "version" in result.reason.lower()
+    assert result.supported is True
+    assert result.version_source == "VERSION + gateway anchors"
+    assert result.reason == "supported"
 
 
 def test_detect_hermes_rejects_comment_or_unrelated_anchor_matches(tmp_path):

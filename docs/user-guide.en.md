@@ -31,6 +31,7 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 - **Clearer group diagnostics**: Since V3.8.10, group `/hfc status` explains chat binding, fallback/default routing, the suggested bind command, and slash-command behavior boundaries.
 - **No duplicate diagnostic fallback**: Since V3.8.11, accepted `/hfc status` commands no longer also trigger the gray native `Unknown command /hfc` reply.
 - **No duplicate replies for attachment summaries**: Since V3.8.12, completed cards that show `colors.csv` / `styles.csv` style attachment summaries no longer send the same final answer again as a native reply.
+- **More resilient Hermes upgrades**: Since V3.8.13, the installer treats verifiable `gateway/run.py` anchors as the final compatibility gate. Version metadata supports newer shapes such as `v2026.7.7.2` and `Hermes Agent v0.18.2 (...)`, and fully unparseable version text can still proceed when anchors validate.
 - **Long content protection**: Markdown tables and fenced code blocks split on structure boundaries instead of raw character cuts.
 - **Richer tool details**: `tool.updated` can show argument summaries, duration, and failure reason while keeping long details compact.
 - **Multi-bot / multi-profile**: bot registry, chat bindings, profile-aware session keys, titles, and routing diagnostics.
@@ -52,6 +53,16 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 | Long tables/code blocks render as raw Markdown | Markdown-aware table/code splitting with repeated headers and complete fences |
 | Multi-bot, group, and profile routing is hard to inspect | `bindings.chats`, safe `group_rules` diagnostics, profile-aware sessions, and `/health.routing` diagnostics |
 | Hook or sidecar failures are hard to debug | `doctor`, runtime import checks, `/health` metrics, fail-closed installer, restore/uninstall |
+
+## V3.8.13 Hermes Upgrade Compatibility Patch
+
+V3.8.13 fixes a Hermes upgrade path where cards could stop working after upgrading to `v2026.7.7.2` / `0.18.2`: newer Hermes can use a four-component Git tag and can replace `gateway/run.py` during upgrade, leaving the old hook absent while HFC backup/manifest state remains. Detection, repair, and reinstall now recognize that state.
+
+- **More tolerant version metadata**: `v2026.7.7.2`, `0.18.2`, and descriptive strings such as `Hermes Agent v0.18.2 (...)` are recognized.
+- **Anchors keep compatible installs usable**: when version metadata is fully unparseable, verified `gateway/run.py` anchors can still fall back through `VERSION + gateway anchors` or `git tag + gateway anchors`.
+- **Upgrade leftovers are repairable**: if a Hermes upgrade leaves `run.py` as an unpatched upstream file, `repair` clears stale backup/manifest state so `install` can patch the upgraded Gateway.
+
+Full release notes: [docs/release-notes-v3.8.13.md](release-notes-v3.8.13.md).
 
 ## V3.8.12 Attachment-Summary Duplicate Reply Suppression
 
@@ -124,7 +135,7 @@ V3.8.6 fixes the issue #70 Docker install path. Upstream Hermes v0.18.0 / `v2026
 
 - **Hermes v0.18.0**: `v2026.7.1`, `0.18.0`, and `v0.18.0` are in the compatibility matrix and keep using `gateway_run_013_plus`.
 - **Docker no-VERSION fallback**: diagnostics report `version_source: gateway anchors`, `version: unknown`, and the inferred `hook_strategy`.
-- **Explicit bad versions still fail closed**: only missing metadata falls back to anchors; invalid `VERSION` contents still block install.
+- **More tolerant version text**: later versions extract numeric versions from descriptive `VERSION` values. If the version text is fully unparseable but `gateway/run.py` anchors validate, diagnostics report `VERSION + gateway anchors` and continue. Unreadable files, symlinks, missing required anchors, and incompatible structures still fail closed.
 
 Full release notes: [docs/release-notes-v3.8.6.md](release-notes-v3.8.6.md).
 
@@ -303,7 +314,7 @@ Common environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Version to install, such as `v3.8.12`, `v3.6.6`, or `main` |
+| `HFC_VERSION` | `latest` | Version to install, such as `v3.8.13`, `v3.6.6`, or `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway directory |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar config path |
 | `HFC_ENV_FILE` | `.env` next to `HFC_CONFIG` | Feishu credential file |
@@ -330,7 +341,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.12
+export HFC_VERSION=v3.8.13
 bash install-docker.sh
 ```
 
@@ -345,7 +356,7 @@ export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx
 python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --yes
 ```
 
-`setup` generates config, validates Hermes (older Hermes from `v2026.4.23` through `v2026.4.x`, plus Hermes `0.13.0+`, `0.14.0`, `0.15.x`, `0.17.x`, `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` anchors), installs the package into the Hermes Gateway runtime venv Python, installs the hook, starts the sidecar, and checks health — all in one pass. Hermes semantic `VERSION` values may include or omit the `v` prefix. Since V3.8.6, Docker/source-stripped installs without `VERSION` or `.git` metadata can fall back to verified `gateway/run.py` anchors.
+`setup` generates config, validates Hermes (older Hermes from `v2026.4.23` through `v2026.4.x`, plus Hermes `0.13.0+`, `0.14.0`, `0.15.x`, `0.17.x`, `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` anchors), installs the package into the Hermes Gateway runtime venv Python, installs the hook, starts the sidecar, and checks health — all in one pass. Hermes semantic `VERSION` values may include or omit the `v` prefix, and descriptive values such as `Hermes Agent v0.18.2 (...)` are parsed for the numeric version token. Since V3.8.6, Docker/source-stripped installs without `VERSION` or `.git` metadata can fall back to verified `gateway/run.py` anchors; current versions also fall back to anchors when readable `VERSION` metadata is unparseable.
 
 ## Core Features
 
@@ -366,7 +377,7 @@ python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --ye
 
 ## Upgrading
 
-Upgrading from V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.11 to V3.8.12 is backward-compatible. **Single-profile configs need no changes.** If Hermes uses its own venv, rerun `setup` or `install` after upgrading so the package also lands in the Hermes runtime Python and the hook is refreshed. V3.8.12 keeps V3.8.10 group diagnostics and the V3.8.11 `/hfc` command-claim fix, then fixes completed cards with attachment summaries duplicating the final native reply; run `doctor --explain` once after upgrading and verify a normal chat, a topic reply, and the target group with a normal prompt, `/hfc status`, `/new`, or `/model`.
+Upgrading from V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.12 to V3.8.13 is backward-compatible. **Single-profile configs need no changes.** If Hermes uses its own venv, rerun `setup` or `install` after upgrading so the package also lands in the Hermes runtime Python and the hook is refreshed. V3.8.13 keeps V3.8.10 group diagnostics, the V3.8.11 `/hfc` command-claim fix, and the V3.8.12 attachment-summary duplicate reply suppression, then fixes Hermes `v2026.7.7.2` / `0.18.2` hook compatibility and stale install-state repair; run `doctor --explain` once after upgrading and verify a normal chat, a topic reply, and the target group with a normal prompt, `/hfc status`, `/new`, or `/model`.
 
 ```bash
 # 1. Stop sidecar
@@ -374,7 +385,7 @@ python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yam
 
 # 2. Update code
 cd /path/to/hermes-feishu-streaming-card
-git checkout v3.8.12 && pip install -e ".[test]" --upgrade
+git checkout v3.8.13 && pip install -e ".[test]" --upgrade
 
 # 3. Diagnose Hermes hook strategy and anchors
 python3 -m hermes_feishu_card.cli doctor --config ~/.hermes_feishu_card/config.yaml --hermes-dir ~/.hermes/hermes-agent
@@ -536,7 +547,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 - **Duplicate cards**: inspect `/health` metrics (`events_received`, `feishu_send_successes`). V3.3.0 per-message lock + `profile_id:message_id` keys ensure one card per message.
 - **Multi-profile route is unclear**: run `status --config ...` and inspect `routing.last_route`, `profile.<id>.events`, and `profile.<id>.last_profile_source`, then verify directly with `smoke-feishu-card --profile-id ...` or `bots test --profile-id ...`.
 - **Gray native text**: after sidecar accepts `message.completed`, Hermes hook suppresses native text; fail-open on sidecar unavailable. V3.3.0 fixes non-Feishu platforms being swallowed.
-- **`doctor` unsupported**: Hermes ≥ `v2026.4.23` (reads `VERSION` or Git tag `v2026.4.23+`), `gateway/run.py` must exist.
+- **`doctor` unsupported**: Hermes must have `gateway/run.py` anchors recognized by the current hook. Version metadata may be `VERSION`, a Git tag, descriptive text, or anchor fallback, but unreadable files and incompatible anchors fail closed.
 - **No cards after upgrading Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x**: run `doctor --config ... --hermes-dir ...` to inspect `hook_strategy`, `compatibility`, and anchors, then re-run `install --hermes-dir ... --yes` if needed.
 - **Restore fails**: file modified → `restore`/`uninstall` refuse to overwrite. Run `doctor --explain` to inspect manifest/backup/run.py state; if it reports an automatic repair path, run `repair --hermes-dir ... --yes`, otherwise back up and manually diff.
 - **Footer tokens wrong**: abnormal values filtered; if still wrong, inspect Hermes `tokens`/`context` metadata.
@@ -546,6 +557,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v3.8.13](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.13) | 2026-07 | Hermes `v2026.7.7.2` / `0.18.2` upgrade compatibility, anchor fallback, and stale install-state repair |
 | [v3.8.12](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.12) | 2026-07 | issue #82: completed cards with `colors.csv` / `styles.csv` style attachment summaries no longer duplicate the final native reply |
 | [v3.8.11](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.11) | 2026-07 | `/hfc status` no longer triggers the gray native `Unknown command /hfc` reply after the card is accepted |
 | [v3.8.10](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.10) | 2026-07 | Group `/hfc status` binding hints, fallback/default routing and slash-command boundaries; tool details show arguments, duration, and failure reason |

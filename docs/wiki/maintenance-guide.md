@@ -55,7 +55,7 @@
 高风险点：
 
 - patch 必须幂等、可移除、可检测 corrupt markers。
-- Hermes source-stripped Docker 目录缺少 `VERSION` 时，只能在 gateway anchors 可验证时兜底。
+- Hermes source-stripped Docker 目录缺少 `VERSION`，或版本 metadata 可读但格式不可解析时，只能在 gateway anchors 可验证时兜底。
 - 新 hook block 必须有 patcher 单测和 remove/restore 覆盖。
 
 ## 常见改动对应测试

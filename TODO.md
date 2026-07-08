@@ -2,7 +2,7 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12
+## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
@@ -109,6 +109,14 @@
 - [x] completed event 增加 `native_delivery` 判定，区分普通卡片摘要和真实原生媒体/文件投递需求。
 - [x] `MEDIA:/tmp/...`、本地文件路径、`files`、`media_files` 和 image/audio/video locals 继续保留 Hermes 原生投递路径。
 - [x] 补齐附件摘要、真实媒体路径、patcher suppression guard 和 installed hook event payload 回归测试。
+
+### V3.8.13：Hermes 升级兼容补丁（已完成）
+
+- [x] Hermes `v2026.7.7.2` / `0.18.2` 加入兼容矩阵，四段 Git tag 继续使用 `gateway_run_013_plus`。
+- [x] 版本解析支持描述型 metadata，例如 `Hermes Agent v0.18.2 (...)`。
+- [x] `VERSION` / Git tag 可读但不可解析时，只要 `gateway/run.py` anchors 可验证，就用 `VERSION + gateway anchors` / `git tag + gateway anchors` 兜底。
+- [x] Hermes 升级后 `run.py` 已变成未打补丁上游文件但旧 backup/manifest 残留时，`repair` 会清理 stale install state，随后可重新 `install`。
+- [x] 补齐四段 tag、描述型版本、不可解析版本 anchor fallback、升级后 stale state reinstall/repair 回归测试。
 
 ### V3.8.x 后续维护与扩展面（待办）
 

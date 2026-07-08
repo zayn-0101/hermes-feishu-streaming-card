@@ -140,9 +140,10 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "install-docker.sh" in readme
     assert "docker-compose.example.yml" in readme
     assert "Docker" in install_doc
-    assert "v3.8.12" in install_doc
+    assert "v3.8.13" in install_doc
     assert "v3.8.5" not in install_doc
     assert "version_source: gateway anchors" in install_doc
+    assert "docs/release-notes-v3.8.13.md" in readme
     assert "docs/release-notes-v3.8.12.md" in readme
     assert "docs/release-notes-v3.8.11.md" in readme
     assert "docs/release-notes-v3.8.10.md" in readme
@@ -174,7 +175,7 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "bash install.sh" in install_doc
     assert "install.ps1" in install_doc
     assert "HFC_VERSION" in install_doc
-    assert "v3.8.12" in install_doc
+    assert "v3.8.13" in install_doc
     assert "v3.6.6" in install_doc
 
     assert (ROOT / "install.sh").exists()
@@ -191,6 +192,7 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert (ROOT / "docs/roadmap-v3.6.0.md").exists()
     assert (ROOT / "install-docker.sh").exists()
     assert (ROOT / "docker-compose.example.yml").exists()
+    assert (ROOT / "docs/release-notes-v3.8.13.md").exists()
     assert (ROOT / "docs/release-notes-v3.8.12.md").exists()
     assert (ROOT / "docs/release-notes-v3.8.11.md").exists()
     assert (ROOT / "docs/release-notes-v3.8.10.md").exists()
@@ -213,8 +215,9 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "${NAME}-windows.zip" in workflow
 
 
-def test_v3812_release_notes_are_linked():
+def test_v3813_release_notes_are_linked():
     changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+    v3813_release_notes = Path("docs/release-notes-v3.8.13.md")
     v3812_release_notes = Path("docs/release-notes-v3.8.12.md")
     v3811_release_notes = Path("docs/release-notes-v3.8.11.md")
     v3810_release_notes = Path("docs/release-notes-v3.8.10.md")
@@ -228,6 +231,15 @@ def test_v3812_release_notes_are_linked():
     release_notes = Path("docs/release-notes-v3.8.2.md")
     compose = Path("docker-compose.example.yml").read_text(encoding="utf-8")
 
+    assert v3813_release_notes.exists()
+    assert "## V3.8.13 — 2026-07-08" in changelog
+    assert "V3.8.13" in changelog
+    assert "[docs/release-notes-v3.8.13.md](docs/release-notes-v3.8.13.md)" in changelog
+    v3813_text = v3813_release_notes.read_text(encoding="utf-8")
+    assert "v2026.7.7.2" in v3813_text
+    assert "VERSION + gateway anchors" in v3813_text
+    assert "stale install state" in v3813_text
+    assert "hermes-feishu-card-v3.8.13-macos.tar.gz" in v3813_text
     assert v3812_release_notes.exists()
     assert "## V3.8.12 — 2026-07-08" in changelog
     assert "V3.8.12" in changelog
@@ -330,13 +342,13 @@ def test_v3812_release_notes_are_linked():
     assert "thinking.delta" in release_text
     assert "feishu-v382-readme-showcase.png" in release_text
     assert "hermes-feishu-card-v3.8.2-macos.tar.gz" in release_text
-    assert 'HFC_VERSION: "${HFC_VERSION:-v3.8.12}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v3.8.13}"' in compose
 
 
 def test_todo_points_to_v38_public_plan_docs():
     todo = read_doc("TODO.md")
 
-    assert "## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12" in todo
+    assert "## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13" in todo
     assert "### V3.8.2：卡片 timeline 阅读体验补丁（已完成）" in todo
     assert "### V3.8.3：独立命令卡片（已完成）" in todo
     assert "### V3.8.4：Feishu WebSocket 命令卡片热修（已完成）" in todo
@@ -348,6 +360,7 @@ def test_todo_points_to_v38_public_plan_docs():
     assert "### V3.8.10：群聊能力与工具详情增强（已完成）" in todo
     assert "### V3.8.11：`/hfc` 原生未知命令抑制补丁（已完成）" in todo
     assert "### V3.8.12：附件摘要重复 reply 抑制补丁（已完成）" in todo
+    assert "### V3.8.13：Hermes 升级兼容补丁（已完成）" in todo
     assert "### V3.8.x 后续维护与扩展面（待办）" in todo
     assert "[docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md)" in todo
     assert "[docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)" in todo

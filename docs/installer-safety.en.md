@@ -2,14 +2,14 @@
 
 [中文](installer-safety.md) | [English](installer-safety.en.md)
 
-The installer is designed to perform only minimal, verifiable, recoverable writes. Any uncertain version, code structure, backup, or manifest state must fail closed.
+The installer is designed to perform only minimal, verifiable, recoverable writes. Version text changes can fall back to `gateway/run.py` anchors, but uncertain code structure, backups, manifests, or file-safety checks still fail closed.
 
 ## Pre-install Checks
 
 Before installation, the installer verifies:
 
 - The Hermes directory exists and contains the expected `gateway/run.py`.
-- Hermes version and structure are in the supported range: `VERSION=v2026.4.23+` or Git tag `v2026.4.23+`.
+- Hermes version metadata is parseable, or `gateway/run.py` contains a structure recognized by the current hook. Supported inputs include `VERSION=v2026.4.23+`, Git tag `v2026.4.23+`, `0.18.x` semantic versions, descriptive version strings, and unparseable versions paired with verifiable anchors.
 - `gateway/run.py` contains an insertion point recognized by the current hook.
 - Existing install state, backup, and manifest are not contradictory.
 - If the Hermes directory contains `venv/bin/python`, `.venv/bin/python`, or the Windows `Scripts/python.exe` equivalent, that runtime Python must be able to import `hermes_feishu_card.hook_runtime`; otherwise setup installs the current plugin release into that venv before patching Hermes.
@@ -33,7 +33,7 @@ python3 -m hermes_feishu_card.cli repair --hermes-dir ~/.hermes/hermes-agent --y
 python3 -m hermes_feishu_card.cli setup --repair --hermes-dir ~/.hermes/hermes-agent --config ~/.hermes_feishu_card/config.yaml --yes
 ```
 
-`repair` only fixes install-state files this project can verify. If backup is missing but the current `run.py` can safely remove this project's owned patch, it recreates the backup. If manifest is missing, malformed, or stale after backup recreation, it rebuilds the manifest. It does not rewrite `gateway/run.py` and does not overwrite unverifiable user edits. `run.py changed since install`, backup hash mismatches, symlinks, corrupt markers, and uncertain cron state still fail closed.
+`repair` only fixes install-state files this project can verify. If backup is missing but the current `run.py` can safely remove this project's owned patch, it recreates the backup. If manifest is missing, malformed, or stale after backup recreation, it rebuilds the manifest. If a Hermes upgrade leaves `run.py` as an upstream file without this project's patch, old backup/manifest files are treated as stale install state and cleared so the hook can be installed again. It does not rewrite `gateway/run.py` and does not overwrite unverifiable user edits. `run.py changed since install`, backup hash mismatches, symlinks, corrupt markers, and uncertain cron state still fail closed.
 
 ## Backup And Manifest
 

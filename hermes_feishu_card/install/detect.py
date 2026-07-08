@@ -19,7 +19,7 @@ OPTIONAL_CAPABILITIES = (
     "reply_context",
     "attachment_delivery",
 )
-_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+_VERSION_RE = re.compile(r"(?<!\d)v?(\d+(?:\.\d+)+)(?!\d)")
 _HERMES_PROJECT_RE = re.compile(r"(?im)^\s*Project:\s*(.+?)\s*$")
 
 
@@ -137,9 +137,11 @@ def detect_hermes(root: str | Path) -> HermesDetection:
 
     parsed_version = _parse_version(version)
     if parsed_version is None:
-        if version != "unknown":
-            return result(False, "Hermes VERSION missing, unknown, or invalid")
-        version_source = "gateway anchors"
+        version_source = (
+            "gateway anchors"
+            if version == "unknown"
+            else f"{version_source} + gateway anchors"
+        )
         hook_strategy = _select_hook_strategy_from_capabilities(capabilities)
     else:
         hook_strategy = _select_hook_strategy(version)
@@ -241,12 +243,12 @@ def _read_text(path: Path, label: str) -> tuple[str, str | None]:
         return "", f"{label} could not be read: {exc.__class__.__name__}"
 
 
-def _parse_version(version: str) -> tuple[int, int, int] | None:
-    match = _VERSION_RE.match(version.strip())
+def _parse_version(version: str) -> tuple[int, ...] | None:
+    match = _VERSION_RE.search(version.strip())
     if match is None:
         return None
     # Treat components as semantic numeric fields, not calendar month/day bounds.
-    return tuple(int(part) for part in match.groups())
+    return tuple(int(part) for part in match.group(1).split("."))
 
 
 def _select_hook_strategy(version: str) -> str:

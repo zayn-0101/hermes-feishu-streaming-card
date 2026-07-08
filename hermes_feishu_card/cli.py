@@ -1489,15 +1489,19 @@ def _run_install(args: argparse.Namespace) -> int:
     manifest_path = _manifest_path(detection.root)
     original: str | None = None
     cron_original: str | None = None
-    manifest_existed = manifest_path.exists()
-    backup_existed = backup_path.exists()
-    cron_backup_existed = bool(cron_backup_path and cron_backup_path.exists())
+    manifest_existed = False
+    backup_existed = False
+    cron_backup_existed = False
 
     try:
         original = _read_text_preserve_newlines(run_py)
         cron_original = (
             _read_text_preserve_newlines(cron_py) if cron_py is not None else None
         )
+        _clear_stale_unpatched_install_state(run_py, backup_path, manifest_path)
+        manifest_existed = manifest_path.exists()
+        backup_existed = backup_path.exists()
+        cron_backup_existed = bool(cron_backup_path and cron_backup_path.exists())
         _validate_existing_install_state(
             run_py,
             backup_path,
@@ -1620,7 +1624,11 @@ def _repair_install_state(
     unpatched = _owned_unpatched_text(current, "run.py")
     has_owned_patch = unpatched != current
     if not has_owned_patch:
-        raise ValueError("install state is inconsistent but run.py has no owned patch")
+        actions = ["install state: cleared stale unpatched state"]
+        if dry_run:
+            return actions
+        _clear_install_state(backup_path, manifest_path)
+        return actions
 
     backup_exists = backup_path.exists()
     manifest_exists = manifest_path.exists()
@@ -1678,6 +1686,22 @@ def _repair_install_state(
         cron_backup_path=cron_backup_path,
     )
     return actions + cron_actions
+
+
+def _clear_stale_unpatched_install_state(
+    run_py: Path, backup_path: Path, manifest_path: Path
+) -> bool:
+    if not backup_path.exists() and not manifest_path.exists():
+        return False
+    current = _read_text_preserve_newlines(run_py)
+    try:
+        unpatched = _owned_unpatched_text(current, "run.py")
+    except ValueError:
+        return False
+    if unpatched != current:
+        return False
+    _clear_install_state(backup_path, manifest_path)
+    return True
 
 
 def _read_manifest_for_repair(manifest_path: Path) -> dict[str, object] | None:
