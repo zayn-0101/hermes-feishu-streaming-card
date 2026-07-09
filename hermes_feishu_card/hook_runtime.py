@@ -3237,6 +3237,14 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     if platform != "feishu" or not chat_id:
         return None
 
+    # Resolve thread_id for topic-group delivery (cron jobs targeting a thread
+    # inside a topic group).  Priority: resolved targets > origin > env var.
+    thread_id = str(
+        _resolved_target_thread_id(resolved_targets, "feishu")
+        or origin.get("thread_id", "")
+        or os.environ.get("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "")
+    ).strip() or ""
+
     profile_id, profile_source = _profile_identity(local_vars, None, None)
     created_at = time.time()
     job_id = str(job.get("id") or "").strip()
@@ -3246,9 +3254,10 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "schema_version": "1",
         "event": "message.completed",
-        "conversation_id": str(job.get("id") or chat_id),
+        "conversation_id": thread_id or str(job.get("id") or chat_id),
         "message_id": message_id,
         "chat_id": chat_id,
+        "thread_id": thread_id,
         "platform": "feishu",
         "sequence": 0,
         "created_at": created_at,
@@ -3425,6 +3434,17 @@ def _resolved_target_chat_id(targets: list[dict[str, Any]], platform: str) -> st
         ).strip()
         if chat_id:
             return chat_id
+    return ""
+
+
+def _resolved_target_thread_id(targets: list[dict[str, Any]], platform: str) -> str:
+    for target in targets:
+        target_platform = str(target.get("platform") or target.get("type") or "").strip().lower()
+        if target_platform != platform:
+            continue
+        thread_id = str(target.get("thread_id") or "").strip()
+        if thread_id:
+            return thread_id
     return ""
 
 
