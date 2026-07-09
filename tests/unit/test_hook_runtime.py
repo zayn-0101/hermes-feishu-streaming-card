@@ -3873,3 +3873,53 @@ def test_interaction_select_ignores_incomplete_action(monkeypatch):
 
     assert called["posted"] is False
     assert response.card is None
+
+
+def test_interaction_select_returns_empty_response_when_sidecar_rejects(monkeypatch):
+    """Expired/rejected interactions should not crash or fall through."""
+
+    class FakeP2Response:
+        def __init__(self):
+            self.card = None
+
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def _on_card_action_trigger(self, data):
+            raise AssertionError("interaction.select should be handled by HFC")
+
+    DummyFeishuAdapter.__module__ = hook_runtime.__name__
+    monkeypatch.setattr(
+        hook_runtime, "P2CardActionTriggerResponse", FakeP2Response, raising=False
+    )
+    monkeypatch.setattr(
+        hook_runtime,
+        "load_runtime_config",
+        lambda: SimpleNamespace(event_url="http://127.0.0.1:8765/events"),
+    )
+
+    def fake_post(url, payload, timeout):
+        raise error.HTTPError(url, 404, "not found", {}, None)
+
+    monkeypatch.setattr(hook_runtime, "_post_json_sync_response", fake_post)
+
+    adapter = DummyFeishuAdapter()
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(
+                value={
+                    "hfc_action": "interaction.select",
+                    "interaction_id": "int-1",
+                    "choice": "opt_b",
+                    "choice_label": "Option B",
+                    "token": "tok-1",
+                }
+            ),
+            context=SimpleNamespace(open_chat_id="oc_abc"),
+            operator=SimpleNamespace(open_id="ou_user"),
+        )
+    )
+
+    response = hook_runtime._hfc_on_feishu_card_action_trigger(adapter, data)
+
+    assert response.card is None
