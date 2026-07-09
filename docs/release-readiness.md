@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前包版本为 `3.8.13`。这一版延续 sidecar-only 主线，保留 V3.8.2 timeline 阅读体验、V3.8.10 群聊诊断、V3.8.11 `/hfc` 命令接管修复、V3.8.12 附件摘要重复 reply 抑制，并修复 Hermes `v2026.7.7.2` / `0.18.2` 升级后的 hook 兼容与 stale install state 问题。
+当前包版本为 `3.8.14`。这一版延续 sidecar-only 主线，保留 V3.8.2 timeline 阅读体验、V3.8.10 群聊诊断、V3.8.11 `/hfc` 命令接管修复、V3.8.12 附件摘要重复 reply 抑制、V3.8.13 Hermes 升级兼容，并新增 Feishu/Lark WebSocket 长连接下 agent clarify/approval `interaction.select` 按钮闭环。
 
 ## 已具备
 

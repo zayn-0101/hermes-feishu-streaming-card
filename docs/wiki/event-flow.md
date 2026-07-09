@@ -95,6 +95,19 @@ Hermes 原生运行提示会被归一为 `system.notice`：
 - `/update` 是 Hermes 后台升级命令，不渲染交互命令卡片。
 - sidecar 或 command card 不可用时，允许回到 Hermes 原生文本 fallback。
 
+## Agent clarify / approval 交互
+
+Agent 任务内的 `interaction.requested` 会渲染为当前 streaming card 里的按钮。
+
+HTTP callback 可达时，Feishu/Lark 直接 POST 到 sidecar `/card/actions`。在 WebSocket 长连接或本地/private sidecar 场景中，按钮点击会先到 Hermes Feishu adapter 的原生 card-action channel，再由 hook runtime 接管 `interaction.select` 并转发到 sidecar `/card/actions`。
+
+关键边界：
+
+- sidecar 仍负责校验 `interaction_id` 和 callback token。
+- callback payload 带 `open_chat_id` 时，sidecar 还会确认 chat id 与 active session 匹配。
+- 成功后 sidecar 记录 `interaction.completed`，Hermes hook 轮询 `/interactions/{interaction_id}` 后继续执行。
+- sidecar 拒绝、超时或没有返回 card 时，hook 返回空 Feishu callback response，避免崩溃或落入未知原生 handler。
+
 ## 群聊边界
 
 群聊准入由 Hermes Gateway 控制，包括 @机器人触发、用户白名单和群消息是否进入 Agent。sidecar 不替代这层判断。

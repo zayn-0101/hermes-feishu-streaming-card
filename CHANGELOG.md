@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0
 
 ## Unreleased
 
+## V3.8.14 — 2026-07-09
+
+See also: [docs/release-notes-v3.8.14.md](docs/release-notes-v3.8.14.md)
+
+### Added
+- Added WebSocket-native handling for agent clarify/approval `interaction.select` card-action clicks, contributed by @colinaaa in PR #87 and closing issue #86.
+- Feishu/Lark WebSocket deployments can now keep agent interaction choices in card buttons by forwarding native card actions to the sidecar `/card/actions` endpoint without requiring a public callback URL.
+
+### Fixed
+- Rejected or expired WebSocket interaction clicks now return an empty Feishu callback response instead of crashing or falling through to the original adapter handler.
+
+### Tests
+- Added hook runtime regression coverage for successful `interaction.select` forwarding, incomplete action guards, and sidecar rejection behavior.
+
 ## V3.8.13 — 2026-07-08
 
 See also: [docs/release-notes-v3.8.13.md](docs/release-notes-v3.8.13.md)

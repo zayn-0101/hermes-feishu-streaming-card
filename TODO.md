@@ -2,7 +2,7 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13
+## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
@@ -117,6 +117,14 @@
 - [x] `VERSION` / Git tag 可读但不可解析时，只要 `gateway/run.py` anchors 可验证，就用 `VERSION + gateway anchors` / `git tag + gateway anchors` 兜底。
 - [x] Hermes 升级后 `run.py` 已变成未打补丁上游文件但旧 backup/manifest 残留时，`repair` 会清理 stale install state，随后可重新 `install`。
 - [x] 补齐四段 tag、描述型版本、不可解析版本 anchor fallback、升级后 stale state reinstall/repair 回归测试。
+
+### V3.8.14：WebSocket interaction.select 交互卡片补丁（已完成）
+
+- [x] issue #86 / PR #87：Feishu/Lark WebSocket 长连接下，agent clarify/approval 按钮点击经 Hermes adapter 原生 card action 通道进入 hook runtime。
+- [x] hook runtime 接管 `interaction.select`，转发 sidecar `/card/actions`，并将更新后的 card 作为 Feishu callback response 返回。
+- [x] 保持 sidecar 作为安全边界：`interaction_id`、callback token 和可用的 chat id 继续在 `/card/actions` 校验。
+- [x] sidecar 拒绝、过期或无 card 返回时保持空 callback response，不崩溃也不落入未知原生 handler。
+- [x] 合并时保留贡献者 @colinaaa 的原始 commits，并补齐 rejected interaction 回归测试。
 
 ### V3.8.x 后续维护与扩展面（待办）
 

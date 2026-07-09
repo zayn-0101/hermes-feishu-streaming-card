@@ -78,6 +78,11 @@ verified `gateway/run.py` anchors can still decide support. `repair` also
 clears stale backup/manifest state left after an upstream Hermes upgrade
 replaces `gateway/run.py` with an unpatched file.
 
+From V3.8.14, agent clarify/approval buttons also work in Feishu/Lark
+WebSocket long-connection deployments. Native `interaction.select` card-action
+clicks are forwarded to the sidecar `/card/actions` endpoint and can update the
+same card without requiring a public callback URL.
+
 Current installers default `PIP_ROOT_USER_ACTION=ignore` so Debian/Ubuntu root
 installs do not print pip's root-user warning. If Python reports
 `externally-managed-environment`, `install.sh` and `install-docker.sh` retry with
@@ -100,7 +105,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.13`, `v3.6.6`, or `main`. |
+| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.14`, `v3.6.6`, or `main`. |
 | `HFC_REPO` | `baileyh8/hermes-feishu-streaming-card` | GitHub repository to install from. |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent root directory. |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | Sidecar config path. |
@@ -120,7 +125,7 @@ script selects Hermes venv Python and does not fall back to system Python unless
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.13
+export HFC_VERSION=v3.8.14
 bash install-docker.sh
 ```
 
