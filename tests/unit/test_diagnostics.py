@@ -451,6 +451,69 @@ def test_card_safe_endpoint_is_useful_and_strips_url_credentials(tmp_path):
         assert sensitive not in serialized
 
 
+@pytest.mark.parametrize(
+    "private_path",
+    [
+        "/events/oc_private_chat/private-token",
+        "/callbacks/ou_private_operator/tenant_access_token",
+    ],
+)
+def test_card_safe_endpoint_redacts_unreviewed_url_paths(tmp_path, private_path):
+    report = _report(
+        tmp_path,
+        routing={"event_endpoint": f"http://localhost:8765{private_path}"},
+    )
+
+    payload = report.to_dict(card_safe=True)
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["routing"]["event_endpoint"] == (
+        "http://localhost:8765/[redacted-path]"
+    )
+    assert "oc_private_chat" not in serialized
+    assert "ou_private_operator" not in serialized
+    assert "private-token" not in serialized
+    assert "tenant_access_token" not in serialized
+
+
+def test_card_safe_endpoint_preserves_reviewed_events_path(tmp_path):
+    report = _report(
+        tmp_path,
+        routing={"event_endpoint": "http://localhost:8765/events"},
+    )
+
+    payload = report.to_dict(card_safe=True)
+
+    assert payload["routing"]["event_endpoint"] == "http://localhost:8765/events"
+
+
+def test_unreviewed_endpoint_path_keeps_internal_mismatch_and_fingerprint_state(tmp_path):
+    config = {
+        "server": {"host": "127.0.0.1", "port": 8765},
+        "feishu": {"app_id": "app", "app_secret": "secret"},
+    }
+    private_endpoint = "http://localhost:8765/events/oc_private_chat/private-token"
+    report = build_diagnostic_report(
+        tmp_path / "config.yaml",
+        config,
+        _detection(tmp_path),
+        _recovery_plan(tmp_path),
+        event_url=private_endpoint,
+    )
+    expected_endpoint_report = _report(
+        tmp_path,
+        routing={"event_endpoint": "http://localhost:8765/events"},
+    )
+    private_endpoint_report = replace(
+        expected_endpoint_report,
+        routing={"event_endpoint": private_endpoint},
+    )
+
+    assert report.routing["event_endpoint"] == private_endpoint
+    assert "event_endpoint_mismatch" in {finding.code for finding in report.findings}
+    assert expected_endpoint_report.fingerprint != private_endpoint_report.fingerprint
+
+
 def test_build_report_finds_missing_credentials_for_legacy_single_profile(tmp_path):
     config = {
         "server": {"host": "127.0.0.1", "port": 8765},

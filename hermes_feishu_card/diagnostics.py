@@ -73,6 +73,7 @@ _CARD_ROUTE_REASONS = {
     "bots.default",
     "default",
 }
+_CARD_REDACTED_ENDPOINT_PATH = "/[redacted-path]"
 _CARD_CAPABILITIES = {
     "answer_delta_callback",
     "attachment_delivery",
@@ -809,6 +810,15 @@ def _safe_endpoint(event_url: str) -> str:
         return ""
 
 
+def _card_safe_endpoint(event_url: str) -> str:
+    endpoint = _safe_endpoint(event_url)
+    if not endpoint:
+        return ""
+    parsed = urlsplit(endpoint)
+    path = parsed.path if parsed.path == "/events" else _CARD_REDACTED_ENDPOINT_PATH
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
 def _endpoint_parts(endpoint: str) -> tuple[str, str, int, str] | None:
     try:
         parsed = urlsplit(endpoint)
@@ -1017,7 +1027,7 @@ def _card_safe_routing(value: object) -> dict[str, object]:
     profile_source = _safe_enum(data.get("profile_source"), _CARD_PROFILE_SOURCES, "")
     if profile_source:
         result["profile_source"] = profile_source
-    endpoint = _safe_endpoint(str(data.get("event_endpoint") or ""))
+    endpoint = _card_safe_endpoint(str(data.get("event_endpoint") or ""))
     if endpoint:
         result["event_endpoint"] = endpoint
     _copy_bool(result, data, "profile_exists")
