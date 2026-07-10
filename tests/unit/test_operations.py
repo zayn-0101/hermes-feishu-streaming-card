@@ -662,26 +662,59 @@ def report(*, executable: bool = True) -> DiagnosticReport:
     )
 
 
+def operation_buttons(card: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        element
+        for element in card["body"]["elements"]
+        if element.get("tag") == "button"
+    ]
+
+
 def action_labels(card: dict[str, object]) -> list[str]:
-    labels = []
-    for element in card["body"]["elements"]:
-        if element.get("tag") != "action":
-            continue
-        labels.extend(action["text"]["content"] for action in element["actions"])
-    return labels
+    return [button["text"]["content"] for button in operation_buttons(card)]
 
 
 def test_operations_card_places_actions_before_existing_divider_and_footer():
     store = OperationStore(secret=b"test", now=lambda: 100.0)
     operation = store.create(group=False, **operation_kwargs())
 
-    card = render_operations_card(report(), operation, "configured footer")
+    card = render_operations_card(
+        report(), operation, "configured footer", store=store
+    )
     elements = card["body"]["elements"]
     ids = [element.get("element_id") for element in elements]
+    buttons = operation_buttons(card)
+    actions = ["details", "recheck", "repair", "dismiss"]
 
-    assert ids[-2:] == ["operations_divider", "operations_footer"]
+    assert ids == [
+        "operations_summary",
+        "operations_details",
+        "operations_recheck",
+        "operations_repair",
+        "operations_dismiss",
+        "operations_divider",
+        "operations_footer",
+    ]
+    assert len(ids) == len(set(ids))
+    assert not any(element.get("tag") == "action" for element in elements)
     assert elements[-1]["content"] == "configured footer"
     assert action_labels(card) == ["查看诊断", "重新检测", "安全修复", "暂不处理"]
+    assert [button["type"] for button in buttons] == ["default"] * len(actions)
+    assert all(button["size"] == "medium" for button in buttons)
+    assert all(button["width"] == "default" for button in buttons)
+    assert all("value" not in button for button in buttons)
+    for button, action in zip(buttons, actions, strict=True):
+        assert button["behaviors"] == [
+            {
+                "type": "callback",
+                "value": {
+                    "hfc_action": "operations.select",
+                    "operation_action": action,
+                    "token": store.token(operation, action),
+                    "profile_scope": store.scope_fingerprint(operation),
+                },
+            }
+        ]
     serialized = json.dumps(card, ensure_ascii=False)
     assert "oc_group" not in serialized
     assert '"profile_id"' not in serialized
@@ -702,11 +735,11 @@ def test_operations_confirmation_buttons_are_primary_and_cancel_is_default():
     transition(store, operation, "repair")
 
     card = render_operations_card(report(), operation, "footer")
-    action = next(item for item in card["body"]["elements"] if item.get("tag") == "action")
+    buttons = operation_buttons(card)
 
-    assert [button["text"]["content"] for button in action["actions"]] == ["确认修复", "取消"]
-    assert action["actions"][0]["type"] == "primary"
-    assert action["actions"][1]["type"] == "default"
+    assert [button["text"]["content"] for button in buttons] == ["确认修复", "取消"]
+    assert buttons[0]["type"] == "primary"
+    assert buttons[1]["type"] == "default"
 
 
 def test_operations_card_can_show_restart_only_when_result_allows_it():

@@ -570,13 +570,7 @@ def render_operations_card(
     ]
     buttons = _operation_buttons(report, operation, store)
     if buttons:
-        elements.append(
-            {
-                "tag": "action",
-                "element_id": "operations_actions",
-                "actions": buttons,
-            }
-        )
+        elements.extend(buttons)
     elements.extend(
         [
             {"tag": "hr", "element_id": "operations_divider"},
@@ -693,9 +687,12 @@ def _operation_button(
         value["profile_scope"] = store.scope_fingerprint(operation)
     return {
         "tag": "button",
+        "element_id": f"operations_{action}",
         "type": style,
+        "size": "medium",
+        "width": "default",
         "text": {"tag": "plain_text", "content": label},
-        "value": value,
+        "behaviors": [{"type": "callback", "value": value}],
     }
 
 
