@@ -557,6 +557,12 @@ def handle_hfc_command_from_hermes_locals(local_vars: dict[str, Any]) -> bool:
             ),
             "profile_id": profile_id,
             "profile_source": profile_source,
+            "chat_type": _command_chat_type(
+                local_vars, source_obj, gateway_event_obj
+            ),
+            "operator": _command_operator(
+                local_vars, source_obj, gateway_event_obj
+            ),
             "created_at": _created_at(local_vars.get("created_at")),
             "platform": "feishu",
         }
@@ -577,6 +583,43 @@ def _command_text(local_vars: dict[str, Any]) -> str:
     gateway_event_obj = local_vars.get("event")
     text = _first_attr_raw_string(gateway_event_obj, ("text", "content"))
     return text or ""
+
+
+def _command_chat_type(
+    local_vars: dict[str, Any], source_obj: Any, gateway_event_obj: Any
+) -> str:
+    message_obj = local_vars.get("message")
+    return (
+        _first_string(local_vars, ("chat_type",))
+        or _first_attr_string(message_obj, ("chat_type",))
+        or _first_attr_string(source_obj, ("chat_type",))
+        or _first_attr_string(gateway_event_obj, ("chat_type",))
+        or ""
+    )
+
+
+def _command_operator(
+    local_vars: dict[str, Any], source_obj: Any, gateway_event_obj: Any
+) -> str:
+    aliases = ("operator_open_id", "sender_open_id", "open_id")
+    direct = _first_string(local_vars, aliases)
+    if direct:
+        return direct
+    message_obj = local_vars.get("message")
+    for candidate in (
+        local_vars.get("operator"),
+        local_vars.get("sender_id"),
+        getattr(message_obj, "operator", None),
+        getattr(message_obj, "sender_id", None),
+        getattr(source_obj, "operator", None),
+        getattr(source_obj, "sender_id", None),
+        getattr(gateway_event_obj, "operator", None),
+        getattr(gateway_event_obj, "sender_id", None),
+    ):
+        value = _first_attr_string(candidate, ("open_id",))
+        if value:
+            return value
+    return ""
 
 
 def _parse_hfc_command(text: str) -> str | None:
@@ -2151,11 +2194,63 @@ def _hfc_on_feishu_card_action_trigger(self: Any, data: Any) -> Any:
         return _hfc_handle_native_model_action(self, data, action_value)
     if action == "interaction.select":
         return _hfc_handle_interaction_select_action(self, data, action_value)
+    if action == "operations.select":
+        return _hfc_handle_operations_select_action(self, data, action_value)
 
     original = getattr(type(self), "_hfc_original_on_card_action_trigger", None)
     if callable(original):
         return original(self, data)
     return _hfc_empty_feishu_callback_response(self)
+
+
+def _hfc_handle_operations_select_action(
+    adapter: Any,
+    data: Any,
+    action_value: dict[str, Any],
+) -> Any:
+    _hfc_info("inline card action received: operations.select")
+    operation_action = str(action_value.get("operation_action") or "").strip()
+    token = str(action_value.get("token") or "").strip()
+    profile_scope = str(action_value.get("profile_scope") or "").strip()
+    chat_id = _hfc_action_chat_id(data)
+    if not operation_action or not token or not chat_id:
+        _hfc_info("operations.select ignored: missing action/token/chat")
+        return _hfc_empty_feishu_callback_response(adapter)
+    if not _hfc_card_operator_allowed(adapter, data, chat_id):
+        _hfc_info("operations.select rejected by Hermes admission")
+        return _hfc_empty_feishu_callback_response(adapter)
+
+    profile_id, _profile_source = _profile_identity({}, None, None)
+    open_id = _hfc_action_open_id(data)
+    forwarded_value = {
+        "hfc_action": "operations.select",
+        "operation_action": operation_action,
+        "token": token,
+    }
+    if profile_scope:
+        forwarded_value["profile_scope"] = profile_scope
+    sidecar_payload = {
+        "event": {
+            "action": {"value": forwarded_value},
+            "context": {
+                "open_chat_id": chat_id,
+                "profile_id": profile_id,
+            },
+            "operator": {"open_id": open_id},
+        }
+    }
+    try:
+        config = load_runtime_config()
+        url = f"{_summary_base_url(config.event_url)}/card/actions"
+        result = _post_json_sync_response(url, sidecar_payload, 5.0)
+    except Exception as exc:
+        _hfc_warn(
+            f"operations.select forward failed: {exc.__class__.__name__}: {exc}"
+        )
+        return _hfc_empty_feishu_callback_response(adapter)
+    if isinstance(result, dict) and isinstance(result.get("card"), dict):
+        return _hfc_raw_feishu_callback_response(adapter, result["card"])
+    return _hfc_empty_feishu_callback_response(adapter)
 
 
 def _hfc_handle_interaction_select_action(
@@ -2538,6 +2633,9 @@ async def _hfc_handle_feishu_card_action_event(self: Any, data: Any) -> None:
             )
         else:
             _hfc_info("background model_picker ignored: unresolved")
+        return
+    if action == "operations.select":
+        _hfc_info("background operations.select claimed by HFC")
         return
 
     original = getattr(type(self), "_hfc_original_handle_card_action_event", None)

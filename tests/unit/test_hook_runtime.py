@@ -311,6 +311,35 @@ def test_handle_hfc_command_reads_gateway_event_text(monkeypatch):
     assert posted[0][1]["message_id"] == "om_event_command"
 
 
+def test_handle_hfc_command_forwards_chat_type_and_operator(monkeypatch):
+    posted = []
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+
+    class HfcEventObject:
+        text = "/hfc doctor"
+        message_id = "om_event_command"
+        chat_type = "group"
+        operator = SimpleNamespace(open_id="ou_initiator")
+
+    monkeypatch.setattr(
+        hook_runtime,
+        "_post_json_sync",
+        lambda url, payload, timeout: posted.append(payload) or True,
+    )
+
+    handled = hook_runtime.handle_hfc_command_from_hermes_locals(
+        {
+            "source": SourceObject(),
+            "event": HfcEventObject(),
+            "message_id": "om_event_command",
+        }
+    )
+
+    assert handled is True
+    assert posted[0]["chat_type"] == "group"
+    assert posted[0]["operator"] == "ou_initiator"
+
+
 def test_handle_hfc_command_ignores_regular_messages(monkeypatch):
     posted = []
     monkeypatch.setattr(
@@ -4431,5 +4460,129 @@ def test_interaction_select_returns_empty_response_when_sidecar_rejects(monkeypa
     )
 
     response = hook_runtime._hfc_on_feishu_card_action_trigger(adapter, data)
+
+    assert response.card is None
+
+
+def test_operations_select_passes_admission_and_forwards_profile_context(monkeypatch):
+    class FakeCallBackCard:
+        def __init__(self):
+            self.type = None
+            self.data = None
+
+    class FakeP2Response:
+        def __init__(self):
+            self.card = None
+
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def __init__(self):
+            self.allowed = []
+
+        def _allow_group_message(self, sender_id, chat_id, is_bot=False):
+            self.allowed.append((sender_id.open_id, chat_id, is_bot))
+            return True
+
+        def _on_card_action_trigger(self, data):
+            raise AssertionError("recognized operations action fell through")
+
+    DummyFeishuAdapter.__module__ = hook_runtime.__name__
+    monkeypatch.setenv("HERMES_FEISHU_CARD_PROFILE_ID", "work")
+    monkeypatch.setattr(
+        hook_runtime, "P2CardActionTriggerResponse", FakeP2Response, raising=False
+    )
+    monkeypatch.setattr(hook_runtime, "CallBackCard", FakeCallBackCard, raising=False)
+    monkeypatch.setattr(
+        hook_runtime,
+        "load_runtime_config",
+        lambda: SimpleNamespace(event_url="http://127.0.0.1:8765/events"),
+    )
+    posted = {}
+
+    def fake_post(url, payload, timeout):
+        posted.update(url=url, payload=payload, timeout=timeout)
+        return {"ok": True, "card": {"header": {"template": "orange"}}}
+
+    monkeypatch.setattr(hook_runtime, "_post_json_sync_response", fake_post)
+    adapter = DummyFeishuAdapter()
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(
+                value={
+                    "hfc_action": "operations.select",
+                    "operation_action": "repair",
+                    "token": "opaque-token",
+                    "profile_scope": "opaque-scope",
+                }
+            ),
+            context=SimpleNamespace(open_chat_id="oc_group"),
+            operator=SimpleNamespace(open_id="ou_owner", user_id="user-1"),
+        )
+    )
+
+    response = hook_runtime._hfc_on_feishu_card_action_trigger(adapter, data)
+
+    assert adapter.allowed == [("ou_owner", "oc_group", False)]
+    assert posted["url"] == "http://127.0.0.1:8765/card/actions"
+    assert posted["payload"]["event"]["context"] == {
+        "open_chat_id": "oc_group",
+        "profile_id": "work",
+    }
+    assert posted["payload"]["event"]["operator"] == {"open_id": "ou_owner"}
+    assert posted["payload"]["event"]["action"]["value"] == {
+        "hfc_action": "operations.select",
+        "operation_action": "repair",
+        "token": "opaque-token",
+        "profile_scope": "opaque-scope",
+    }
+    assert response.card.type == "raw"
+
+
+def test_operations_select_rejected_admission_is_claimed_without_forward(monkeypatch):
+    class FakeP2Response:
+        def __init__(self):
+            self.card = None
+
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def _allow_group_message(self, sender_id, chat_id, is_bot=False):
+            return False
+
+        def _on_card_action_trigger(self, data):
+            raise AssertionError("recognized operations action fell through")
+
+    DummyFeishuAdapter.__module__ = hook_runtime.__name__
+    DummyFeishuAdapter._hfc_original_on_card_action_trigger = (
+        lambda self, data: (_ for _ in ()).throw(
+            AssertionError("recognized operations action fell through")
+        )
+    )
+    monkeypatch.setattr(
+        hook_runtime, "P2CardActionTriggerResponse", FakeP2Response, raising=False
+    )
+    monkeypatch.setattr(
+        hook_runtime,
+        "_post_json_sync_response",
+        lambda *args: (_ for _ in ()).throw(AssertionError("must not forward")),
+    )
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(
+                value={
+                    "hfc_action": "operations.select",
+                    "operation_action": "repair",
+                    "token": "opaque-token",
+                }
+            ),
+            context=SimpleNamespace(open_chat_id="oc_group"),
+            operator=SimpleNamespace(open_id="ou_denied", user_id="user-2"),
+        )
+    )
+
+    response = hook_runtime._hfc_on_feishu_card_action_trigger(
+        DummyFeishuAdapter(), data
+    )
 
     assert response.card is None

@@ -43,6 +43,21 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
 KNOWN_SECTIONS = frozenset(DEFAULT_CONFIG)
 
 
+def resolve_operations_hermes_root(explicit: str | Path | None = None) -> Path:
+    """Resolve the local Hermes source root without adding user configuration."""
+    if explicit:
+        return Path(explicit).expanduser()
+    for name in ("HFC_HERMES_DIR", "HERMES_AGENT_ROOT"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return Path(value).expanduser()
+    current = Path.cwd()
+    for candidate in (current, *current.parents):
+        if (candidate / "gateway" / "run.py").is_file():
+            return candidate
+    return Path.home() / ".hermes" / "hermes-agent"
+
+
 def load_config(path: str | Path) -> dict[str, dict[str, Any]]:
     config = copy.deepcopy(DEFAULT_CONFIG)
     config_path = Path(path).expanduser()

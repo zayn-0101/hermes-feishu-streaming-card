@@ -4,6 +4,10 @@ from dataclasses import replace
 from contextlib import suppress
 import hashlib
 import os
+from pathlib import Path
+import secrets
+import shutil
+import subprocess
 import time
 import asyncio
 import logging
@@ -13,6 +17,8 @@ from typing import Any, Dict
 from aiohttp import web
 
 from .bots import RouteResult
+from .config import load_config, resolve_operations_hermes_root
+from .diagnostics import DiagnosticFinding, DiagnosticReport, build_diagnostic_report
 from .events import EventValidationError, SidecarEvent
 from .flush import FlushController
 from .lifecycle import (
@@ -21,9 +27,17 @@ from .lifecycle import (
     cleanup_runtime_state,
 )
 from .metrics import SidecarMetrics
+from .operations import (
+    OperationRecord,
+    OperationRejected,
+    OperationStore,
+    render_operations_card,
+)
 from .render import render_card
 from .session import CardSession
 from .status import StatusConfig
+from .install.detect import HermesDetection, detect_hermes
+from .install.recovery import execute_recovery, plan_recovery
 
 FEISHU_CLIENT_KEY = web.AppKey("feishu_client", Any)
 SESSIONS_KEY = web.AppKey("sessions", dict)
@@ -47,11 +61,16 @@ MESSAGE_LOCK_USERS_KEY = web.AppKey("message_lock_users", dict)
 FOOTER_FIELDS_KEY = web.AppKey("footer_fields", Any)
 CARD_TITLE_KEY = web.AppKey("card_title", str)
 BASE_CARD_CONFIG_KEY = web.AppKey("base_card_config", dict)
+OPERATIONS_STORE_KEY = web.AppKey("operations_store", OperationStore)
+OPERATIONS_CONFIG_PATH_KEY = web.AppKey("operations_config_path", Path)
+OPERATIONS_HERMES_ROOT_KEY = web.AppKey("operations_hermes_root", Path)
+OPERATIONS_DELIVERIES_KEY = web.AppKey("operations_deliveries", dict)
 FLUSH_CONTROLLERS_KEY = web.AppKey("flush_controllers", dict)
 CLEANUP_TASK_KEY = web.AppKey("cleanup_task", asyncio.Task)
 UPDATE_MAX_ATTEMPTS = 3
 UPDATE_MIN_INTERVAL_SECONDS = 0.2
 RUNTIME_CLEANUP_INTERVAL_SECONDS = 60.0
+MAX_OPERATION_DELIVERIES = 200
 TERMINAL_EVENTS = {"message.completed", "message.failed"}
 SESSION_CREATING_EVENTS = {
     "thinking.delta",
@@ -72,6 +91,8 @@ def create_app(
     process_token: str = "",
     card_config: dict[str, Any] | None = None,
     bot_router: Any = None,
+    operations_config_path: str | Path | None = None,
+    operations_hermes_root: str | Path | None = None,
 ) -> web.Application:
     app = web.Application()
     card_config = card_config or {}
@@ -100,6 +121,16 @@ def create_app(
     app[ROUTING_DIAGNOSTICS_KEY] = _initial_routing_diagnostics(feishu_client)
     app[PROFILE_DIAGNOSTICS_KEY] = {}
     app[BASE_CARD_CONFIG_KEY] = dict(card_config)
+    app[OPERATIONS_STORE_KEY] = OperationStore(secret=secrets.token_bytes(32))
+    app[OPERATIONS_CONFIG_PATH_KEY] = Path(
+        operations_config_path
+        or os.environ.get("HFC_CONFIG")
+        or Path.home() / ".hermes_feishu_card" / "config.yaml"
+    ).expanduser()
+    app[OPERATIONS_HERMES_ROOT_KEY] = resolve_operations_hermes_root(
+        operations_hermes_root
+    )
+    app[OPERATIONS_DELIVERIES_KEY] = {}
     footer_fields = card_config.get("footer_fields")
     app[FOOTER_FIELDS_KEY] = list(footer_fields) if isinstance(footer_fields, list) else None
     title = card_config.get("title")
@@ -221,6 +252,16 @@ async def _card_actions(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "invalid json"}, status=400)
 
     value = _extract_action_value(payload)
+    if str(value.get("hfc_action") or "").strip() == "operations.select":
+        return await _operations_action(request, payload, value)
+    return await _interaction_action(request, payload, value)
+
+
+async def _interaction_action(
+    request: web.Request,
+    payload: dict[str, Any],
+    value: dict[str, Any],
+) -> web.Response:
     interaction_id = str(value.get("interaction_id") or "").strip()
     token = str(value.get("token") or "").strip()
     choice = str(value.get("choice") or "").strip()
@@ -271,6 +312,117 @@ async def _card_actions(request: web.Request) -> web.Response:
     )
 
 
+async def _operations_action(
+    request: web.Request,
+    payload: dict[str, Any],
+    value: dict[str, Any],
+) -> web.Response:
+    action = str(value.get("operation_action") or "").strip()
+    token = str(value.get("token") or "").strip()
+    profile_scope = str(value.get("profile_scope") or "").strip()
+    chat_id = _extract_callback_chat_id(payload)
+    profile_id = _extract_callback_profile_id(payload)
+    operator_open_id = _extract_operator_open_id(payload)
+    if not action or not token or not chat_id:
+        return web.json_response(
+            {"ok": False, "error": "operation rejected"}, status=400
+        )
+
+    store: OperationStore = request.app[OPERATIONS_STORE_KEY]
+    try:
+        _claims, record = store.inspect(
+            token,
+            callback_chat_id=chat_id,
+            callback_profile_id=profile_id,
+            callback_profile_scope=profile_scope,
+            allow_expired=True,
+        )
+    except OperationRejected:
+        return web.json_response({"ok": False, "error": "operation rejected"})
+
+    report, detection = await _build_operations_report(
+        request.app,
+        profile_id=record.profile_id,
+        profile_source="callback",
+    )
+    try:
+        transitioned = store.transition(
+            token,
+            action=action,
+            operator_open_id=operator_open_id,
+            callback_chat_id=chat_id,
+            callback_profile_id=record.profile_id,
+            callback_report_fingerprint=report.fingerprint,
+            callback_recovery_fingerprint=str(
+                report.install_state.get("recovery_fingerprint") or ""
+            ),
+        )
+    except OperationRejected as exc:
+        if str(exc) in {
+            "operation expired",
+            "diagnosis changed",
+            "recovery changed",
+        }:
+            expired = _successor_operation(
+                request.app,
+                record,
+                report,
+                state="expired",
+                result={"message": "诊断状态已变化，请重新检测。"},
+            )
+            return _operations_response(
+                request.app,
+                report,
+                expired,
+                ok=False,
+                toast="诊断已过期",
+            )
+        return _operations_response(
+            request.app,
+            report,
+            record,
+            ok=False,
+            toast="操作不可用",
+        )
+
+    if action == "details":
+        transitioned = store.complete(
+            transitioned.operation_id,
+            expected_state="diagnosed",
+            state="diagnosed",
+            result={"show_details": True},
+        )
+    elif action == "recheck":
+        transitioned = _successor_operation(request.app, record, report)
+    elif action == "confirm_repair":
+        return await _execute_repair_operation(
+            request.app, report, detection, transitioned
+        )
+    elif action == "confirm_restart":
+        hermes_binary = shutil.which("hermes")
+        if not hermes_binary:
+            failed = store.complete(
+                transitioned.operation_id,
+                expected_state="restarting",
+                state="restart_failed",
+                result={"message": "未找到可用的 Hermes Gateway 重启命令。"},
+            )
+            return _operations_response(
+                request.app, report, failed, ok=False, toast="重启不可用"
+            )
+        response = _operations_response(request.app, report, transitioned)
+        asyncio.get_running_loop().call_soon(
+            _schedule_restart_operation_after_callback,
+            request.app,
+            report,
+            detection,
+            transitioned,
+            hermes_binary,
+        )
+        return response
+    return _operations_response(request.app, report, transitioned)
+
+
 async def _commands(request: web.Request) -> web.Response:
     try:
         payload = await request.json()
@@ -297,6 +449,11 @@ async def _commands(request: web.Request) -> web.Response:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             data[key] = value.strip()
+    chat_type = _safe_command_string(payload.get("chat_type")) or _safe_command_string(
+        data.get("chat_type")
+    )
+    if chat_type:
+        data["chat_type"] = chat_type
     event = SidecarEvent(
         schema_version="1",
         event="message.started",
@@ -310,7 +467,25 @@ async def _commands(request: web.Request) -> web.Response:
         data=data,
     )
     route = _resolve_route(request, event)
-    card = _render_hfc_command_card(request, command, event, route)
+    operation_id = ""
+    if command == "doctor":
+        report, _detection = await _build_operations_report(
+            request.app,
+            profile_id=str(data.get("profile_id") or "default"),
+            profile_source=str(data.get("profile_source") or ""),
+        )
+        operation = _create_operation(
+            request.app,
+            report,
+            chat_id=chat_id,
+            profile_id=str(data.get("profile_id") or "default"),
+            group=_is_group_chat(chat_type),
+            initiator_open_id=_safe_command_operator(payload.get("operator")),
+        )
+        operation_id = operation.operation_id
+        card = _render_operations_for_app(request.app, report, operation)
+    else:
+        card = _render_hfc_command_card(request, command, event, route)
     task = asyncio.create_task(
         _send_command_card(
             request.app,
@@ -319,6 +494,7 @@ async def _commands(request: web.Request) -> web.Response:
             route.bot_id if route is not None else None,
             thread_id=thread_id or None,
             reply_to_message_id=reply_to_message_id or message_id,
+            operation_id=operation_id,
         )
     )
     task.add_done_callback(_log_background_task_failure)
@@ -333,6 +509,7 @@ async def _send_command_card(
     bot_id: str | None,
     thread_id: str | None = None,
     reply_to_message_id: str | None = None,
+    operation_id: str = "",
 ) -> None:
     message_id = await _send_card_for_app(
         app,
@@ -344,6 +521,11 @@ async def _send_command_card(
     )
     if message_id is None:
         logger.warning("HFC command card send failed: chat_id=%s bot_id=%s", chat_id, bot_id)
+    elif operation_id:
+        _store_operation_delivery(app, operation_id, {
+            "message_id": message_id,
+            "bot_id": bot_id,
+        })
 
 
 def _log_background_task_failure(task: asyncio.Task[None]) -> None:
@@ -353,6 +535,342 @@ def _log_background_task_failure(task: asyncio.Task[None]) -> None:
         return
     except Exception:
         logger.warning("HFC command card background task failed", exc_info=True)
+
+
+async def _build_operations_report(
+    app: web.Application,
+    *,
+    profile_id: str,
+    profile_source: str,
+) -> tuple[DiagnosticReport, HermesDetection]:
+    routing = app[ROUTING_DIAGNOSTICS_KEY]
+    last_route = routing.get("last_route") if isinstance(routing, dict) else None
+    health = {"routing": {"last_route": dict(last_route or {})}}
+    return await asyncio.to_thread(
+        _build_operations_report_sync,
+        app[OPERATIONS_CONFIG_PATH_KEY],
+        app[OPERATIONS_HERMES_ROOT_KEY],
+        profile_id,
+        profile_source,
+        health,
+    )
+
+
+def _build_operations_report_sync(
+    config_path: Path,
+    hermes_root: Path,
+    profile_id: str,
+    profile_source: str,
+    health: dict[str, object],
+) -> tuple[DiagnosticReport, HermesDetection]:
+    detection = detect_hermes(hermes_root)
+    try:
+        config = load_config(config_path)
+        recovery_plan = plan_recovery(detection)
+        server = config.get("server", {})
+        event_url = (
+            f"http://{server.get('host', '127.0.0.1')}:"
+            f"{server.get('port', 8765)}/events"
+        )
+        report = build_diagnostic_report(
+            config_path,
+            config,
+            detection,
+            recovery_plan,
+            health=health,
+            profile_id=profile_id,
+            profile_source=profile_source,
+            event_url=event_url,
+        )
+    except Exception:
+        report = DiagnosticReport(
+            status="error",
+            created_at=time.time(),
+            config={"loaded": False},
+            hermes={"checked": True, "status": "unsupported"},
+            streaming={"status": "not_checked"},
+            install_state={
+                "status": "unavailable",
+                "recovery_executable": False,
+                "recovery_fingerprint": "",
+            },
+            routing={"profile_id": profile_id},
+            runtime={},
+            findings=(
+                DiagnosticFinding(
+                    code="operations_diagnosis_failed",
+                    severity="error",
+                    message="Operations diagnosis could not be completed.",
+                ),
+            ),
+        )
+    return report, detection
+
+
+def _create_operation(
+    app: web.Application,
+    report: DiagnosticReport,
+    *,
+    chat_id: str,
+    profile_id: str,
+    group: bool,
+    initiator_open_id: str = "",
+) -> OperationRecord:
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    return store.create(
+        chat_id=chat_id,
+        profile_id=profile_id,
+        report_fingerprint=report.fingerprint,
+        recovery_fingerprint=str(
+            report.install_state.get("recovery_fingerprint") or ""
+        ),
+        group=group,
+        initiator_open_id=initiator_open_id,
+    )
+
+
+def _successor_operation(
+    app: web.Application,
+    previous: OperationRecord,
+    report: DiagnosticReport,
+    *,
+    state: str = "diagnosed",
+    result: dict[str, object] | None = None,
+) -> OperationRecord:
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    successor = _create_operation(
+        app,
+        report,
+        chat_id=previous.chat_id,
+        profile_id=previous.profile_id,
+        group=previous.group,
+        initiator_open_id=previous.owner_open_id,
+    )
+    if state != "diagnosed" or result is not None:
+        successor = store.complete(
+            successor.operation_id,
+            expected_state="diagnosed",
+            state=state,
+            result=result or {},
+        )
+    delivery = app[OPERATIONS_DELIVERIES_KEY].get(previous.operation_id)
+    if isinstance(delivery, dict):
+        app[OPERATIONS_DELIVERIES_KEY].pop(previous.operation_id, None)
+        _store_operation_delivery(app, successor.operation_id, dict(delivery))
+    return successor
+
+
+def _store_operation_delivery(
+    app: web.Application,
+    operation_id: str,
+    delivery: dict[str, object],
+) -> None:
+    deliveries = app[OPERATIONS_DELIVERIES_KEY]
+    deliveries[operation_id] = delivery
+    while len(deliveries) > MAX_OPERATION_DELIVERIES:
+        deliveries.pop(next(iter(deliveries)))
+
+
+def _render_operations_for_app(
+    app: web.Application,
+    report: DiagnosticReport,
+    operation: OperationRecord,
+) -> dict[str, object]:
+    card = render_operations_card(
+        report,
+        operation,
+        "Hermes Feishu Card · 本地运行诊断",
+        store=app[OPERATIONS_STORE_KEY],
+    )
+    title = app[CARD_TITLE_KEY]
+    if isinstance(title, str) and title.strip():
+        card["header"]["title"]["content"] = title.strip()
+    return card
+
+
+def _operations_response(
+    app: web.Application,
+    report: DiagnosticReport,
+    operation: OperationRecord,
+    *,
+    ok: bool = True,
+    toast: str = "已更新",
+) -> web.Response:
+    return web.json_response(
+        {
+            "ok": ok,
+            "toast": {
+                "type": "success" if ok else "warning",
+                "content": toast,
+            },
+            "card": _render_operations_for_app(app, report, operation),
+        }
+    )
+
+
+async def _execute_repair_operation(
+    app: web.Application,
+    report: DiagnosticReport,
+    detection: HermesDetection,
+    operation: OperationRecord,
+) -> web.Response:
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    metrics: SidecarMetrics = app[METRICS_KEY]
+    metrics.recovery_attempts += 1
+    try:
+        recovery_result = await asyncio.to_thread(
+            execute_recovery,
+            detection,
+            operation.recovery_fingerprint,
+        )
+    except Exception:
+        metrics.recovery_refusals += 1
+        store.complete(
+            operation.operation_id,
+            expected_state="executing",
+            state="failed",
+            result={"message": "安全修复未执行；当前证据不再满足自动修复条件。"},
+        )
+        fresh_report, _fresh_detection = await _build_operations_report(
+            app,
+            profile_id=operation.profile_id,
+            profile_source="callback",
+        )
+        failed = _successor_operation(
+            app,
+            operation,
+            fresh_report,
+            state="failed",
+            result={"message": "请重新检测后再决定下一步。"},
+        )
+        return _operations_response(
+            app, fresh_report, failed, ok=False, toast="安全修复未执行"
+        )
+
+    metrics.recovery_successes += 1
+    store.complete(
+        operation.operation_id,
+        expected_state="executing",
+        state="repaired",
+        result={"status": str(getattr(recovery_result, "status", "repaired"))},
+    )
+    fresh_report, _fresh_detection = await _build_operations_report(
+        app,
+        profile_id=operation.profile_id,
+        profile_source="callback",
+    )
+    repaired = _successor_operation(
+        app,
+        operation,
+        fresh_report,
+        state="repaired",
+        result={
+            "status": str(getattr(recovery_result, "status", "repaired")),
+            "message": "已完成安全修复并重新检测。",
+            "restart_available": bool(shutil.which("hermes")),
+        },
+    )
+    return _operations_response(app, fresh_report, repaired, toast="安全修复已完成")
+
+
+async def _restart_operation_after_callback(
+    app: web.Application,
+    report: DiagnosticReport,
+    detection: HermesDetection,
+    operation: OperationRecord,
+    hermes_binary: str,
+) -> None:
+    try:
+        completed = await asyncio.to_thread(
+            subprocess.run,
+            [hermes_binary, "gateway", "restart"],
+            cwd=detection.root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return_code = int(completed.returncode)
+        tail = _sanitize_subprocess_tail(
+            f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        )
+    except Exception:
+        return_code = -1
+        tail = "restart command failed"
+
+    state = "restarted" if return_code == 0 else "restart_failed"
+    result = {
+        "return_code": return_code,
+        "output_tail": tail,
+        "message": (
+            "Gateway 重启已完成。"
+            if return_code == 0
+            else "安全修复已完成，但 Gateway 重启失败。"
+        ),
+    }
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    try:
+        store.complete(
+            operation.operation_id,
+            expected_state="restarting",
+            state=state,
+            result=result,
+        )
+    except OperationRejected:
+        return
+    fresh_report, _fresh_detection = await _build_operations_report(
+        app,
+        profile_id=operation.profile_id,
+        profile_source="callback",
+    )
+    completed_operation = _successor_operation(
+        app,
+        operation,
+        fresh_report,
+        state=state,
+        result=result,
+    )
+    delivery = app[OPERATIONS_DELIVERIES_KEY].get(completed_operation.operation_id)
+    if not isinstance(delivery, dict):
+        return
+    message_id = str(delivery.get("message_id") or "")
+    if message_id:
+        await _update_card_for_app(
+            app,
+            message_id,
+            _render_operations_for_app(app, fresh_report, completed_operation),
+            delivery.get("bot_id"),
+        )
+
+
+def _schedule_restart_operation_after_callback(
+    app: web.Application,
+    report: DiagnosticReport,
+    detection: HermesDetection,
+    operation: OperationRecord,
+    hermes_binary: str,
+) -> None:
+    task = asyncio.create_task(
+        _restart_operation_after_callback(
+            app,
+            report,
+            detection,
+            operation,
+            hermes_binary,
+        )
+    )
+    task.add_done_callback(_log_background_task_failure)
+
+
+def _sanitize_subprocess_tail(output: str) -> str:
+    tail = str(output or "")[-1000:]
+    tail = re.sub(
+        r"(?i)(secret|token|password|authorization)\s*[:=]\s*\S+",
+        r"\1=[REDACTED]",
+        tail,
+    )
+    tail = re.sub(r"(?:/[A-Za-z0-9._ -]+){2,}", "[path]", tail)
+    return " ".join(tail.split())[-500:]
 
 
 async def _events(request: web.Request) -> web.Response:
@@ -398,6 +916,19 @@ def _safe_command_string(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()
+
+
+def _safe_command_operator(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return str(value.get("open_id") or "").strip()
+    return ""
+
+
+def _is_group_chat(chat_type: str) -> bool:
+    normalized = str(chat_type or "").strip().lower()
+    return normalized in {"group", "group_chat", "chat", "groupchat"}
 
 
 def _render_hfc_command_card(
@@ -1025,6 +1556,22 @@ def _extract_callback_chat_id(payload: dict[str, Any]) -> str:
     if isinstance(context, dict):
         return str(context.get("open_chat_id") or context.get("chat_id") or "").strip()
     return ""
+
+
+def _extract_callback_profile_id(payload: dict[str, Any]) -> str:
+    event = payload.get("event") if isinstance(payload, dict) else None
+    context = event.get("context") if isinstance(event, dict) else None
+    if not isinstance(context, dict):
+        return ""
+    return _safe_profile_id(context.get("profile_id")) if context.get("profile_id") else ""
+
+
+def _extract_operator_open_id(payload: dict[str, Any]) -> str:
+    event = payload.get("event") if isinstance(payload, dict) else None
+    operator = event.get("operator") if isinstance(event, dict) else None
+    if not isinstance(operator, dict):
+        return ""
+    return str(operator.get("open_id") or "").strip()
 
 
 def _extract_operator_name(payload: dict[str, Any]) -> str:

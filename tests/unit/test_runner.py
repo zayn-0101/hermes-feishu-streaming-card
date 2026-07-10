@@ -111,6 +111,7 @@ def test_main_passes_boundary_to_create_app_when_bot_credentials_exist(monkeypat
     assert captured["kwargs"]["process_token"] == "token-1"
     assert captured["kwargs"]["card_config"] == {"title": "Credentialed Card"}
     assert captured["kwargs"]["bot_router"] is not None
+    assert captured["kwargs"]["operations_config_path"] == "config.yaml"
 
 
 def test_main_uses_noop_without_any_credentials(monkeypatch):

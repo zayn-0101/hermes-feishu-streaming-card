@@ -219,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
             process_token=args.token,
             card_config=_card_config_for_server(config),
             bot_router=boundary.router,
+            operations_config_path=args.config,
         ),
         host=server["host"],
         port=server["port"],

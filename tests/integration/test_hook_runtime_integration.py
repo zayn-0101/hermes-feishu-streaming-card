@@ -5,7 +5,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -198,3 +200,197 @@ async def test_installed_hook_forwards_streaming_tool_and_completion_events(
         }
     finally:
         await client.close()
+
+
+class _CallbackCard:
+    def __init__(self):
+        self.type = None
+        self.data = None
+
+
+class _CallbackResponse:
+    def __init__(self):
+        self.card = None
+
+
+def _card_action_data(action, *, open_id="ou_operator"):
+    return SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(value=action),
+            context=SimpleNamespace(open_chat_id="oc_group"),
+            operator=SimpleNamespace(open_id=open_id, user_id="user-1"),
+        )
+    )
+
+
+def _installed_action_adapter(*, allowed=True):
+    class Adapter:
+        name = "feishu"
+
+        def __init__(self):
+            self.allowed = []
+            self.native_actions = []
+            self.gray_messages = []
+
+        def _allow_group_message(self, sender_id, chat_id, is_bot=False):
+            self.allowed.append((sender_id.open_id, chat_id, is_bot))
+            return allowed
+
+        def _on_card_action_trigger(self, data):
+            self.native_actions.append(data)
+            return "native-fallback"
+
+        async def _handle_card_action_event(self, data):
+            self.gray_messages.append(data)
+
+    Adapter.__module__ = hook_runtime.__name__
+    adapter = Adapter()
+    runner = SimpleNamespace(adapters={"feishu": adapter})
+    assert hook_runtime.install_feishu_command_card_adapter_methods(runner) is True
+    return adapter
+
+
+@pytest.mark.parametrize(
+    "operation_action",
+    [
+        "details",
+        "recheck",
+        "repair",
+        "confirm_repair",
+        "cancel",
+        "restart",
+        "confirm_restart",
+        "dismiss",
+    ],
+)
+def test_installed_ws_operations_actions_all_require_admission(
+    monkeypatch, operation_action
+):
+    monkeypatch.setattr(hook_runtime, "CallBackCard", _CallbackCard, raising=False)
+    monkeypatch.setattr(
+        hook_runtime, "P2CardActionTriggerResponse", _CallbackResponse, raising=False
+    )
+    monkeypatch.setattr(
+        hook_runtime,
+        "load_runtime_config",
+        lambda: SimpleNamespace(event_url="http://127.0.0.1:8765/events"),
+    )
+    posted = []
+    monkeypatch.setattr(
+        hook_runtime,
+        "_post_json_sync_response",
+        lambda url, payload, timeout: posted.append((url, payload, timeout))
+        or {"ok": True, "card": {"schema": "2.0"}},
+    )
+    adapter = _installed_action_adapter()
+
+    response = adapter._on_card_action_trigger(
+        _card_action_data(
+            {
+                "hfc_action": "operations.select",
+                "operation_action": operation_action,
+                "token": "opaque-token",
+                "profile_scope": "opaque-scope",
+            }
+        )
+    )
+
+    assert adapter.allowed == [("ou_operator", "oc_group", False)]
+    assert adapter.native_actions == []
+    assert posted[0][1]["event"]["action"]["value"]["operation_action"] == operation_action
+    assert response.card.type == "raw"
+
+
+@pytest.mark.parametrize(
+    ("allowed", "open_id"),
+    [(False, "ou_denied"), (True, "")],
+)
+def test_installed_ws_rejected_operations_are_claimed_without_gray_fallback(
+    monkeypatch, allowed, open_id
+):
+    monkeypatch.setattr(
+        hook_runtime, "P2CardActionTriggerResponse", _CallbackResponse, raising=False
+    )
+    monkeypatch.setattr(
+        hook_runtime,
+        "_post_json_sync_response",
+        lambda *args: pytest.fail("rejected operation must not be forwarded"),
+    )
+    adapter = _installed_action_adapter(allowed=allowed)
+
+    response = adapter._on_card_action_trigger(
+        _card_action_data(
+            {
+                "hfc_action": "operations.select",
+                "operation_action": "repair",
+                "token": "opaque-token",
+            },
+            open_id=open_id,
+        )
+    )
+
+    assert adapter.native_actions == []
+    assert response.card is None
+
+
+async def test_installed_ws_background_operations_suppress_native_gray_message():
+    adapter = _installed_action_adapter()
+
+    await adapter._handle_card_action_event(
+        _card_action_data(
+            {
+                "hfc_action": "operations.select",
+                "operation_action": "repair",
+                "token": "opaque-token",
+            }
+        )
+    )
+
+    assert adapter.gray_messages == []
+
+
+def test_installed_ws_unknown_action_keeps_native_fallback():
+    adapter = _installed_action_adapter()
+    data = _card_action_data({"hfc_action": "future.namespace"})
+
+    response = adapter._on_card_action_trigger(data)
+
+    assert response == "native-fallback"
+    assert adapter.native_actions == [data]
+
+
+def test_installed_ws_interaction_select_behavior_is_unchanged(monkeypatch):
+    monkeypatch.setattr(hook_runtime, "CallBackCard", _CallbackCard, raising=False)
+    monkeypatch.setattr(
+        hook_runtime, "P2CardActionTriggerResponse", _CallbackResponse, raising=False
+    )
+    monkeypatch.setattr(
+        hook_runtime,
+        "load_runtime_config",
+        lambda: SimpleNamespace(event_url="http://127.0.0.1:8765/events"),
+    )
+    posted = []
+    monkeypatch.setattr(
+        hook_runtime,
+        "_post_json_sync_response",
+        lambda url, payload, timeout: posted.append(payload)
+        or {"ok": True, "card": {"schema": "2.0"}},
+    )
+    adapter = _installed_action_adapter(allowed=False)
+
+    response = adapter._on_card_action_trigger(
+        _card_action_data(
+            {
+                "hfc_action": "interaction.select",
+                "interaction_id": "interaction-1",
+                "choice": "approve",
+                "choice_label": "Approve",
+                "token": "interaction-token",
+            }
+        )
+    )
+
+    assert adapter.allowed == []
+    assert adapter.native_actions == []
+    assert posted[0]["event"]["action"]["value"]["hfc_action"] == "interaction.select"
+    assert response.card.type == "raw"

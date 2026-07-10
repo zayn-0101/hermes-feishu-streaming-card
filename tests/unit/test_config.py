@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from hermes_feishu_card.config import load_config
+from hermes_feishu_card.config import load_config, resolve_operations_hermes_root
 
 
 CONFIG_ENV_VARS = (
@@ -53,6 +53,15 @@ def test_load_config_missing_file_returns_defaults(tmp_path):
             ],
         },
     }
+
+
+def test_operations_hermes_root_uses_process_hint_without_user_config(
+    monkeypatch, tmp_path
+):
+    hinted = tmp_path / "hermes-agent"
+    monkeypatch.setenv("HFC_HERMES_DIR", str(hinted))
+
+    assert resolve_operations_hermes_root() == hinted
 
 
 def test_example_config_uses_current_sidecar_schema():
