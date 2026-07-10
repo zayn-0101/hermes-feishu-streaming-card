@@ -394,6 +394,7 @@ async def _operations_action(
             callback_profile_id=authenticated_record.profile_id,
             callback_profile_scope=profile_scope,
             allow_expired=True,
+            allow_recheck_predecessor=action == "recheck",
         )
     except OperationRejected:
         return web.json_response({"ok": False, "error": "operation rejected"})

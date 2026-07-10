@@ -345,9 +345,12 @@ class OperationStore:
         callback_report_fingerprint: str = "",
         callback_recovery_fingerprint: str = "",
         allow_expired: bool = False,
+        allow_recheck_predecessor: bool = False,
     ) -> tuple[OperationClaims, OperationRecord]:
         with self._lock:
-            claims, record = self._verify_token_locked(token)
+            claims, record = self._verify_token_locked(
+                token, allow_recheck_predecessor=allow_recheck_predecessor
+            )
             self._verify_callback_locked(
                 claims,
                 record,
@@ -448,7 +451,11 @@ class OperationStore:
             if not claims.operation_id or not claims.action:
                 raise ValueError
             record = self._records.get(claims.operation_id)
-            if record is None and allow_recheck_predecessor:
+            if (
+                record is None
+                and allow_recheck_predecessor
+                and claims.action == "recheck"
+            ):
                 record = self._recheck_predecessors.get(claims.operation_id)
             if record is None:
                 raise OperationRejected("operation expired")

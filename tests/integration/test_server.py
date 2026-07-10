@@ -1080,6 +1080,80 @@ async def test_concurrent_recheck_returns_one_successor_and_moves_delivery_once(
     assert all(body["ok"] is True for body in bodies)
 
 
+async def test_full_capacity_repeated_recheck_returns_same_successor_and_moves_delivery_once(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (
+            report,
+            SimpleNamespace(root=Path("/private/hermes")),
+        ),
+    )
+    app = create_app(feishu_client)
+    store = OperationStore(secret=b"store", max_records=2)
+    active = store.create(
+        chat_id="oc_active",
+        profile_id="default",
+        report_fingerprint="active-report",
+        recovery_fingerprint="active-recovery",
+        group=False,
+        transport_secret=TRANSPORT_SECRET.encode("utf-8"),
+    )
+    active.state = "executing"
+    app[sidecar_server.OPERATIONS_STORE_KEY] = store
+    transfer_calls = []
+    original_transfer = sidecar_server._transfer_operation_delivery
+
+    def track_delivery_transfer(*args):
+        transfer_calls.append(args[1:])
+        return original_transfer(*args)
+
+    monkeypatch.setattr(
+        sidecar_server, "_transfer_operation_delivery", track_delivery_transfer
+    )
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_doctor",
+                "chat_type": "private",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        recheck = operations_button(feishu_client.sent[0][1], "重新检测")
+        original_id = next(iter(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]))
+        payload = operations_action_payload(
+            recheck,
+            chat_id="oc_private",
+            operator="ou_owner",
+        )
+        first_response = await test_client.post("/card/actions", json=payload)
+        first_body = await first_response.json()
+        repeated_response = await test_client.post("/card/actions", json=payload)
+        repeated_body = await repeated_response.json()
+    finally:
+        await test_client.close()
+
+    assert first_body["ok"] is True
+    assert repeated_body["ok"] is True
+    assert repeated_body["operation_id"] == first_body["operation_id"]
+    assert repeated_body["card"] == first_body["card"]
+    assert transfer_calls == [(original_id, first_body["operation_id"])]
+    assert original_id not in app[sidecar_server.OPERATIONS_DELIVERIES_KEY]
+    assert set(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]) == {
+        first_body["operation_id"]
+    }
+
+
 async def test_private_repair_is_exactly_once_under_concurrent_confirmation(monkeypatch):
     feishu_client = FakeFeishuClient()
     report = operations_report()
