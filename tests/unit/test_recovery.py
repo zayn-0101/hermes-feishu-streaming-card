@@ -5,10 +5,14 @@ from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 from pathlib import Path
 import shutil
+import subprocess
+import sys
+import threading
 
 import pytest
 
 from hermes_feishu_card.install.detect import detect_hermes
+from hermes_feishu_card.install import recovery
 from hermes_feishu_card.install.patcher import (
     CRON_PATCH_END,
     apply_cron_patch,
@@ -16,8 +20,10 @@ from hermes_feishu_card.install.patcher import (
 )
 from hermes_feishu_card.install.recovery import (
     RecoveryFinding,
+    RecoveryRefused,
     _classify_evidence,
     _read_evidence,
+    execute_recovery,
     plan_recovery,
     sanitize_recovery_plan,
 )
@@ -75,6 +81,269 @@ def installed_state(tmp_path):
         encoding="utf-8",
     )
     return detection, original, patched, manifest_path
+
+
+def _corrupt_gateway_completion(installed_state):
+    detection, _original, patched, manifest_path = installed_state
+    corrupt = patched.replace("# HERMES_FEISHU_CARD_COMPLETE_PATCH_END\n", "")
+    detection.run_py.write_text(corrupt, encoding="utf-8")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["patched_sha256"] = sha256(corrupt.encode("utf-8")).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return detection, corrupt, manifest_path
+
+
+def test_execute_recovery_replans_and_refuses_stale_fingerprint(installed_state):
+    detection, _corrupt, _manifest_path = _corrupt_gateway_completion(
+        installed_state
+    )
+    plan = plan_recovery(detection)
+    detection.run_py.write_text(
+        detection.run_py.read_text(encoding="utf-8") + "\nUSER_EDIT = True\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RecoveryRefused, match="evidence changed"):
+        execute_recovery(detection, expected_fingerprint=plan.fingerprint)
+
+
+def test_execute_recovery_replaces_once_and_keeps_three_quarantines(
+    installed_state,
+):
+    detection, _original, patched, manifest_path = installed_state
+    for _ in range(4):
+        corrupt = patched.replace(
+            "# HERMES_FEISHU_CARD_COMPLETE_PATCH_END\n", ""
+        )
+        detection.run_py.write_text(corrupt, encoding="utf-8")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["patched_sha256"] = sha256(corrupt.encode("utf-8")).hexdigest()
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        result = execute_recovery(detection)
+
+        assert result.status == "repaired"
+        assert result.actions == (
+            "run.py: restored verified backup",
+            "run.py: reapplied current hook",
+        )
+        assert result.quarantine_name
+        assert detection.run_py.read_text(encoding="utf-8") == patched
+    assert len(list(detection.run_py.parent.glob("run.py.hfc-corrupt-*"))) == 3
+
+
+def test_execute_recovery_same_process_is_exactly_once(installed_state):
+    detection, _corrupt, _manifest_path = _corrupt_gateway_completion(
+        installed_state
+    )
+    expected = plan_recovery(detection).fingerprint
+    barrier = threading.Barrier(3)
+    outcomes = []
+
+    def run():
+        barrier.wait()
+        try:
+            outcomes.append(execute_recovery(detection, expected).status)
+        except RecoveryRefused as exc:
+            outcomes.append(str(exc))
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert sorted(outcomes) == ["recovery evidence changed; rerun diagnosis", "repaired"]
+    assert len(list(detection.run_py.parent.glob("run.py.hfc-corrupt-*"))) == 1
+
+
+def test_execute_recovery_subprocesses_are_exactly_once(installed_state):
+    detection, _corrupt, _manifest_path = _corrupt_gateway_completion(
+        installed_state
+    )
+    expected = plan_recovery(detection).fingerprint
+    script = """
+from hermes_feishu_card.install.detect import detect_hermes
+from hermes_feishu_card.install.recovery import RecoveryRefused, execute_recovery
+import sys
+try:
+    print(execute_recovery(detect_hermes(sys.argv[1]), sys.argv[2]).status)
+except RecoveryRefused as exc:
+    print(str(exc))
+"""
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(detection.root), expected],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+    outcomes = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+        outcomes.append(stdout.strip())
+
+    assert sorted(outcomes) == ["recovery evidence changed; rerun diagnosis", "repaired"]
+    assert len(list(detection.run_py.parent.glob("run.py.hfc-corrupt-*"))) == 1
+
+
+def test_execute_recovery_rolls_back_when_atomic_replace_fails(
+    installed_state, monkeypatch
+):
+    detection, corrupt, manifest_path = _corrupt_gateway_completion(installed_state)
+    original_manifest = manifest_path.read_text(encoding="utf-8")
+    real_replace = recovery._atomic_replace
+
+    def fail_manifest_replace(staged, target):
+        if target == manifest_path:
+            raise OSError("injected manifest replace failure")
+        return real_replace(staged, target)
+
+    monkeypatch.setattr(recovery, "_atomic_replace", fail_manifest_replace)
+
+    with pytest.raises(OSError, match="injected manifest replace failure"):
+        execute_recovery(detection)
+
+    assert detection.run_py.read_text(encoding="utf-8") == corrupt
+    assert manifest_path.read_text(encoding="utf-8") == original_manifest
+    assert not list(detection.run_py.parent.glob("run.py.hfc-corrupt-*"))
+
+
+def test_execute_recovery_rolls_back_when_gateway_replace_fails(
+    installed_state, monkeypatch
+):
+    detection, corrupt, manifest_path = _corrupt_gateway_completion(installed_state)
+    original_manifest = manifest_path.read_text(encoding="utf-8")
+    real_replace = recovery._atomic_replace
+
+    def fail_gateway_replace(staged, target):
+        if target == detection.run_py:
+            raise OSError("injected gateway replace failure")
+        return real_replace(staged, target)
+
+    monkeypatch.setattr(recovery, "_atomic_replace", fail_gateway_replace)
+
+    with pytest.raises(OSError, match="injected gateway replace failure"):
+        execute_recovery(detection)
+
+    assert detection.run_py.read_text(encoding="utf-8") == corrupt
+    assert manifest_path.read_text(encoding="utf-8") == original_manifest
+    assert not list(detection.run_py.parent.glob("run.py.hfc-corrupt-*"))
+
+
+def test_execute_recovery_does_not_mutate_when_staging_manifest_fails(
+    installed_state, monkeypatch
+):
+    detection, corrupt, manifest_path = _corrupt_gateway_completion(installed_state)
+    original_manifest = manifest_path.read_text(encoding="utf-8")
+    real_stage = recovery._stage_text
+
+    def fail_manifest_stage(target, contents):
+        if target == manifest_path:
+            raise OSError("injected manifest stage failure")
+        return real_stage(target, contents)
+
+    monkeypatch.setattr(recovery, "_stage_text", fail_manifest_stage)
+
+    with pytest.raises(OSError, match="injected manifest stage failure"):
+        execute_recovery(detection)
+
+    assert detection.run_py.read_text(encoding="utf-8") == corrupt
+    assert manifest_path.read_text(encoding="utf-8") == original_manifest
+    assert not list(detection.run_py.parent.glob("run.py.hfc-corrupt-*"))
+
+
+def test_execute_recovery_repairs_cron_in_plan_order(installed_state):
+    detection, _original, _patched, manifest_path = installed_state
+    assert detection.cron_py is not None
+    cron_patched = detection.cron_py.read_text(encoding="utf-8")
+    corrupt = cron_patched.replace(f"{CRON_PATCH_END}\n", "")
+    detection.cron_py.write_text(corrupt, encoding="utf-8")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["cron_patched_sha256"] = sha256(
+        corrupt.encode("utf-8")
+    ).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    result = execute_recovery(detection)
+
+    assert result.status == "repaired"
+    assert result.actions == (
+        "cron scheduler: restored verified backup",
+        "cron scheduler: reapplied current hook",
+    )
+    assert detection.cron_py.read_text(encoding="utf-8") == cron_patched
+
+
+def test_execute_recovery_rebuilds_cron_backup_and_manifest(installed_state):
+    detection, _original, _patched, manifest_path = installed_state
+    assert detection.cron_py is not None
+    cron_backup = detection.cron_py.with_name(
+        "scheduler.py.hermes_feishu_card.bak"
+    )
+    expected_backup = cron_backup.read_text(encoding="utf-8")
+    cron_backup.unlink()
+
+    result = execute_recovery(detection)
+
+    assert result.status == "repaired"
+    assert result.actions == ("cron backup: recreated", "manifest: rebuilt")
+    assert cron_backup.read_text(encoding="utf-8") == expected_backup
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["cron_backup_sha256"] == sha256(
+        expected_backup.encode("utf-8")
+    ).hexdigest()
+
+
+def test_execute_recovery_clears_verified_stale_state_in_plan_order(
+    installed_state,
+):
+    detection, original, _patched, manifest_path = installed_state
+    assert detection.cron_py is not None
+    cron_backup = detection.cron_py.with_name(
+        "scheduler.py.hermes_feishu_card.bak"
+    )
+    cron_original = cron_backup.read_text(encoding="utf-8")
+    gateway_backup = detection.run_py.with_name(
+        "run.py.hermes_feishu_card.bak"
+    )
+    detection.run_py.write_text(original, encoding="utf-8")
+
+    result = execute_recovery(detection)
+
+    assert result.status == "cleared"
+    assert result.actions == (
+        "cron scheduler: restored verified backup",
+        "install state: cleared stale unpatched state",
+    )
+    assert detection.run_py.read_text(encoding="utf-8") == original
+    assert detection.cron_py.read_text(encoding="utf-8") == cron_original
+    assert not gateway_backup.exists()
+    assert not cron_backup.exists()
+    assert not manifest_path.exists()
+
+
+def test_execute_recovery_refuses_already_repaired_state(installed_state):
+    detection, _corrupt, _manifest_path = _corrupt_gateway_completion(
+        installed_state
+    )
+    execute_recovery(detection)
+    repaired = detection.run_py.read_text(encoding="utf-8")
+
+    with pytest.raises(RecoveryRefused, match="No recovery is required"):
+        execute_recovery(detection)
+
+    assert detection.run_py.read_text(encoding="utf-8") == repaired
 
 
 def test_plan_recovery_allows_manifest_owned_corrupt_completion_markers(

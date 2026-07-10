@@ -25,7 +25,12 @@ from hermes_feishu_card.events import SidecarEvent
 from hermes_feishu_card.feishu_client import FeishuAPIError, FeishuClient, FeishuClientConfig
 from hermes_feishu_card.install.detect import HermesDetection, detect_hermes
 from hermes_feishu_card.install.manifest import file_sha256
-from hermes_feishu_card.install.recovery import plan_recovery
+from hermes_feishu_card.install.recovery import (
+    RecoveryRefused,
+    _first_refusal,
+    execute_recovery,
+    plan_recovery,
+)
 from hermes_feishu_card.install.patcher import (
     apply_patch,
     apply_cron_patch,
@@ -108,6 +113,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="repair known-safe Hermes hook install state before installing",
     )
     setup.add_argument(
+        "--no-repair",
+        action="store_true",
+        help="do not automatically repair known-safe Hermes hook install state",
+    )
+    setup.add_argument(
         "--yes",
         action="store_true",
         required=True,
@@ -152,6 +162,8 @@ def _build_parser() -> argparse.ArgumentParser:
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--hermes-dir", required=True)
         command_parser.add_argument("--yes", action="store_true", required=True)
+        if command == "install":
+            command_parser.add_argument("--no-repair", action="store_true")
     return parser
 
 
@@ -184,7 +196,7 @@ def _run_setup(args: argparse.Namespace) -> int:
     print(_format_hermes_detection(detection))
     _print_hermes_streaming_guidance(Path(args.hermes_dir))
 
-    if args.repair:
+    if args.repair and not args.no_repair:
         repair_code = _run_repair(
             argparse.Namespace(hermes_dir=args.hermes_dir, yes=True)
         )
@@ -192,7 +204,11 @@ def _run_setup(args: argparse.Namespace) -> int:
             return repair_code
 
     install_code = _run_install(
-        argparse.Namespace(hermes_dir=args.hermes_dir, yes=True)
+        argparse.Namespace(
+            hermes_dir=args.hermes_dir,
+            yes=True,
+            no_repair=args.no_repair,
+        )
     )
     if install_code != 0:
         return install_code
@@ -1501,6 +1517,23 @@ def _run_install(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    recovery_plan = plan_recovery(detection)
+    if recovery_plan.actions:
+        if not recovery_plan.executable:
+            print(f"error: {_first_refusal(recovery_plan)}", file=sys.stderr)
+            return 1
+        if not getattr(args, "no_repair", False):
+            try:
+                recovery_result = execute_recovery(
+                    detection,
+                    expected_fingerprint=recovery_plan.fingerprint,
+                )
+            except (OSError, UnicodeError, RecoveryRefused) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            for action in recovery_result.actions:
+                print(action)
+
     run_py = detection.run_py
     backup_path = _backup_path(run_py)
     cron_py = detection.cron_py if detection.cron_py_exists else None
@@ -1517,7 +1550,6 @@ def _run_install(args: argparse.Namespace) -> int:
         cron_original = (
             _read_text_preserve_newlines(cron_py) if cron_py is not None else None
         )
-        _clear_stale_unpatched_install_state(run_py, backup_path, manifest_path)
         manifest_existed = manifest_path.exists()
         backup_existed = backup_path.exists()
         cron_backup_existed = bool(cron_backup_path and cron_backup_path.exists())
@@ -1612,197 +1644,40 @@ def _run_uninstall(args: argparse.Namespace) -> int:
 
 
 def _automatic_repair_available(detection: HermesDetection) -> bool:
-    try:
-        return bool(_repair_install_state(detection, dry_run=True))
-    except (OSError, UnicodeError, ValueError):
-        return False
+    plan = plan_recovery(detection)
+    return bool(plan.actions and plan.executable)
 
 
 def _repair_install_state(
     detection: HermesDetection, *, dry_run: bool = False
 ) -> list[str]:
-    run_py = detection.run_py
-    backup_path = _backup_path(run_py)
-    manifest_path = _manifest_path(detection.root)
-    cron_py = detection.cron_py if detection.cron_py_exists else None
-    cron_backup_path = _backup_path(cron_py) if cron_py is not None else None
-
-    try:
-        _validate_existing_install_state(
-            run_py,
-            backup_path,
-            manifest_path,
-            cron_py=cron_py,
-            cron_backup_path=cron_backup_path,
-        )
+    plan = plan_recovery(detection)
+    if not plan.actions:
         return []
-    except ValueError:
-        pass
-
-    current = _read_text_preserve_newlines(run_py)
-    unpatched = _owned_unpatched_text(current, "run.py")
-    has_owned_patch = unpatched != current
-    if not has_owned_patch:
-        actions = ["install state: cleared stale unpatched state"]
-        if dry_run:
-            return actions
-        _clear_install_state(backup_path, manifest_path)
-        return actions
-
-    backup_exists = backup_path.exists()
-    manifest_exists = manifest_path.exists()
-    backup_text = _read_text_preserve_newlines(backup_path) if backup_exists else None
-    if backup_text is not None:
-        _validate_backup_contains_original(backup_text, "repair")
-        if backup_text != unpatched:
-            raise ValueError("run.py changed since install; refusing to repair")
-
-    manifest = _read_manifest_for_repair(manifest_path)
-    if manifest is not None:
-        _validate_repair_manifest_run_py(run_py, manifest)
-        if backup_exists:
-            _validate_repair_manifest_backup(backup_path, manifest)
-
-    actions: list[str] = []
-    should_write_backup = not backup_exists
-    if should_write_backup:
-        actions.append("backup: recreated")
-
-    cron_actions = _repair_cron_state(
-        cron_py,
-        cron_backup_path,
-        manifest,
-        dry_run=dry_run,
-    )
-    should_write_manifest = (
-        not manifest_exists
-        or manifest is None
-        or should_write_backup
-        or bool(cron_actions)
-    )
-    if should_write_manifest:
-        actions.append("manifest: rebuilt")
-
+    if not plan.executable:
+        raise RecoveryRefused(_first_refusal(plan))
     if dry_run:
-        return actions
-
-    if should_write_backup:
-        _atomic_write_text(backup_path, unpatched)
-    for action in cron_actions:
-        if action == "cron backup: recreated" and cron_py is not None and cron_backup_path is not None:
-            cron_current = _read_text_preserve_newlines(cron_py)
-            _atomic_write_text(
-                cron_backup_path,
-                _owned_cron_unpatched_text(cron_current, "cron/scheduler.py"),
-            )
-    if should_write_manifest:
-        _write_manifest(manifest_path, run_py, backup_path, cron_py, cron_backup_path)
-    _validate_existing_install_state(
-        run_py,
-        backup_path,
-        manifest_path,
-        cron_py=cron_py,
-        cron_backup_path=cron_backup_path,
+        return [_repair_action_message(action) for action in plan.actions]
+    return list(
+        execute_recovery(
+            detection,
+            expected_fingerprint=plan.fingerprint,
+        ).actions
     )
-    return actions + cron_actions
 
 
-def _clear_stale_unpatched_install_state(
-    run_py: Path, backup_path: Path, manifest_path: Path
-) -> bool:
-    if not backup_path.exists() and not manifest_path.exists():
-        return False
-    current = _read_text_preserve_newlines(run_py)
-    try:
-        unpatched = _owned_unpatched_text(current, "run.py")
-    except ValueError:
-        return False
-    if unpatched != current:
-        return False
-    _clear_install_state(backup_path, manifest_path)
-    return True
-
-
-def _read_manifest_for_repair(manifest_path: Path) -> dict[str, object] | None:
-    if not manifest_path.exists():
-        return None
-    try:
-        return _read_manifest(manifest_path)
-    except ValueError:
-        return None
-
-
-def _validate_repair_manifest_run_py(
-    run_py: Path, manifest: dict[str, object]
-) -> None:
-    patched_sha256 = manifest.get("patched_sha256")
-    if isinstance(patched_sha256, str) and patched_sha256:
-        if file_sha256(run_py) != patched_sha256:
-            raise ValueError("run.py changed since install; refusing to repair")
-
-
-def _validate_repair_manifest_backup(
-    backup_path: Path, manifest: dict[str, object]
-) -> None:
-    backup_sha256 = manifest.get("backup_sha256")
-    if isinstance(backup_sha256, str) and backup_sha256:
-        if file_sha256(backup_path) != backup_sha256:
-            raise ValueError("backup changed since install; refusing to repair")
-
-
-def _repair_cron_state(
-    cron_py: Path | None,
-    cron_backup_path: Path | None,
-    manifest: dict[str, object] | None,
-    *,
-    dry_run: bool,
-) -> list[str]:
-    if cron_py is None or cron_backup_path is None or not cron_py.exists():
-        return []
-    cron_current = _read_text_preserve_newlines(cron_py)
-    cron_unpatched = _owned_cron_unpatched_text(cron_current, "cron/scheduler.py")
-    has_owned_cron_patch = cron_unpatched != cron_current
-    cron_backup_exists = cron_backup_path.exists()
-    if not has_owned_cron_patch:
-        if cron_backup_exists:
-            raise ValueError(
-                "install state incomplete; cron backup exists without owned patch"
-            )
-        return []
-    if cron_backup_exists:
-        cron_backup_text = _read_text_preserve_newlines(cron_backup_path)
-        if remove_cron_patch(cron_backup_text) != cron_backup_text:
-            raise ValueError("cron backup changed since install; refusing to repair")
-        if cron_backup_text != cron_unpatched:
-            raise ValueError("cron scheduler changed since install; refusing to repair")
-    if manifest is not None:
-        cron_patched_sha256 = manifest.get("cron_patched_sha256")
-        if isinstance(cron_patched_sha256, str) and cron_patched_sha256:
-            if file_sha256(cron_py) != cron_patched_sha256:
-                raise ValueError(
-                    "cron scheduler changed since install; refusing to repair"
-                )
-        cron_backup_sha256 = manifest.get("cron_backup_sha256")
-        if cron_backup_exists and isinstance(cron_backup_sha256, str) and cron_backup_sha256:
-            if file_sha256(cron_backup_path) != cron_backup_sha256:
-                raise ValueError("cron backup changed since install; refusing to repair")
-    if cron_backup_exists:
-        return []
-    return ["cron backup: recreated"]
-
-
-def _owned_unpatched_text(current: str, label: str) -> str:
-    try:
-        return remove_patch(current)
-    except ValueError as exc:
-        raise ValueError(f"{label} has corrupt patch markers; refusing to repair") from exc
-
-
-def _owned_cron_unpatched_text(current: str, label: str) -> str:
-    try:
-        return remove_cron_patch(current)
-    except ValueError as exc:
-        raise ValueError(f"{label} has corrupt patch markers; refusing to repair") from exc
+def _repair_action_message(action: str) -> str:
+    messages = {
+        "restore_verified_backup": "run.py: restored verified backup",
+        "reapply_current_hook": "run.py: reapplied current hook",
+        "rebuild_backup": "backup: recreated",
+        "rebuild_manifest": "manifest: rebuilt",
+        "restore_verified_cron_backup": "cron scheduler: restored verified backup",
+        "reapply_current_cron_hook": "cron scheduler: reapplied current hook",
+        "rebuild_cron_backup": "cron backup: recreated",
+        "clear_stale_install_state": "install state: cleared stale unpatched state",
+    }
+    return messages[action]
 
 
 def _restore(hermes_root: Path) -> None:

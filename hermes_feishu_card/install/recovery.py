@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
-from typing import Dict, Optional, Tuple
+import tempfile
+import threading
+import time
+from typing import Dict, Iterator, List, Optional, Tuple
+from uuid import uuid4
 
 from .detect import HermesDetection
 from .patcher import (
@@ -31,6 +37,21 @@ KNOWN_STATES = {
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _STATUS_PREFIX = "!recovery:"
 _MANIFEST_ERROR = "_recovery_error"
+_LOCK_NAME = ".hermes_feishu_card_recovery.lock"
+_LOCK_TIMEOUT_SECONDS = 10.0
+_PROCESS_LOCKS: Dict[str, threading.Lock] = {}
+_PROCESS_LOCKS_GUARD = threading.Lock()
+
+_ACTION_MESSAGES = {
+    "restore_verified_backup": "run.py: restored verified backup",
+    "reapply_current_hook": "run.py: reapplied current hook",
+    "rebuild_backup": "backup: recreated",
+    "rebuild_manifest": "manifest: rebuilt",
+    "restore_verified_cron_backup": "cron scheduler: restored verified backup",
+    "reapply_current_cron_hook": "cron scheduler: reapplied current hook",
+    "rebuild_cron_backup": "cron backup: recreated",
+    "clear_stale_install_state": "install state: cleared stale unpatched state",
+}
 
 
 @dataclass(frozen=True)
@@ -72,6 +93,490 @@ class RecoveryPlan:
     fingerprint: str
     actions: Tuple[str, ...]
     findings: Tuple[RecoveryFinding, ...]
+
+
+class RecoveryRefused(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class RecoveryResult:
+    status: str
+    plan: RecoveryPlan
+    actions: Tuple[str, ...]
+    quarantine_name: Optional[str]
+    message: str
+
+
+@dataclass
+class _RecoveryState:
+    run_text: str
+    backup_text: Optional[str]
+    cron_text: Optional[str]
+    cron_backup_text: Optional[str]
+    clear_install_state: bool = False
+
+
+@contextmanager
+def _root_lock(root: Path) -> Iterator[None]:
+    root_key = str(root.resolve())
+    with _PROCESS_LOCKS_GUARD:
+        process_lock = _PROCESS_LOCKS.setdefault(root_key, threading.Lock())
+    if not process_lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS):
+        raise RecoveryRefused("timed out waiting for recovery lock")
+
+    lock_handle = None
+    try:
+        lock_path = root / _LOCK_NAME
+        if lock_path.is_symlink():
+            raise RecoveryRefused("recovery lock path must not be a symbolic link")
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(str(lock_path), flags, 0o600)
+        lock_handle = os.fdopen(descriptor, "r+b")
+        _acquire_os_lock(lock_handle)
+        try:
+            yield
+        finally:
+            _release_os_lock(lock_handle)
+    finally:
+        if lock_handle is not None:
+            lock_handle.close()
+        process_lock.release()
+
+
+def execute_recovery(
+    detection: HermesDetection,
+    expected_fingerprint: Optional[str] = None,
+) -> RecoveryResult:
+    with _root_lock(detection.root):
+        fresh = plan_recovery(detection)
+        if expected_fingerprint and fresh.fingerprint != expected_fingerprint:
+            raise RecoveryRefused("recovery evidence changed; rerun diagnosis")
+        if not fresh.executable:
+            raise RecoveryRefused(_first_refusal(fresh))
+        return _execute_fresh_plan(detection, fresh)
+
+
+def _execute_fresh_plan(
+    detection: HermesDetection, plan: RecoveryPlan
+) -> RecoveryResult:
+    evidence = _read_evidence(detection)
+    if _plan_from_evidence(detection, evidence).fingerprint != plan.fingerprint:
+        raise RecoveryRefused("recovery evidence changed; rerun diagnosis")
+
+    state = _RecoveryState(
+        run_text=evidence.current_text,
+        backup_text=evidence.backup_text,
+        cron_text=evidence.cron_current_text,
+        cron_backup_text=evidence.cron_backup_text,
+    )
+    quarantine_sources: List[Tuple[Path, str]] = []
+    for action in plan.actions:
+        _apply_recovery_action(
+            detection,
+            evidence,
+            state,
+            action,
+            quarantine_sources,
+        )
+
+    _validate_recovery_state(detection, state)
+    changes, quarantine_name = _build_recovery_changes(
+        detection,
+        evidence,
+        state,
+        quarantine_sources,
+    )
+    _commit_recovery_changes(detection, plan, changes)
+    status = "cleared" if state.clear_install_state else "repaired"
+    message = (
+        "Stale install state cleared."
+        if state.clear_install_state
+        else "Verified recovery completed."
+    )
+    return RecoveryResult(
+        status=status,
+        plan=plan,
+        actions=tuple(_ACTION_MESSAGES[action] for action in plan.actions),
+        quarantine_name=quarantine_name,
+        message=message,
+    )
+
+
+def _first_refusal(plan: RecoveryPlan) -> str:
+    finding_codes = {finding.code for finding in plan.findings}
+    if "manifest_missing" in finding_codes:
+        return "install state incomplete; manifest missing; refusing to repair"
+    legacy_messages = {
+        "current_hash_mismatch": "run.py changed since install; refusing to repair",
+        "current_patch_mismatch": "run.py changed since install; refusing to repair",
+        "backup_hash_mismatch": "backup changed since install; refusing to repair",
+        "backup_source_mismatch": "run.py changed since install; refusing to repair",
+        "cron_current_hash_mismatch": "cron scheduler changed since install; refusing to repair",
+        "cron_current_patch_mismatch": "cron scheduler changed since install; refusing to repair",
+        "cron_backup_hash_mismatch": "cron backup changed since install; refusing to repair",
+        "cron_backup_source_mismatch": "cron scheduler changed since install; refusing to repair",
+        "manifest_backup_hash_invalid": "manifest missing backup sha256; refusing to repair",
+        "manifest_current_hash_invalid": "manifest missing patched sha256; refusing to repair",
+    }
+    for finding in plan.findings:
+        if finding.severity == "error":
+            return legacy_messages.get(finding.code, finding.message)
+    if not plan.actions:
+        return "No recovery is required."
+    return "Recovery evidence is not safe to execute."
+
+
+def _apply_recovery_action(
+    detection: HermesDetection,
+    evidence: RecoveryEvidence,
+    state: _RecoveryState,
+    action: str,
+    quarantine_sources: List[Tuple[Path, str]],
+) -> None:
+    if action == "restore_verified_backup":
+        if state.backup_text is None:
+            raise RecoveryRefused("Verified gateway backup is unavailable.")
+        if evidence.marker_error and not any(
+            path == detection.run_py for path, _text in quarantine_sources
+        ):
+            quarantine_sources.append((detection.run_py, state.run_text))
+        state.run_text = state.backup_text
+    elif action == "reapply_current_hook":
+        source = state.backup_text
+        if source is None:
+            source = remove_patch(state.run_text)
+        state.run_text = apply_patch(
+            source, strategy=detection.hook_strategy or "legacy_gateway_run"
+        )
+    elif action == "rebuild_backup":
+        state.backup_text = remove_patch(state.run_text)
+    elif action == "restore_verified_cron_backup":
+        if state.cron_text is None or state.cron_backup_text is None:
+            raise RecoveryRefused("Verified cron backup is unavailable.")
+        if evidence.cron_marker_error and detection.cron_py is not None and not any(
+            path == detection.cron_py for path, _text in quarantine_sources
+        ):
+            quarantine_sources.append((detection.cron_py, state.cron_text))
+        state.cron_text = state.cron_backup_text
+    elif action == "reapply_current_cron_hook":
+        if state.cron_text is None:
+            raise RecoveryRefused("Cron source is unavailable.")
+        source = state.cron_backup_text
+        if source is None:
+            source = remove_cron_patch(state.cron_text)
+        state.cron_text = apply_cron_patch(source)
+    elif action == "rebuild_cron_backup":
+        if state.cron_text is None:
+            raise RecoveryRefused("Cron source is unavailable.")
+        state.cron_backup_text = remove_cron_patch(state.cron_text)
+    elif action == "rebuild_manifest":
+        pass
+    elif action == "clear_stale_install_state":
+        state.backup_text = None
+        state.cron_backup_text = None
+        state.clear_install_state = True
+    else:
+        raise RecoveryRefused("Unknown recovery action; refusing to mutate files.")
+
+
+def _validate_recovery_state(
+    detection: HermesDetection, state: _RecoveryState
+) -> None:
+    try:
+        ast.parse(state.run_text)
+        unpatched = remove_patch(state.run_text)
+        if state.clear_install_state:
+            if unpatched != state.run_text:
+                raise ValueError("owned gateway patch remains")
+        else:
+            if state.backup_text is None:
+                raise ValueError("gateway backup missing")
+            ast.parse(state.backup_text)
+            if remove_patch(state.backup_text) != state.backup_text:
+                raise ValueError("gateway backup contains owned patch")
+            expected = apply_patch(
+                state.backup_text,
+                strategy=detection.hook_strategy or "legacy_gateway_run",
+            )
+            if state.run_text != expected or remove_patch(state.run_text) != state.backup_text:
+                raise ValueError("gateway candidate does not match verified source")
+
+        if state.cron_text is not None:
+            ast.parse(state.cron_text)
+            cron_unpatched = remove_cron_patch(state.cron_text)
+            if state.clear_install_state:
+                if cron_unpatched != state.cron_text:
+                    raise ValueError("owned cron patch remains")
+            else:
+                if state.cron_backup_text is None:
+                    raise ValueError("cron backup missing")
+                ast.parse(state.cron_backup_text)
+                if remove_cron_patch(state.cron_backup_text) != state.cron_backup_text:
+                    raise ValueError("cron backup contains owned patch")
+                expected_cron = apply_cron_patch(state.cron_backup_text)
+                if (
+                    state.cron_text != expected_cron
+                    or remove_cron_patch(state.cron_text) != state.cron_backup_text
+                ):
+                    raise ValueError("cron candidate does not match verified source")
+    except (SyntaxError, ValueError) as exc:
+        raise RecoveryRefused(
+            "staged recovery validation failed; no files were changed"
+        ) from exc
+
+
+def _build_recovery_changes(
+    detection: HermesDetection,
+    evidence: RecoveryEvidence,
+    state: _RecoveryState,
+    quarantine_sources: List[Tuple[Path, str]],
+) -> Tuple[List[Tuple[Path, Optional[str]]], Optional[str]]:
+    changes: List[Tuple[Path, Optional[str]]] = []
+    quarantine_name = None
+    for source_path, source_text in quarantine_sources:
+        quarantine_path = _new_quarantine_path(source_path)
+        if quarantine_name is None:
+            quarantine_name = quarantine_path.name
+        changes.append((quarantine_path, source_text))
+        existing = sorted(
+            source_path.parent.glob(f"{source_path.name}.hfc-corrupt-*"),
+            key=_quarantine_sort_key,
+        )
+        for stale in existing[:-2]:
+            changes.append((stale, None))
+
+    backup_path = detection.run_py.with_name(
+        f"{detection.run_py.name}{BACKUP_SUFFIX}"
+    )
+    manifest_path = detection.root / MANIFEST_NAME
+    _append_text_change(changes, detection.run_py, evidence.current_text, state.run_text)
+    _append_optional_change(
+        changes, backup_path, evidence.backup_text, state.backup_text
+    )
+
+    if detection.cron_py is not None:
+        cron_backup_path = detection.cron_py.with_name(
+            f"{detection.cron_py.name}{BACKUP_SUFFIX}"
+        )
+        _append_optional_change(
+            changes,
+            detection.cron_py,
+            evidence.cron_current_text,
+            state.cron_text,
+        )
+        _append_optional_change(
+            changes,
+            cron_backup_path,
+            evidence.cron_backup_text,
+            state.cron_backup_text,
+        )
+
+    old_manifest = _read_text(manifest_path) if manifest_path.exists() else None
+    new_manifest = None
+    if not state.clear_install_state:
+        new_manifest = _render_manifest(detection, state)
+    _append_optional_change(changes, manifest_path, old_manifest, new_manifest)
+    return changes, quarantine_name
+
+
+def _append_text_change(
+    changes: List[Tuple[Path, Optional[str]]],
+    path: Path,
+    before: str,
+    after: str,
+) -> None:
+    if before != after:
+        changes.append((path, after))
+
+
+def _append_optional_change(
+    changes: List[Tuple[Path, Optional[str]]],
+    path: Path,
+    before: Optional[str],
+    after: Optional[str],
+) -> None:
+    if before != after:
+        changes.append((path, after))
+
+
+def _render_manifest(detection: HermesDetection, state: _RecoveryState) -> str:
+    if state.backup_text is None:
+        raise RecoveryRefused("Gateway backup is required for the install manifest.")
+    backup_path = detection.run_py.with_name(
+        f"{detection.run_py.name}{BACKUP_SUFFIX}"
+    )
+    manifest = {
+        "run_py": _relative_path(detection.root, detection.run_py),
+        "patched_sha256": _text_sha256(state.run_text),
+        "backup": _relative_path(detection.root, backup_path),
+        "backup_sha256": _text_sha256(state.backup_text),
+    }
+    if detection.cron_py is not None and state.cron_text is not None:
+        if state.cron_backup_text is None:
+            raise RecoveryRefused("Cron backup is required for the install manifest.")
+        cron_backup_path = detection.cron_py.with_name(
+            f"{detection.cron_py.name}{BACKUP_SUFFIX}"
+        )
+        manifest.update(
+            {
+                "cron_py": _relative_path(detection.root, detection.cron_py),
+                "cron_patched_sha256": _text_sha256(state.cron_text),
+                "cron_backup": _relative_path(detection.root, cron_backup_path),
+                "cron_backup_sha256": _text_sha256(state.cron_backup_text),
+            }
+        )
+    return json.dumps(manifest, sort_keys=True) + "\n"
+
+
+def _commit_recovery_changes(
+    detection: HermesDetection,
+    plan: RecoveryPlan,
+    changes: List[Tuple[Path, Optional[str]]],
+) -> None:
+    staged: Dict[Path, Path] = {}
+    rollback: Dict[Path, Path] = {}
+    originals: Dict[Path, Optional[str]] = {}
+    changed: List[Path] = []
+    try:
+        for target, contents in changes:
+            original = _read_text(target) if target.exists() else None
+            originals[target] = original
+            if original is not None:
+                rollback[target] = _stage_text(target, original)
+            if contents is not None:
+                staged[target] = _stage_text(target, contents)
+
+        if plan_recovery(detection).fingerprint != plan.fingerprint:
+            raise RecoveryRefused("recovery evidence changed; rerun diagnosis")
+
+        for target, contents in changes:
+            changed.append(target)
+            if contents is None:
+                target.unlink(missing_ok=True)
+            else:
+                _atomic_replace(staged[target], target)
+                staged.pop(target, None)
+    except Exception as exc:
+        rollback_error = _rollback_recovery_changes(changed, originals, rollback)
+        if rollback_error is not None:
+            raise RecoveryRefused(
+                "recovery rollback failed; install state requires manual review"
+            ) from exc
+        raise
+    finally:
+        for temp_path in list(staged.values()) + list(rollback.values()):
+            temp_path.unlink(missing_ok=True)
+
+
+def _rollback_recovery_changes(
+    changed: List[Path],
+    originals: Dict[Path, Optional[str]],
+    rollback: Dict[Path, Path],
+) -> Optional[Exception]:
+    first_error = None
+    for target in reversed(changed):
+        try:
+            original = originals[target]
+            if original is None:
+                target.unlink(missing_ok=True)
+            else:
+                os.replace(str(rollback[target]), str(target))
+                rollback.pop(target, None)
+        except OSError as exc:
+            if first_error is None:
+                first_error = exc
+    return first_error
+
+
+def _stage_text(target: Path, contents: str) -> Path:
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if target.exists():
+            os.chmod(str(temp_path), target.stat().st_mode)
+        return temp_path
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _atomic_replace(staged: Path, target: Path) -> None:
+    os.replace(str(staged), str(target))
+
+
+def _new_quarantine_path(source_path: Path) -> Path:
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    unique = f"{os.getpid()}-{uuid4().hex[:8]}"
+    return source_path.with_name(
+        f"{source_path.name}.hfc-corrupt-{stamp}-{unique}"
+    )
+
+
+def _quarantine_sort_key(path: Path) -> Tuple[int, str]:
+    if path.is_symlink():
+        raise RecoveryRefused(
+            "recovery quarantine path must not be a symbolic link"
+        )
+    return path.stat().st_mtime_ns, path.name
+
+
+def _plan_from_evidence(
+    detection: HermesDetection, evidence: RecoveryEvidence
+) -> RecoveryPlan:
+    classification = _classify_evidence(detection, evidence)
+    return RecoveryPlan(
+        root=detection.root,
+        state=classification.state,
+        executable=classification.executable,
+        fingerprint=_fingerprint(classification.fingerprint_parts),
+        actions=classification.actions,
+        findings=classification.findings,
+    )
+
+
+def _acquire_os_lock(handle) -> None:
+    deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                if not handle.read(1):
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except (BlockingIOError, OSError):
+            if time.monotonic() >= deadline:
+                raise RecoveryRefused("timed out waiting for recovery lock")
+            time.sleep(0.05)
+
+
+def _release_os_lock(handle) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _fingerprint(parts: Dict[str, str]) -> str:
@@ -348,16 +853,7 @@ def _classify_gateway_evidence(
 
 
 def plan_recovery(detection: HermesDetection) -> RecoveryPlan:
-    evidence = _read_evidence(detection)
-    classification = _classify_evidence(detection, evidence)
-    return RecoveryPlan(
-        root=detection.root,
-        state=classification.state,
-        executable=classification.executable,
-        fingerprint=_fingerprint(classification.fingerprint_parts),
-        actions=classification.actions,
-        findings=classification.findings,
-    )
+    return _plan_from_evidence(detection, _read_evidence(detection))
 
 
 def sanitize_recovery_plan(plan: RecoveryPlan) -> Dict[str, object]:
