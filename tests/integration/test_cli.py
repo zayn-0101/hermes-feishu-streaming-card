@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+import hermes_feishu_card.cli as cli_module
 from hermes_feishu_card.cli import main
+from hermes_feishu_card.diagnostics import DiagnosticReport
 
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "hermes_v2026_4_23"
@@ -495,6 +497,105 @@ profiles:
     assert "event_endpoint: http://127.0.0.1:8765/[redacted-path]" in captured.out
     assert secret_segment not in captured.out
     assert "event_endpoint_mismatch" in captured.out
+
+
+@pytest.mark.parametrize("hermes_mode", ["normal", "skip", "no_hermes"])
+@pytest.mark.parametrize(
+    ("event_path", "expected_output_path", "sensitive_value"),
+    [
+        ("/events", "/events", None),
+        ("/private/SECRET_TOKEN/events", "/[redacted-path]", "SECRET_TOKEN"),
+        ("/private/oc_SECRET_CHAT/events", "/[redacted-path]", "oc_SECRET_CHAT"),
+        ("/private/ou_SECRET_USER/events", "/[redacted-path]", "ou_SECRET_USER"),
+    ],
+)
+def test_doctor_json_sanitizes_only_endpoint_output_copy(
+    hermes_mode,
+    event_path,
+    expected_output_path,
+    sensitive_value,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """server:
+  host: 127.0.0.1
+  port: 8765
+profiles:
+  child:
+    feishu:
+      app_id: child-app
+      app_secret: child-secret
+    bots:
+      default: child-bot
+      items:
+        child-bot:
+          app_id: child-bot-app
+          app_secret: child-bot-secret
+""",
+        encoding="utf-8",
+    )
+    event_endpoint = f"http://127.0.0.1:8765{event_path}"
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", event_endpoint)
+    captured_report = {}
+    original_build = cli_module._build_doctor_report
+
+    def capture_report(config_path, config, args):
+        report = original_build(config_path, config, args)
+        captured_report["report"] = report
+        if isinstance(report, DiagnosticReport):
+            captured_report["fingerprint"] = report.fingerprint
+        return report
+
+    monkeypatch.setattr(cli_module, "_build_doctor_report", capture_report)
+    hermes_args = {
+        "normal": ["--hermes-dir", str(FIXTURE)],
+        "skip": ["--skip-hermes"],
+        "no_hermes": [],
+    }[hermes_mode]
+
+    exit_code = main(
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--profile-id",
+            "child",
+            "--json",
+            *hermes_args,
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    payload = json.loads(captured.out)
+    assert payload["routing"]["event_endpoint"] == (
+        f"http://127.0.0.1:8765{expected_output_path}"
+    )
+    if sensitive_value is not None:
+        assert sensitive_value not in captured.out
+
+    report = captured_report["report"]
+    raw_payload = report.to_dict() if isinstance(report, DiagnosticReport) else report
+    raw_routing = raw_payload["routing"]
+    assert raw_routing["event_endpoint"] == event_endpoint
+    assert set(payload) == set(raw_payload)
+    for section, value in raw_payload.items():
+        if isinstance(value, dict):
+            assert set(payload[section]) == set(value)
+
+    if isinstance(report, DiagnosticReport):
+        assert payload["fingerprint"] == captured_report["fingerprint"]
+        assert report.fingerprint == captured_report["fingerprint"]
+        finding_codes = {finding.code for finding in report.findings}
+    else:
+        finding_codes = {item["code"] for item in report["recommendations"]}
+    if event_path == "/events":
+        assert "event_endpoint_mismatch" not in finding_codes
+    else:
+        assert "event_endpoint_mismatch" in finding_codes
 
 
 @pytest.mark.parametrize(

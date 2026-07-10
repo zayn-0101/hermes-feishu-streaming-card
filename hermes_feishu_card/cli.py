@@ -370,7 +370,7 @@ def _run_doctor(args: argparse.Namespace) -> int:
         if args.json_output:
             print(
                 json.dumps(
-                    payload,
+                    _doctor_json_output_payload(payload),
                     ensure_ascii=False,
                     indent=2,
                     sort_keys=True,
@@ -409,6 +409,19 @@ def _run_doctor(args: argparse.Namespace) -> int:
         return 0 if detection.supported else 1
     print("hermes: not checked")
     return 0
+
+
+def _doctor_json_output_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    output = dict(payload)
+    routing = payload.get("routing")
+    if not isinstance(routing, dict):
+        return output
+    output_routing = dict(routing)
+    endpoint = output_routing.get("event_endpoint")
+    if isinstance(endpoint, str):
+        output_routing["event_endpoint"] = safe_event_endpoint_for_output(endpoint)
+    output["routing"] = output_routing
+    return output
 
 
 def _doctor_error_report(config_path: Path, exc: Exception) -> dict[str, Any]:
