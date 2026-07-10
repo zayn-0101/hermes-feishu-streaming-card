@@ -2218,3 +2218,162 @@ async def test_session_key_explicit_empty_profile_uses_default_composite_key():
         data={"profile_id": ""},
     )
     assert _session_key(event) == "default:m"
+
+
+# --- Tests for _abandon_stale_sessions_for_chat (interrupt scenario, #92) ---
+
+
+async def test_interrupt_abandons_stale_session_via_session_creating_event(client):
+    """When a new session is created via SESSION_CREATING_EVENTS (e.g. answer.delta
+    after an interrupt with no message.started), the old active session for the
+    same chat+conversation should be marked completed and its card updated."""
+    test_client, feishu_client = client
+
+    # First turn: message.started + some streaming
+    msg1 = {"conversation_id": "conv-1", "message_id": "msg-turn-1"}
+    await test_client.post("/events", json=event_payload("message.started", 0, **msg1))
+    await test_client.post(
+        "/events",
+        json=event_payload("answer.delta", 1, {"text": "正在回答第一个问题"}, **msg1),
+    )
+    await wait_for_card_update(feishu_client, "正在回答第一个问题")
+
+    # Interrupt: a new turn arrives via SESSION_CREATING_EVENTS (answer.delta with
+    # a different message_id but same conversation_id — simulates the gateway
+    # interrupt fallback path where event_message_id changes).
+    msg2 = {"conversation_id": "conv-1", "message_id": "msg-turn-2"}
+    resp = await test_client.post(
+        "/events",
+        json=event_payload("answer.delta", 0, {"text": "新的回答"}, **msg2),
+    )
+    assert resp.status == 200
+
+    # The old card should have been updated to completed state.
+    # Two cards were sent (one for each session).
+    assert len(feishu_client.sent) == 2
+
+    # The old card (feishu-message-1) should have a final update showing completed
+    updates_for_old = [
+        card for mid, card in feishu_client.updated if mid == "feishu-message-1"
+    ]
+    # At least 2 updates: the streaming delta + the abandon completion
+    assert len(updates_for_old) >= 2
+    # The last update should contain the completed marker (subtitle)
+    last_card = str(updates_for_old[-1])
+    assert "已完成" in last_card
+
+
+async def test_interrupt_abandons_stale_session_via_message_started(client):
+    """When a new message.started arrives with a different message_id but same
+    conversation, the old active session should be abandoned."""
+    test_client, feishu_client = client
+
+    msg1 = {"conversation_id": "conv-1", "message_id": "msg-first"}
+    await test_client.post("/events", json=event_payload("message.started", 0, **msg1))
+    await test_client.post(
+        "/events",
+        json=event_payload("answer.delta", 1, {"text": "第一轮内容"}, **msg1),
+    )
+    await wait_for_card_update(feishu_client, "第一轮内容")
+
+    # New turn with different message_id, same conversation
+    msg2 = {"conversation_id": "conv-1", "message_id": "msg-second"}
+    await test_client.post("/events", json=event_payload("message.started", 0, **msg2))
+
+    # Two cards sent (old + new)
+    assert len(feishu_client.sent) == 2
+
+    # Old card should have been updated with completed state
+    updates_for_old = [
+        card for mid, card in feishu_client.updated if mid == "feishu-message-1"
+    ]
+    assert len(updates_for_old) >= 2
+    assert "已完成" in str(updates_for_old[-1])
+
+
+async def test_interrupt_does_not_abandon_different_conversation(client):
+    """Sessions in different conversations (e.g. different topic group threads)
+    should NOT be abandoned when a new session is created."""
+    test_client, feishu_client = client
+
+    # Two different conversations in the same chat
+    msg1 = {"conversation_id": "thread-A", "message_id": "msg-thread-a"}
+    msg2 = {"conversation_id": "thread-B", "message_id": "msg-thread-b"}
+
+    await test_client.post("/events", json=event_payload("message.started", 0, **msg1))
+    await test_client.post(
+        "/events",
+        json=event_payload("answer.delta", 1, {"text": "Thread A 内容"}, **msg1),
+    )
+    await wait_for_card_update(feishu_client, "Thread A 内容")
+    updates_before = len(feishu_client.updated)
+
+    # New session in a DIFFERENT conversation — should NOT abandon thread-A
+    await test_client.post("/events", json=event_payload("message.started", 0, **msg2))
+
+    # Give any background tasks a chance to run
+    await asyncio.sleep(0.05)
+
+    # Old card (feishu-message-1) should NOT have gotten an abandon update
+    updates_after = feishu_client.updated[updates_before:]
+    old_card_updates = [card for mid, card in updates_after if mid == "feishu-message-1"]
+    assert len(old_card_updates) == 0, (
+        "Session in different conversation should not be abandoned"
+    )
+
+async def test_terminal_event_on_abandoned_session_returns_applied_true(client):
+    """When message.completed arrives for a session that was already abandoned
+    (status=completed), the sidecar should return applied=True so the gateway
+    hook suppresses the native plain-text delivery."""
+    test_client, feishu_client = client
+
+    msg1 = {"conversation_id": "conv-1", "message_id": "msg-original"}
+    await test_client.post("/events", json=event_payload("message.started", 0, **msg1))
+    await test_client.post(
+        "/events",
+        json=event_payload("answer.delta", 1, {"text": "部分回答"}, **msg1),
+    )
+    await wait_for_card_update(feishu_client, "部分回答")
+
+    # Trigger abandon by creating a new session in the same conversation
+    msg2 = {"conversation_id": "conv-1", "message_id": "msg-followup"}
+    await test_client.post(
+        "/events",
+        json=event_payload("answer.delta", 0, {"text": "新回答"}, **msg2),
+    )
+
+    # Now send message.completed for the OLD session — should report applied=True
+    response = await test_client.post(
+        "/events",
+        json=event_payload("message.completed", 2, {"answer": "最终答案"}, **msg1),
+    )
+    result = await response.json()
+    assert result["ok"] is True
+    assert result["applied"] is True
+
+
+async def test_interrupt_abandon_does_not_affect_completed_sessions(client):
+    """Sessions that are already completed should not be re-abandoned or cause
+    extra card updates when a new session is created."""
+    test_client, feishu_client = client
+
+    msg1 = {"conversation_id": "conv-1", "message_id": "msg-done"}
+    await test_client.post("/events", json=event_payload("message.started", 0, **msg1))
+    await test_client.post(
+        "/events",
+        json=event_payload("message.completed", 1, {"answer": "完成了"}, **msg1),
+    )
+    await wait_for_card_update(feishu_client, "完成了")
+    updates_after_complete = len(feishu_client.updated)
+
+    # New session in same conversation — should not touch the completed one
+    msg2 = {"conversation_id": "conv-1", "message_id": "msg-new-turn"}
+    await test_client.post("/events", json=event_payload("message.started", 0, **msg2))
+
+    # No extra card updates should happen for the old completed session
+    await asyncio.sleep(0.05)
+    new_updates = feishu_client.updated[updates_after_complete:]
+    for mid, _ in new_updates:
+        assert mid != "feishu-message-1", (
+            "Already-completed session should not get extra updates on abandon"
+        )
