@@ -75,12 +75,17 @@ OPERATIONS_COMMAND_AUTH_KEY = web.AppKey(
     "operations_command_auth", CommandProofVerifier
 )
 OPERATIONS_TRANSPORT_ROOT_KEY = web.AppKey("operations_transport_root", bytes)
+OPERATIONS_DIAGNOSTIC_TASKS_KEY = web.AppKey("operations_diagnostic_tasks", set)
+OPERATIONS_DIAGNOSTIC_SEMAPHORE_KEY = web.AppKey(
+    "operations_diagnostic_semaphore", asyncio.Semaphore
+)
 FLUSH_CONTROLLERS_KEY = web.AppKey("flush_controllers", dict)
 CLEANUP_TASK_KEY = web.AppKey("cleanup_task", asyncio.Task)
 UPDATE_MAX_ATTEMPTS = 3
 UPDATE_MIN_INTERVAL_SECONDS = 0.2
 RUNTIME_CLEANUP_INTERVAL_SECONDS = 60.0
 MAX_OPERATION_DELIVERIES = 200
+MAX_CONCURRENT_OPERATION_DIAGNOSTICS = 4
 RESTART_CALLBACK_GRACE_SECONDS = 0.25
 TERMINAL_EVENTS = {"message.completed", "message.failed"}
 SESSION_CREATING_EVENTS = {
@@ -150,6 +155,10 @@ def create_app(
     app[PROFILE_DIAGNOSTICS_KEY] = {}
     app[BASE_CARD_CONFIG_KEY] = dict(card_config)
     app[OPERATIONS_STORE_KEY] = OperationStore(secret=secrets.token_bytes(32))
+    app[OPERATIONS_DIAGNOSTIC_TASKS_KEY] = set()
+    app[OPERATIONS_DIAGNOSTIC_SEMAPHORE_KEY] = asyncio.Semaphore(
+        MAX_CONCURRENT_OPERATION_DIAGNOSTICS
+    )
     operations_config = Path(
         operations_config_path
         or os.environ.get("HFC_CONFIG")
@@ -179,6 +188,7 @@ def create_app(
     app.router.add_post("/commands", _commands)
     app.router.add_post("/events", _events)
     app.on_startup.append(_start_runtime_cleanup)
+    app.on_cleanup.append(_stop_operations_diagnostics)
     app.on_cleanup.append(_stop_runtime_cleanup)
     return app
 
@@ -196,6 +206,15 @@ async def _stop_runtime_cleanup(app: web.Application) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+async def _stop_operations_diagnostics(app: web.Application) -> None:
+    tasks = list(app[OPERATIONS_DIAGNOSTIC_TASKS_KEY])
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    app[OPERATIONS_DIAGNOSTIC_TASKS_KEY].clear()
 
 
 async def _runtime_cleanup_loop(app: web.Application) -> None:
@@ -562,35 +581,47 @@ async def _commands(request: web.Request) -> web.Response:
     route = _resolve_route(request, event)
     operation_id = ""
     if command == "doctor":
-        report, _detection = await _build_operations_report(
-            request.app,
-            profile_id=str(data.get("profile_id") or "default"),
-            profile_source=str(data.get("profile_source") or ""),
-        )
+        profile_id = _safe_profile_id(data.get("profile_id"))
+        profile_source = _safe_command_string(data.get("profile_source"))
         try:
-            operation = _create_operation(
-                request.app,
-                report,
+            root_secret = request.app[OPERATIONS_TRANSPORT_ROOT_KEY]
+            prepared_operation_id = secrets.token_urlsafe(18)
+            operation, created = request.app[OPERATIONS_STORE_KEY].prepare(
                 chat_id=chat_id,
-                profile_id=str(data.get("profile_id") or "default"),
+                profile_id=profile_id,
                 group=_is_group_chat(chat_type),
                 initiator_open_id=_safe_command_operator(payload.get("operator")),
-            )
-            root_secret = request.app[OPERATIONS_TRANSPORT_ROOT_KEY]
-            request.app[OPERATIONS_STORE_KEY].bind_transport_secret(
-                operation.operation_id,
-                derive_operation_transport_secret(
-                    root_secret,
-                    operation.operation_id,
+                operation_id=prepared_operation_id,
+                transport_secret=derive_operation_transport_secret(
+                    root_secret, prepared_operation_id
+                ),
+                idempotency_key=_doctor_idempotency_key(
+                    chat_id, profile_id, message_id
                 ),
             )
-        except OperationRejected:
+        except (KeyError, OperationRejected, ValueError):
             return web.json_response(
                 {"ok": False, "error": "operations overloaded"},
                 status=503,
             )
+        if created:
+            _schedule_operations_diagnosis(
+                request.app,
+                operation,
+                bot_id=route.bot_id if route is not None else None,
+                thread_id=thread_id or None,
+                reply_to_message_id=reply_to_message_id or message_id,
+                profile_source=profile_source,
+            )
         operation_id = operation.operation_id
-        card = _render_operations_for_app(request.app, report, operation)
+        return web.json_response(
+            {
+                "ok": True,
+                "handled": True,
+                "command": command,
+                "operation_id": operation_id,
+            }
+        )
     else:
         card = _render_hfc_command_card(request, command, event, route)
     task = asyncio.create_task(
@@ -620,7 +651,7 @@ async def _send_command_card(
     thread_id: str | None = None,
     reply_to_message_id: str | None = None,
     operation_id: str = "",
-) -> None:
+) -> str | None:
     message_id = await _send_card_for_app(
         app,
         chat_id,
@@ -636,6 +667,7 @@ async def _send_command_card(
             "message_id": message_id,
             "bot_id": bot_id,
         })
+    return message_id
 
 
 def _log_background_task_failure(task: asyncio.Task[None]) -> None:
@@ -645,6 +677,126 @@ def _log_background_task_failure(task: asyncio.Task[None]) -> None:
         return
     except Exception:
         logger.warning("HFC command card background task failed", exc_info=True)
+
+
+def _doctor_idempotency_key(chat_id: str, profile_id: str, message_id: str) -> str:
+    value = f"doctor\0{chat_id}\0{profile_id}\0{message_id}".encode("utf-8")
+    return hashlib.sha256(value).hexdigest()
+
+
+def _schedule_operations_diagnosis(
+    app: web.Application,
+    operation: OperationRecord,
+    *,
+    bot_id: str | None,
+    thread_id: str | None,
+    reply_to_message_id: str | None,
+    profile_source: str,
+) -> None:
+    task = asyncio.create_task(
+        _run_operations_diagnosis(
+            app,
+            operation,
+            bot_id=bot_id,
+            thread_id=thread_id,
+            reply_to_message_id=reply_to_message_id,
+            profile_source=profile_source,
+        )
+    )
+    tasks = app[OPERATIONS_DIAGNOSTIC_TASKS_KEY]
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    task.add_done_callback(_log_background_task_failure)
+
+
+async def _run_operations_diagnosis(
+    app: web.Application,
+    operation: OperationRecord,
+    *,
+    bot_id: str | None,
+    thread_id: str | None,
+    reply_to_message_id: str | None,
+    profile_source: str,
+) -> None:
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    async with app[OPERATIONS_DIAGNOSTIC_SEMAPHORE_KEY]:
+        try:
+            report, _detection = await _build_operations_report(
+                app,
+                profile_id=operation.profile_id,
+                profile_source=profile_source,
+            )
+            diagnosed = store.diagnose(
+                operation.operation_id,
+                report_fingerprint=report.fingerprint,
+                recovery_fingerprint=report.recovery_fingerprint,
+            )
+            message_id = await _send_command_card(
+                app,
+                operation.chat_id,
+                _render_operations_for_app(app, report, diagnosed),
+                bot_id,
+                thread_id=thread_id,
+                reply_to_message_id=reply_to_message_id,
+                operation_id=operation.operation_id,
+            )
+            if message_id is not None:
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
+        failed = _mark_operations_diagnosis_failed(store, operation.operation_id)
+        if failed is None:
+            return
+        await _send_command_card(
+            app,
+            failed.chat_id,
+            _render_operations_for_app(
+                app, _failed_operations_report(failed.profile_id), failed
+            ),
+            bot_id,
+            thread_id=thread_id,
+            reply_to_message_id=reply_to_message_id,
+            operation_id=failed.operation_id,
+        )
+
+
+def _mark_operations_diagnosis_failed(
+    store: OperationStore, operation_id: str
+) -> OperationRecord | None:
+    for expected_state in ("preparing", "diagnosed"):
+        try:
+            return store.complete(
+                operation_id,
+                expected_state=expected_state,
+                state="failed",
+                result={"message": "诊断暂时不可用，请稍后重新检测。"},
+            )
+        except OperationRejected:
+            continue
+    return None
+
+
+def _failed_operations_report(profile_id: str) -> DiagnosticReport:
+    return DiagnosticReport(
+        status="error",
+        created_at=time.time(),
+        config={"loaded": False},
+        hermes={"checked": False, "status": "unavailable"},
+        streaming={"status": "not_checked"},
+        install_state={"status": "unavailable", "recovery_executable": False},
+        routing={"profile_id": profile_id},
+        runtime={},
+        findings=(
+            DiagnosticFinding(
+                code="operations_diagnosis_failed",
+                severity="error",
+                message="Operations diagnosis could not be completed.",
+            ),
+        ),
+    )
 
 
 async def _build_operations_report(

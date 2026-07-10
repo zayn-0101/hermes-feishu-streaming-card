@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import secrets
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -253,6 +254,18 @@ async def test_operations_callbacks_keep_full_recovery_fingerprint_internal(monk
 
 def operations_button(card, label):
     for element in card["body"]["elements"]:
+        if element.get("tag") == "button":
+            text = element.get("text")
+            behaviors = element.get("behaviors")
+            if (
+                isinstance(text, dict)
+                and text.get("content") == label
+                and isinstance(behaviors, list)
+                and behaviors
+                and isinstance(behaviors[0], dict)
+                and isinstance(behaviors[0].get("value"), dict)
+            ):
+                return behaviors[0]["value"]
         for button in element.get("actions", []):
             if button["text"]["content"] == label:
                 return button["value"]
@@ -965,6 +978,161 @@ async def test_hfc_doctor_sends_group_owned_operations_card(monkeypatch):
     assert "ou_initiator" not in str(card)
     assert "oc_group" not in str(card)
     assert operations_button(body["card"], "安全修复")
+
+
+async def test_hfc_doctor_acknowledges_before_slow_diagnosis_and_binds_operation(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    detection = SimpleNamespace(root=Path("/private/hermes"))
+
+    def slow_report(*args, **kwargs):
+        time.sleep(1.0)
+        return report, detection
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", slow_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        started = time.monotonic()
+        response = await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_slow_doctor",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        elapsed = time.monotonic() - started
+        body = await response.json()
+        operation_id = body["operation_id"]
+        store = app[sidecar_server.OPERATIONS_STORE_KEY]
+        record = store._records[operation_id]
+
+        assert elapsed < 0.8
+        assert record.state == "preparing"
+        assert operation_id in store._transport_secrets
+
+        await _wait_until(lambda: bool(feishu_client.sent), attempts=160)
+    finally:
+        await test_client.close()
+
+    assert response.status == 200
+    assert body["ok"] is True
+    assert body["handled"] is True
+    assert feishu_client.sent[0][0] == "oc_private"
+
+
+async def test_hfc_doctor_reuses_preparing_operation_and_starts_one_diagnosis(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    calls = []
+
+    def build_report(*args, **kwargs):
+        calls.append(True)
+        time.sleep(0.05)
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", build_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        payload = {
+            "command": "doctor",
+            "chat_id": "oc_private",
+            "message_id": "om_duplicate_doctor",
+            "chat_type": "private",
+        }
+        first = await test_client.post(
+            "/commands", json=signed_operations_command(payload)
+        )
+        second = await test_client.post(
+            "/commands", json=signed_operations_command(payload)
+        )
+        first_body = await first.json()
+        second_body = await second.json()
+        await _wait_until(lambda: bool(feishu_client.sent))
+    finally:
+        await test_client.close()
+
+    assert first_body["operation_id"] == second_body["operation_id"]
+    assert calls == [True]
+    assert len(feishu_client.sent) == 1
+
+
+async def test_hfc_doctor_marks_background_failure_without_exception_details(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+
+    def fail_report(*args, **kwargs):
+        raise RuntimeError("private-token-should-not-appear")
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", fail_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_failing_doctor",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        operation_id = (await response.json())["operation_id"]
+        await _wait_until(lambda: bool(feishu_client.sent))
+        record = app[sidecar_server.OPERATIONS_STORE_KEY]._records[operation_id]
+    finally:
+        await test_client.close()
+
+    assert record.state == "failed"
+    assert "private-token-should-not-appear" not in str(feishu_client.sent)
+    assert "诊断暂时不可用" in str(feishu_client.sent[0][1])
+
+
+async def test_hfc_doctor_shutdown_cancels_tracked_diagnosis(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    started = asyncio.Event()
+
+    async def blocked_report(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report", blocked_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    await test_client.post(
+        "/commands",
+        json=signed_operations_command(
+            {
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_shutdown_doctor",
+                "chat_type": "private",
+            }
+        ),
+    )
+    await started.wait()
+    tasks = app[sidecar_server.OPERATIONS_DIAGNOSTIC_TASKS_KEY]
+    assert len(tasks) == 1
+
+    await test_client.close()
+
+    assert not tasks
 
 
 async def test_http_operations_reject_forged_operator_without_valid_adapter_proof(

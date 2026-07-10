@@ -15,7 +15,7 @@ from .diagnostics import DiagnosticReport
 
 _TOKEN_MAX_CHARS = 2048
 _TRANSPORT_PROOF_MAX_AGE_SECONDS = 30
-_INFLIGHT_STATES = frozenset({"executing", "restarting"})
+_INFLIGHT_STATES = frozenset({"preparing", "executing", "restarting"})
 _MUTATION_ACTIONS = {
     "repair",
     "confirm_repair",
@@ -93,7 +93,67 @@ class OperationStore:
         self._records: dict[str, OperationRecord] = {}
         self._recheck_predecessors: dict[str, OperationRecord] = {}
         self._transport_secrets: dict[str, bytes] = {}
+        self._idempotency: dict[str, tuple[str, float]] = {}
         self._lock = threading.RLock()
+
+    def prepare(
+        self,
+        *,
+        chat_id: str,
+        profile_id: str,
+        group: bool,
+        initiator_open_id: str,
+        operation_id: str,
+        transport_secret: bytes,
+        idempotency_key: str,
+    ) -> tuple[OperationRecord, bool]:
+        if not isinstance(transport_secret, bytes) or len(transport_secret) < 16:
+            raise ValueError("operation transport secret is invalid")
+        if not isinstance(idempotency_key, str) or not idempotency_key:
+            raise ValueError("operation idempotency key is required")
+        if not isinstance(operation_id, str) or not operation_id:
+            raise ValueError("operation id is required")
+        with self._lock:
+            self._prune_locked()
+            existing = self._idempotency.get(idempotency_key)
+            if existing is not None:
+                existing_operation_id, expires_at = existing
+                record = self._records.get(existing_operation_id)
+                if record is not None and expires_at > self._now():
+                    return record, False
+                self._idempotency.pop(idempotency_key, None)
+            self._reserve_capacity_locked()
+            record = OperationRecord(
+                operation_id=operation_id,
+                chat_id=chat_id,
+                profile_id=profile_id,
+                report_fingerprint="",
+                recovery_fingerprint="",
+                group=group,
+                owner_open_id=initiator_open_id if group else "",
+                state="preparing",
+                expires_at=self._now() + 120.0,
+            )
+            self._records[operation_id] = record
+            self._transport_secrets[operation_id] = transport_secret
+            self._idempotency[idempotency_key] = (operation_id, record.expires_at)
+            return record, True
+
+    def diagnose(
+        self,
+        operation_id: str,
+        *,
+        report_fingerprint: str,
+        recovery_fingerprint: str,
+    ) -> OperationRecord:
+        with self._lock:
+            record = self._records.get(operation_id)
+            if record is None or record.state != "preparing":
+                raise OperationRejected("operation state changed")
+            record.report_fingerprint = report_fingerprint
+            record.recovery_fingerprint = recovery_fingerprint
+            record.state = "diagnosed"
+            return record
 
     def create(
         self,
@@ -243,6 +303,9 @@ class OperationStore:
         self._records.pop(operation_id, None)
         self._transport_secrets.pop(operation_id, None)
         self._recheck_predecessors.pop(operation_id, None)
+        for key, (candidate, _expires_at) in list(self._idempotency.items()):
+            if candidate == operation_id:
+                self._idempotency.pop(key, None)
         for predecessor_id, predecessor in list(self._recheck_predecessors.items()):
             if predecessor.successor_operation_id == operation_id:
                 self._recheck_predecessors.pop(predecessor_id, None)
