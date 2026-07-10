@@ -467,7 +467,19 @@ def _redact_doctor_json_paths(value: Any, key: str = "") -> Any:
     return value
 
 
-_DOCTOR_JSON_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_.:/-])/(?:[^\s\"'<>]+)")
+_DOCTOR_JSON_PATH_COMPONENT = r"[^\s\"'<>/\\]+(?:[ \t]+[^\s\"'<>/\\]+)*"
+_DOCTOR_JSON_PATH_FILENAME = (
+    r"[^\s\"'<>/\\]*?\.(?:cfg|conf|env|ini|json|py|toml|ya?ml)"
+)
+_DOCTOR_JSON_ABSOLUTE_PATH_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.:/-])(?:"
+    rf"/(?:{_DOCTOR_JSON_PATH_COMPONENT}/)*{_DOCTOR_JSON_PATH_FILENAME}"
+    rf"|[A-Za-z]:\\(?:{_DOCTOR_JSON_PATH_COMPONENT}\\)*{_DOCTOR_JSON_PATH_FILENAME}"
+    rf"|\\\\{_DOCTOR_JSON_PATH_COMPONENT}\\{_DOCTOR_JSON_PATH_COMPONENT}"
+    rf"(?:\\{_DOCTOR_JSON_PATH_COMPONENT})*\\{_DOCTOR_JSON_PATH_FILENAME}"
+    rf"|/(?:[^\s\"'<>]+)"
+    rf")"
+)
 
 
 def _redact_absolute_paths_in_text(value: str) -> str:
@@ -1485,7 +1497,10 @@ def _run_start(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        result = start_sidecar(args.config, config)
+        if args.env_file is None:
+            result = start_sidecar(args.config, config)
+        else:
+            result = start_sidecar(args.config, config, env_file=args.env_file)
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

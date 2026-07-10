@@ -52,6 +52,42 @@ def test_status_reports_process_state(capsys):
     assert "running" in captured.out.lower() or "stopped" in captured.out.lower()
 
 
+def test_start_passes_explicit_env_file_to_sidecar(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / "CUSTOM.env"
+    config_path.write_text("server: {}\n", encoding="utf-8")
+    env_path.write_text("HERMES_DIR=custom-hermes\n", encoding="utf-8")
+    started = {}
+    monkeypatch.setattr(
+        cli_module,
+        "start_sidecar",
+        lambda path, config, **kwargs: started.update(
+            path=Path(path), config=config, kwargs=kwargs
+        )
+        or "started",
+    )
+
+    assert main(["start", "--config", str(config_path), "--env-file", str(env_path)]) == 0
+    assert capsys.readouterr().err == ""
+    assert started["path"] == config_path
+    assert started["kwargs"] == {"env_file": str(env_path)}
+
+
+def test_start_keeps_default_sidecar_arguments(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server: {}\n", encoding="utf-8")
+    started = {}
+    monkeypatch.setattr(
+        cli_module,
+        "start_sidecar",
+        lambda path, config, **kwargs: started.update(kwargs=kwargs) or "started",
+    )
+
+    assert main(["start", "--config", str(config_path)]) == 0
+    assert capsys.readouterr().err == ""
+    assert started == {"kwargs": {}}
+
+
 def test_status_reports_cron_metrics_when_sidecar_is_running(monkeypatch, capsys):
     def fake_status_sidecar(config):
         return {
@@ -227,6 +263,60 @@ def test_module_doctor_json_redacts_paths_inside_error_and_recommendation_text(t
     assert report["config"]["path"] == "[redacted]"
     assert "[path:" in report["config"]["error"]
     assert "[path:" in report["recommendations"][0]["message"]
+
+
+@pytest.mark.parametrize(
+    "sensitive_path",
+    [
+        "/Users/Alice/My Project/config.yaml",
+        r"C:\Users\Alice\My Project\config.yaml",
+        r"\\server\share\My Folder\config.yaml",
+    ],
+)
+def test_doctor_json_redacts_common_absolute_paths_in_text_fields(sensitive_path):
+    payload = {
+        "config": {"error": f"could not load {sensitive_path}"},
+        "hermes": {"reason": f"unsupported root {sensitive_path}"},
+        "recommendations": [
+            {"next_step": f"inspect {sensitive_path} then retry"},
+        ],
+    }
+
+    output = cli_module._doctor_json_output_payload(payload)
+    output_text = json.dumps(output)
+
+    assert sensitive_path not in output_text
+    assert "could not load [path:" in output["config"]["error"]
+    assert "unsupported root [path:" in output["hermes"]["reason"]
+    assert "inspect [path:" in output["recommendations"][0]["next_step"]
+    assert output["recommendations"][0]["next_step"].endswith("then retry")
+
+
+@pytest.mark.parametrize(
+    "sensitive_path",
+    [
+        "/Users/Alice/My Project/config.yaml",
+        r"C:\Users\Alice\My Project\config.yaml",
+        r"\\server\share\My Folder\config.yaml",
+    ],
+)
+def test_doctor_json_config_load_failure_redacts_common_absolute_paths(
+    sensitive_path, tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "config.yaml"
+    monkeypatch.setattr(
+        cli_module,
+        "load_config",
+        lambda _path: (_ for _ in ()).throw(ValueError(f"invalid config {sensitive_path}")),
+    )
+
+    assert main(["doctor", "--config", str(config_path), "--skip-hermes", "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    output_text = json.dumps(report)
+
+    assert sensitive_path not in output_text
+    assert "invalid config [path:" in report["config"]["error"]
+    assert "invalid config [path:" in report["recommendations"][0]["message"]
 
 
 def test_module_doctor_json_reports_supported_hermes_and_clean_install_state(tmp_path):

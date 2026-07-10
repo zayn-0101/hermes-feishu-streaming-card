@@ -163,20 +163,18 @@ def test_main_passes_selected_env_file_to_operations_root_resolution(monkeypatch
     config = {"server": {"host": "127.0.0.1", "port": 0}, "feishu": {}, "card": {}}
     config_path = tmp_path / "config.yaml"
     selected_env = tmp_path / "selected.env"
+    hermes_root = tmp_path / "selected-hermes"
     config_path.write_text("server: {}\n", encoding="utf-8")
-    selected_env.write_text("HERMES_DIR=selected-root\n", encoding="utf-8")
+    selected_env.write_text(f"HERMES_DIR={hermes_root}\n", encoding="utf-8")
     captured = {}
     monkeypatch.setattr(runner, "load_config", lambda path: config)
     monkeypatch.setattr(
-        runner,
-        "resolve_operations_hermes_root",
-        lambda **kwargs: captured.update(kwargs) or Path("selected-root"),
+        runner, "create_app", lambda _client, **kwargs: captured.update(kwargs) or object()
     )
-    monkeypatch.setattr(runner, "create_app", lambda _client, **kwargs: object())
     monkeypatch.setattr(runner.web, "run_app", lambda *_args, **_kwargs: None)
 
     assert main(["--config", str(config_path), "--env-file", str(selected_env)]) == 0
-    assert captured == {"config_path": str(config_path), "env_file": str(selected_env)}
+    assert captured["operations_hermes_root"] == hermes_root
 
 
 def test_main_switches_auto_interactions_to_text_for_localhost(monkeypatch):
