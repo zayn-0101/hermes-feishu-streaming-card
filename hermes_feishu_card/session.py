@@ -4,10 +4,11 @@ from dataclasses import dataclass, field
 import json
 import secrets
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .card_timeline import CardTimeline
 from .events import SidecarEvent
+from .status import StatusConfig, resolve_display_status
 from .text import StreamingTextNormalizer, normalize_stream_text
 
 
@@ -88,6 +89,12 @@ class CardSession:
             return self.answer_text
         return self.thinking_text
 
+    def refresh_display_status_source(
+        self, config: Optional[StatusConfig] = None
+    ) -> None:
+        resolved = resolve_display_status(self, config or StatusConfig.defaults())
+        self.display_status_source = resolved.source
+
     def apply(self, event: SidecarEvent) -> bool:
         if (
             event.conversation_id != self.conversation_id
@@ -132,6 +139,7 @@ class CardSession:
             tool_id = event.data.get("tool_id")
             if not isinstance(tool_id, str) or not tool_id:
                 self.updated_at = time.time()
+                self.refresh_display_status_source()
                 return True
             if self.answer_text and self._answer_archive_index is None:
                 self._answer_archive_index = self.timeline.entry_count
@@ -183,6 +191,7 @@ class CardSession:
                 self.answer_text = content or title
                 self.status = "completed"
                 self.updated_at = time.time()
+                self.refresh_display_status_source()
                 return True
             self.timeline.record_notice(notice_id, title, level, content)
         elif event.event == "message.completed":
@@ -223,6 +232,7 @@ class CardSession:
             error = event.data.get("error")
             self.answer_text = error if isinstance(error, str) else "消息处理失败"
         self.updated_at = time.time()
+        self.refresh_display_status_source()
         return True
 
     def _archive_current_answer_to_reasoning(self, final_answer: str = "") -> None:

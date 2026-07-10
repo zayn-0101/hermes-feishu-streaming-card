@@ -784,6 +784,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 request.app, route.bot_id, event
             )
             request.app[SESSION_CARD_CONFIGS_KEY][session_key] = session_card_config
+            _refresh_session_display_status(request, session)
             message_id = await _send_card(
                 request,
                 event.chat_id,
@@ -841,6 +842,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     request.app, route.bot_id, event
                 )
                 request.app[SESSION_CARD_CONFIGS_KEY][session_key] = session_card_config
+                _refresh_session_display_status(request, session)
                 message_id = await _send_card(
                     request,
                     event.chat_id,
@@ -902,6 +904,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
 
     applied = session.apply(event)
     if applied:
+        _refresh_session_display_status(request, session)
         _register_session_aliases(request.app, incoming_event, session_key)
     if applied and event.event.startswith("interaction."):
         _store_interaction_result(request.app, session)
@@ -1172,6 +1175,18 @@ def _safe_bool(value: Any, default: bool) -> bool:
             return False
         return default
     return default
+
+
+def _refresh_session_display_status(
+    request: web.Request, session: CardSession
+) -> None:
+    card_config = request.app[SESSION_CARD_CONFIGS_KEY].get(
+        _session_key_for_session(request.app, session),
+        {},
+    )
+    session.refresh_display_status_source(
+        StatusConfig.from_mapping(card_config.get("status"))
+    )
 
 
 def _render_session_card(request: web.Request, session: CardSession) -> dict[str, Any]:

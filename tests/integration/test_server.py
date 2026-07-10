@@ -963,6 +963,9 @@ async def test_card_config_custom_status_markers_reach_renderer():
     assert card["header"]["template"] == "blue"
     assert "subtitle" not in card["header"]
     assert card["config"]["summary"]["content"] == "生成中"
+    session = next(iter(app[SESSIONS_KEY].values()))
+    assert session.display_status == ""
+    assert session.display_status_source == "inferred"
 
 
 async def test_message_started_sends_card_as_thread_reply(client):

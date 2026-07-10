@@ -82,6 +82,21 @@ def test_completion_carries_explicit_display_status_into_session():
     assert session.display_status_source == "explicit"
 
 
+def test_completion_persists_inferred_display_status_source():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "message.completed",
+            1,
+            {"answer": "数据收集中，数据到位后我会继续生成报告。"},
+        )
+    )
+
+    assert session.display_status == ""
+    assert session.display_status_source == "inferred"
+
+
 def test_invalid_explicit_display_status_falls_back_to_session_semantics():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
 
@@ -107,6 +122,32 @@ def test_later_event_without_explicit_status_clears_stale_override():
     assert session.apply(event("message.completed", 1, {"answer": "最终答案"}))
 
     assert session.status == "completed"
+    assert session.display_status == ""
+    assert session.display_status_source == "session"
+
+
+def test_pending_interaction_clears_explicit_status_to_session_source():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    assert session.apply(event("message.started", 0, {"display_status": "thinking"}))
+
+    assert session.apply(
+        event(
+            "interaction.requested",
+            1,
+            {"interaction_id": "approval-1", "prompt": "请选择"},
+        )
+    )
+
+    assert session.display_status == ""
+    assert session.display_status_source == "session"
+
+
+def test_failed_event_clears_explicit_status_to_session_source():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    assert session.apply(event("message.started", 0, {"display_status": "thinking"}))
+
+    assert session.apply(event("message.failed", 1, {"error": "处理失败"}))
+
     assert session.display_status == ""
     assert session.display_status_source == "session"
 
