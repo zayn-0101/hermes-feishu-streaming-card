@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前包版本为 `3.8.17`。这一版延续 sidecar-only 主线，保留 V3.8.2 timeline 阅读体验、V3.8.10 群聊诊断、V3.8.11 `/hfc` 命令接管修复、V3.8.12 附件摘要重复 reply 抑制、V3.8.13 Hermes 升级兼容、V3.8.14 WebSocket interaction 按钮闭环、V3.8.15 输入附件重复 reply 抑制、V3.8.16 话题群复用 `message_id` 新卡修复，并修复 cron `deliver: origin/all` 路由意图退回 plain text 的问题。
+当前包版本为 `3.8.18`。这一版延续 sidecar-only 主线，保留 V3.8.2 timeline 阅读体验、V3.8.10 群聊诊断、V3.8.11 `/hfc` 命令接管修复、V3.8.12 附件摘要重复 reply 抑制、V3.8.13 Hermes 升级兼容、V3.8.14 WebSocket interaction 按钮闭环、V3.8.15 输入附件重复 reply 抑制、V3.8.16 话题群复用 `message_id` 新卡修复、V3.8.17 cron 路由意图修复，并修复 cron 卡片无法回到飞书话题原线程的问题（PR #91，贡献者 @colinaaa）。
 
 ## 已具备
 

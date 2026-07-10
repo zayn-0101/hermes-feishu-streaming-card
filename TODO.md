@@ -2,7 +2,7 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17
+## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
@@ -150,6 +150,13 @@
 - [x] 安装 hook 对 Hermes `_resolve_delivery_targets` 做 optional guard，缺失 helper 时保持 fail-open。
 - [x] 合并时保留贡献者 @zayn-0101 的原始 commits，并在 README / release notes 中体现 PR #77 贡献。
 - [x] 补齐 cron routing-intent、dict deliver、non-Feishu origin、`local` 和 patcher optional pre-resolve 回归测试。
+
+### V3.8.18：cron 话题线程回传补丁（已完成）
+
+- [x] Issue #90 / PR #91（贡献者 @colinaaa）：cron 卡片携带 Feishu topic `thread_id`，回到原话题线程而不是创建新 topic。
+- [x] 保留 scheduler-resolved Feishu target、Feishu origin 和显式环境 fallback 的优先级。
+- [x] 非 Feishu origin 的 thread id 不进入 Feishu 事件，补齐跨平台隔离回归测试。
+- [x] 合并时保留 @colinaaa 的原始 commit，并在 README、双语用户指南和 release notes 中体现贡献。
 
 ### V3.8.x 后续维护与扩展面（待办）
 

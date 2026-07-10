@@ -121,7 +121,7 @@ For an existing Hermes container:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.17
+export HFC_VERSION=v3.8.18
 bash install-docker.sh
 ```
 
@@ -163,6 +163,7 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 
 | Version | Highlights |
 |---|---|
+| [v3.8.18](docs/release-notes-v3.8.18.md) | Cron cards preserve `thread_id` and return to the originating Feishu topic thread (PR #91, contributed by @colinaaa) |
 | [v3.8.17](docs/release-notes-v3.8.17.md) | Cron `deliver=origin/all` routing intents resolve to Feishu targets and send cards |
 | [v3.8.16](docs/release-notes-v3.8.16.md) | Topic groups that reuse `message_id` now send a fresh card for the second and later messages |
 | [v3.8.15](docs/release-notes-v3.8.15.md) | Input `.docx/files` context stays as card attachment summaries and no longer duplicates the native final reply |

@@ -36,6 +36,7 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 - **Input attachments no longer duplicate replies**: Since V3.8.15, input `.docx/files` context stays as card attachment summaries and no longer keeps Hermes' native final text reply.
 - **Second topic turns keep card rendering**: Since V3.8.16, Feishu/Lark topic groups that reuse the same `message_id` create a fresh card for the second and later messages.
 - **Cron routing intents keep card delivery**: Since V3.8.17, cron `deliver: origin`, `deliver: all`, and `origin,all` resolve to Feishu targets and send cards.
+- **Cron topic threads stay consistent**: Since V3.8.18, cron jobs created from Feishu topic threads preserve `thread_id` and return cards to the originating thread; non-Feishu origin thread ids are ignored.
 - **Long content protection**: Markdown tables and fenced code blocks split on structure boundaries instead of raw character cuts.
 - **Richer tool details**: `tool.updated` can show argument summaries, duration, and failure reason while keeping long details compact.
 - **Multi-bot / multi-profile**: bot registry, chat bindings, profile-aware session keys, titles, and routing diagnostics.
@@ -58,6 +59,16 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 | Long tables/code blocks render as raw Markdown | Markdown-aware table/code splitting with repeated headers and complete fences |
 | Multi-bot, group, and profile routing is hard to inspect | `bindings.chats`, safe `group_rules` diagnostics, profile-aware sessions, and `/health.routing` diagnostics |
 | Hook or sidecar failures are hard to debug | `doctor`, runtime import checks, `/health` metrics, fail-closed installer, restore/uninstall |
+
+## V3.8.18 Cron Topic-Thread Return Patch
+
+V3.8.18 merges PR #91 from @colinaaa and fixes issue #90: cron jobs created inside Feishu topic-group threads did not carry `thread_id`, so their cards appeared as new topics instead of returning to the originating thread.
+
+- **Preserve the originating thread**: cron events prefer scheduler-resolved Feishu targets, then Feishu origins, with an explicit environment fallback retained for compatible deployments.
+- **Prevent cross-platform leakage**: origin thread ids are read only when `origin.platform == feishu`; Telegram and other non-Feishu origins cannot affect Feishu delivery.
+- **Keep ordinary delivery unchanged**: cron events without a thread id still target the existing `chat_id` for normal group and direct-message delivery.
+
+Full release notes: [docs/release-notes-v3.8.18.md](release-notes-v3.8.18.md).
 
 ## V3.8.17 Cron Routing-Intent Card Delivery Patch
 
@@ -359,7 +370,7 @@ Common environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Version to install, such as `v3.8.17`, `v3.6.6`, or `main` |
+| `HFC_VERSION` | `latest` | Version to install, such as `v3.8.18`, `v3.6.6`, or `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway directory |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar config path |
 | `HFC_ENV_FILE` | `.env` next to `HFC_CONFIG` | Feishu credential file |
@@ -386,7 +397,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.17
+export HFC_VERSION=v3.8.18
 bash install-docker.sh
 ```
 
@@ -422,7 +433,7 @@ python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --ye
 
 ## Upgrading
 
-Upgrading from V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.16 to V3.8.17 is backward-compatible. **Single-profile configs need no changes.** If Hermes uses its own venv, rerun `setup` or `install` after upgrading so the package also lands in the Hermes runtime Python and the hook is refreshed. V3.8.17 keeps V3.8.10 group diagnostics, the V3.8.11 `/hfc` command-claim fix, V3.8.12 attachment-summary duplicate reply suppression, V3.8.13 Hermes upgrade compatibility, V3.8.14 WebSocket interaction card actions, V3.8.15 input-attachment duplicate reply suppression, and the V3.8.16 reused-topic-`message_id` card fix, then fixes cron `deliver: origin/all` routing intents that fell back to plain text; run `doctor --explain` once after upgrading and verify a normal chat, a topic reply, the target group with `/hfc status`, `/new`, `/model`, two consecutive messages in the same topic, and one cron job using `deliver: origin` or `deliver: all`.
+Upgrading from V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.17 to V3.8.18 is backward-compatible. **Single-profile configs need no changes.** If Hermes uses its own venv, rerun `setup` or `install` after upgrading so the package also lands in the Hermes runtime Python and the hook is refreshed. V3.8.18 keeps V3.8.10 group diagnostics, the V3.8.11 `/hfc` command-claim fix, V3.8.12 attachment-summary duplicate reply suppression, V3.8.13 Hermes upgrade compatibility, V3.8.14 WebSocket interaction card actions, V3.8.15 input-attachment duplicate reply suppression, the V3.8.16 reused-topic-`message_id` card fix, and the V3.8.17 cron routing-intent fix, then fixes cron cards that could not return to their originating Feishu topic thread; run `doctor --explain` once after upgrading and verify a normal chat, a topic reply, the target group with `/hfc status`, `/new`, `/model`, two consecutive messages in the same topic, and one cron job created from a topic thread.
 
 ```bash
 # 1. Stop sidecar
@@ -430,7 +441,7 @@ python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yam
 
 # 2. Update code
 cd /path/to/hermes-feishu-streaming-card
-git checkout v3.8.17 && pip install -e ".[test]" --upgrade
+git checkout v3.8.18 && pip install -e ".[test]" --upgrade
 
 # 3. Diagnose Hermes hook strategy and anchors
 python3 -m hermes_feishu_card.cli doctor --config ~/.hermes_feishu_card/config.yaml --hermes-dir ~/.hermes/hermes-agent
@@ -602,6 +613,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v3.8.18](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.18) | 2026-07 | PR #91: cron cards preserve `thread_id` and return to the originating Feishu topic thread |
 | [v3.8.17](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.17) | 2026-07 | PR #77: cron `deliver=origin/all` routing intents resolve to Feishu targets and send cards |
 | [v3.8.16](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.16) | 2026-07 | issue #89 / PR #88: topic groups that reuse `message_id` send a fresh card for the second and later messages |
 | [v3.8.15](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.15) | 2026-07 | issue #82 follow-up: input `.docx/files` context no longer keeps a duplicate native final reply |
@@ -675,7 +687,7 @@ Thanks to these contributors for improving the project:
 - [fengs2021](https://github.com/fengs2021) — [PR #17](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/17) lock optimization and update interval improvement (V3.3.0)
 - [colinaaa](https://github.com/colinaaa) — [PR #87](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/87) WebSocket `interaction.select` clarify/approval card interaction support (V3.8.14)
 - [colinaaa](https://github.com/colinaaa) — [PR #88](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/88) fresh cards for second turns when Feishu topic groups reuse `message_id` (V3.8.16)
-- [colinaaa](https://github.com/colinaaa) — [PR #91](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/91) cron `thread_id` routing back to the originating Feishu topic-group thread (unreleased)
+- [colinaaa](https://github.com/colinaaa) — [PR #91](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/91) cron `thread_id` routing back to the originating Feishu topic-group thread (V3.8.18)
 - [zayn-0101](https://github.com/zayn-0101) — [PR #77](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/77) cron `deliver=origin/all` routing-intent card delivery fix (V3.8.17)
 
 ## Security

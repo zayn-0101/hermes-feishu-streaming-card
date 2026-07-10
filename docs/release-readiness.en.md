@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current package version: `3.8.17`. This release keeps the sidecar-only mainline, preserves V3.8.2 timeline readability, V3.8.10 group diagnostics, the V3.8.11 `/hfc` command-claim fix, V3.8.12 attachment-summary duplicate reply suppression, V3.8.13 Hermes upgrade compatibility, V3.8.14 WebSocket interaction card actions, V3.8.15 input-attachment duplicate reply suppression, and the V3.8.16 reused-topic-`message_id` card fix, then fixes cron `deliver: origin/all` routing intents that fell back to plain text.
+Current package version: `3.8.18`. This release keeps the sidecar-only mainline, preserves V3.8.2 timeline readability, V3.8.10 group diagnostics, the V3.8.11 `/hfc` command-claim fix, V3.8.12 attachment-summary duplicate reply suppression, V3.8.13 Hermes upgrade compatibility, V3.8.14 WebSocket interaction card actions, V3.8.15 input-attachment duplicate reply suppression, the V3.8.16 reused-topic-`message_id` card fix, and the V3.8.17 cron routing-intent fix, then fixes cron cards that could not return to their originating Feishu topic thread (PR #91, contributed by @colinaaa).
 
 ## Ready
 

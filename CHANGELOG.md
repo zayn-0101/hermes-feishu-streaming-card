@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0
 
 ## Unreleased
 
+## V3.8.18 — 2026-07-10
+
+See also: [docs/release-notes-v3.8.18.md](docs/release-notes-v3.8.18.md)
+
 ### Fixed
 - Fixed issue #90, contributed by @colinaaa in PR #91: cron cards created from Feishu topic-group threads now preserve `thread_id` and post back into the originating thread instead of creating a new topic.
 - Cron thread routing now prefers scheduler-resolved Feishu targets, then Feishu origins, then the explicit environment fallback; thread ids from non-Feishu origins are ignored.

@@ -146,10 +146,11 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "install-docker.sh" in readme
     assert "docker-compose.example.yml" in readme
     assert "Docker" in install_doc
-    assert "v3.8.17" in install_doc
+    assert "v3.8.18" in install_doc
     assert "v3.8.5" not in install_doc
     assert "version_source: gateway anchors" in install_doc
     assert "docs/release-notes-v3.8.17.md" in readme
+    assert "docs/release-notes-v3.8.18.md" in readme
     assert "docs/release-notes-v3.8.16.md" in readme
     assert "docs/release-notes-v3.8.15.md" in readme
     assert "docs/release-notes-v3.8.14.md" in readme
@@ -185,7 +186,7 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "bash install.sh" in install_doc
     assert "install.ps1" in install_doc
     assert "HFC_VERSION" in install_doc
-    assert "v3.8.17" in install_doc
+    assert "v3.8.18" in install_doc
     assert "v3.6.6" in install_doc
 
     assert (ROOT / "install.sh").exists()
@@ -231,6 +232,7 @@ def test_readme_documents_one_line_install_and_release_packages():
 
 def test_v3817_release_notes_are_linked():
     changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+    v3818_release_notes = Path("docs/release-notes-v3.8.18.md")
     v3817_release_notes = Path("docs/release-notes-v3.8.17.md")
     v3816_release_notes = Path("docs/release-notes-v3.8.16.md")
     v3815_release_notes = Path("docs/release-notes-v3.8.15.md")
@@ -249,6 +251,16 @@ def test_v3817_release_notes_are_linked():
     release_notes = Path("docs/release-notes-v3.8.2.md")
     compose = Path("docker-compose.example.yml").read_text(encoding="utf-8")
 
+    assert v3818_release_notes.exists()
+    assert "## V3.8.18 — 2026-07-10" in changelog
+    assert "V3.8.18" in changelog
+    assert "[docs/release-notes-v3.8.18.md](docs/release-notes-v3.8.18.md)" in changelog
+    v3818_text = v3818_release_notes.read_text(encoding="utf-8")
+    assert "PR #91" in v3818_text
+    assert "@colinaaa" in v3818_text
+    assert "thread_id" in v3818_text
+    assert "issue #90" in v3818_text
+    assert "hermes-feishu-card-v3.8.18-macos.tar.gz" in v3818_text
     assert v3817_release_notes.exists()
     assert "## V3.8.17 — 2026-07-09" in changelog
     assert "V3.8.17" in changelog
@@ -403,13 +415,13 @@ def test_v3817_release_notes_are_linked():
     assert "thinking.delta" in release_text
     assert "feishu-v382-readme-showcase.png" in release_text
     assert "hermes-feishu-card-v3.8.2-macos.tar.gz" in release_text
-    assert 'HFC_VERSION: "${HFC_VERSION:-v3.8.17}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v3.8.18}"' in compose
 
 
 def test_todo_points_to_v38_public_plan_docs():
     todo = read_doc("TODO.md")
 
-    assert "## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17" in todo
+    assert "## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18" in todo
     assert "### V3.8.2：卡片 timeline 阅读体验补丁（已完成）" in todo
     assert "### V3.8.3：独立命令卡片（已完成）" in todo
     assert "### V3.8.4：Feishu WebSocket 命令卡片热修（已完成）" in todo
@@ -430,6 +442,8 @@ def test_todo_points_to_v38_public_plan_docs():
     assert "### V3.8.17：cron 路由意图卡片投递补丁（已完成）" in todo
     assert "PR #77" in todo
     assert "@zayn-0101" in todo
+    assert "### V3.8.18：cron 话题线程回传补丁（已完成）" in todo
+    assert "PR #91" in todo
     assert "### V3.8.x 后续维护与扩展面（待办）" in todo
     assert "[docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md)" in todo
     assert "[docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)" in todo

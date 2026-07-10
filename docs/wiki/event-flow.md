@@ -59,6 +59,12 @@ sidecar 仍应创建 session 并发送初始卡片，不能把整条流计入 `e
 - 主会话卡片更新、topic 卡片停住。
 - `system.notice` 同时进入卡片 timeline 又在外面出现灰色消息。
 
+## Cron 话题线程投递
+
+从 Feishu/Lark 话题线程创建的 cron job 也必须保留 origin 的 `thread_id`。`build_cron_event` 的目标优先级为：scheduler 已解析的 Feishu target、Feishu origin、显式环境 fallback；没有 thread id 时继续按 `chat_id` 投递。
+
+只有 `origin.platform == feishu` 时才读取 origin thread id。Telegram 等非 Feishu origin 的 thread id 不得进入 Feishu 事件，避免跨平台路由数据泄漏。
+
 ## `system.notice`
 
 Hermes 原生运行提示会被归一为 `system.notice`：
