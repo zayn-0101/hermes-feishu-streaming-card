@@ -152,8 +152,9 @@ Gateway restart remains an explicit operation because it interrupts active Herme
 Operations cards reuse the current CardKit visual structure. They do not change normal answer cards.
 
 Action buttons use Card JSON 2.0 `column_set` rows. Buttons keep their existing
-order and are grouped two per row in equal-width columns. An odd final button
-occupies the left column while the right column remains empty. The button grid
+order and are grouped two per row in content-width columns with `8px` spacing,
+left-aligned as a compact action group. An odd final button occupies the left
+column without reserving an empty half-row. The button grid
 sits between the diagnostic summary and the existing divider, so the header,
 summary, divider, configured footer, and all normal streaming-card layouts stay
 unchanged. Each column contains one direct Card JSON 2.0 `button` with its

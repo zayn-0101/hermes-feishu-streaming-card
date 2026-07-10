@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Render operations-card actions as responsive two-column Card JSON 2.0 rows while preserving action order, callbacks, divider, and footer.
+**Goal:** Render operations-card actions as compact two-column Card JSON 2.0 rows while preserving action order, callbacks, divider, and footer.
 
-**Architecture:** Keep `_operation_buttons(...)` responsible for producing valid direct Card JSON 2.0 buttons. Add a small renderer helper that groups those buttons in pairs and wraps each pair in an equal-width `column_set`; `render_operations_card(...)` inserts the rows at the current button position. No server, callback, or normal-card code changes.
+**Architecture:** Keep `_operation_buttons(...)` responsible for producing valid direct Card JSON 2.0 buttons. Add a small renderer helper that groups those buttons in pairs and wraps each pair in a compact, content-width `column_set`; `render_operations_card(...)` inserts the rows at the current button position. No server, callback, or normal-card code changes.
 
 **Tech Stack:** Python 3.9+, Feishu Card JSON 2.0, pytest.
 
@@ -12,7 +12,7 @@
 
 - Use Card JSON 2.0 `column_set`; never reintroduce the removed JSON 1.0 `action` container.
 - Keep button order and each button's existing `behaviors[0].value` unchanged.
-- Use two equal-width columns per row; an odd final row contains only its left column.
+- Use two content-width columns with `8px` spacing per row; an odd final row contains only its left column and reserves no empty half-row.
 - Preserve the operations summary, divider, configured footer, and every normal streaming-card layout.
 - Add no dependencies and do not modify `server.py`, `hook_runtime.py`, or Hermes files.
 
@@ -32,7 +32,7 @@
 
 Update the operations-card test helpers to collect buttons recursively from
 `column_set.columns[].elements`. Assert four actions produce two rows with two
-equal weighted columns each, stable row ids, unique element ids, unchanged
+content-width columns each, `8px` spacing, stable row ids, unique element ids, unchanged
 callback values, and the divider/footer still occupy the final two positions.
 Add an odd-count state assertion using the `confirm_repair` state: its two
 buttons form one complete row; use a one-button state such as `failed` to assert
@@ -46,8 +46,9 @@ assert [row["element_id"] for row in rows] == [
 ]
 assert all(row["flex_mode"] == "none" for row in rows)
 assert all(len(row["columns"]) == 2 for row in rows)
+assert all(row["horizontal_spacing"] == "8px" for row in rows)
 assert all(
-    column["width"] == "weighted" and column["weight"] == 1
+    column["width"] == "auto" and "weight" not in column
     for row in rows
     for column in row["columns"]
 )
@@ -88,8 +89,7 @@ def _operation_button_rows(
                 "columns": [
                     {
                         "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
+                        "width": "auto",
                         "vertical_align": "top",
                         "elements": [button],
                     }
@@ -127,4 +127,3 @@ Commit:
 git add hermes_feishu_card/operations.py tests/unit/test_operations.py docs/superpowers/plans/2026-07-10-operations-button-grid.md
 git commit -m "feat: arrange operations buttons in two columns"
 ```
-
