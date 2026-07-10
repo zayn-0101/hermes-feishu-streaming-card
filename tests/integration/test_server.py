@@ -426,6 +426,9 @@ async def test_cleanup_reassigned_alias_keeps_new_session_routable():
     active.answer_text = "active"
     app[SESSIONS_KEY][old_key] = old
     app[SESSIONS_KEY][new_key] = active
+    app[FEISHU_MESSAGE_IDS_KEY][new_key] = "om_active_card"
+    app[MESSAGE_BOT_IDS_KEY][new_key] = "profile:default"
+    app[SESSION_CARD_CONFIGS_KEY][new_key] = {"title": "Card"}
 
     class ReassignedAliases(dict):
         def __init__(self):
@@ -440,6 +443,12 @@ async def test_cleanup_reassigned_alias_keeps_new_session_routable():
 
     app[SESSION_ALIASES_KEY] = ReassignedAliases()
     cleanup_runtime_state(app, now=3700.0)
+
+    assert old_key not in app[SESSIONS_KEY]
+    assert app[SESSION_ALIASES_KEY]["om_reply"] == new_key
+    assert app[FEISHU_MESSAGE_IDS_KEY][new_key] == "om_active_card"
+    assert app[MESSAGE_BOT_IDS_KEY][new_key] == "profile:default"
+    assert app[SESSION_CARD_CONFIGS_KEY][new_key] == {"title": "Card"}
 
     test_client = TestClient(TestServer(app))
     await test_client.start_server()
@@ -457,8 +466,10 @@ async def test_cleanup_reassigned_alias_keeps_new_session_routable():
     finally:
         await test_client.close()
 
+    assert response.status == 200
     assert body == {"ok": True, "applied": True}
-    assert app[SESSIONS_KEY][new_key].answer_text == "activefresh"
+    assert app[SESSIONS_KEY][new_key] is active
+    assert active.answer_text == "activefresh"
 
 
 async def test_cleanup_runtime_state_keeps_active_interactions_and_inflight_aliases():
