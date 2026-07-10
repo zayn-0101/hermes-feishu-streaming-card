@@ -173,6 +173,14 @@ async def test_health_reports_healthy_status_and_active_sessions(client):
         "feishu_update_latency_ms": 0,
         "cron_cards_sent": 0,
         "cron_fallbacks": 0,
+        "recovery_plans_available": 0,
+        "recovery_attempts": 0,
+        "recovery_successes": 0,
+        "recovery_refusals": 0,
+        "profile_mismatches": 0,
+        "sessions_collected": 0,
+        "zombie_sessions_collected": 0,
+        "flush_controllers_collected": 0,
     }
     assert body["reply_index"] == {"entries": 0, "last_lookup": {}}
     assert body["cron"] == {"cards_sent": 0, "fallbacks": 0}

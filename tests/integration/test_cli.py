@@ -237,6 +237,35 @@ def test_module_doctor_json_reports_supported_hermes_and_clean_install_state(tmp
     assert any(item["code"] == "hermes_compatibility_partial" for item in report["recommendations"])
 
 
+def test_module_doctor_json_is_read_only_and_has_stable_fingerprint(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server:\n  port: 9013\n", encoding="utf-8")
+    hermes_dir = tmp_path / "hermes"
+    shutil.copytree(FIXTURE, hermes_dir)
+    before = {
+        path.relative_to(hermes_dir): path.read_bytes()
+        for path in hermes_dir.rglob("*")
+        if path.is_file()
+    }
+
+    first = run_cli(
+        "doctor", "--config", str(config_path), "--hermes-dir", str(hermes_dir), "--json"
+    )
+    second = run_cli(
+        "doctor", "--config", str(config_path), "--hermes-dir", str(hermes_dir), "--json"
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert json.loads(first.stdout)["fingerprint"] == json.loads(second.stdout)["fingerprint"]
+    after = {
+        path.relative_to(hermes_dir): path.read_bytes()
+        for path in hermes_dir.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
 def test_module_doctor_json_reports_runtime_import_failure(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("server:\n  port: 9018\n", encoding="utf-8")

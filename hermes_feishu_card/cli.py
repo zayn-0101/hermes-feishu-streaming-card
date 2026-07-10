@@ -16,10 +16,16 @@ import yaml
 
 from hermes_feishu_card.config import load_config
 from hermes_feishu_card.bots import BotRegistry
+from hermes_feishu_card.diagnostics import (
+    DiagnosticReport,
+    build_diagnostic_report,
+    format_diagnostic_text,
+)
 from hermes_feishu_card.events import SidecarEvent
 from hermes_feishu_card.feishu_client import FeishuAPIError, FeishuClient, FeishuClientConfig
 from hermes_feishu_card.install.detect import HermesDetection, detect_hermes
 from hermes_feishu_card.install.manifest import file_sha256
+from hermes_feishu_card.install.recovery import plan_recovery
 from hermes_feishu_card.install.patcher import (
     apply_patch,
     apply_cron_patch,
@@ -297,18 +303,22 @@ def _run_doctor(args: argparse.Namespace) -> int:
 
     if args.json_output or args.explain:
         report = _build_doctor_report(config_path, config, args)
+        payload = report.to_dict() if isinstance(report, DiagnosticReport) else report
         if args.json_output:
             print(
                 json.dumps(
-                    report,
+                    payload,
                     ensure_ascii=False,
                     indent=2,
                     sort_keys=True,
                 )
             )
         else:
-            print(_format_doctor_explanation(report))
-        return _doctor_exit_code(report)
+            if isinstance(report, DiagnosticReport):
+                print(format_diagnostic_text(report, explain=True))
+            else:
+                print(_format_doctor_explanation(report))
+        return _doctor_exit_code(payload)
 
     host = config["server"]["host"]
     port = config["server"]["port"]
@@ -372,7 +382,7 @@ def _build_doctor_report(
     config_path: Path,
     config: dict[str, Any],
     args: argparse.Namespace,
-) -> dict[str, Any]:
+) -> dict[str, Any] | DiagnosticReport:
     server = config["server"]
     host = str(server["host"])
     port = int(server["port"])
@@ -526,9 +536,18 @@ def _build_doctor_report(
         )
 
     install_state = _diagnose_install_state(detection)
-    report["install_state"] = install_state
-    _append_install_state_recommendation(recommendations, install_state)
-    return _finalize_doctor_report(report)
+    recovery_plan = plan_recovery(detection)
+    return build_diagnostic_report(
+        config_path,
+        config,
+        detection,
+        recovery_plan,
+        health={
+            "streaming": streaming,
+            "runtime_import": runtime_import,
+            "install_state": install_state,
+        },
+    )
 
 
 def _doctor_profile_count(config: dict[str, Any]) -> int:
