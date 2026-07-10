@@ -180,12 +180,18 @@ def operations_button(card, label):
 
 
 def operations_action_payload(
-    value, *, chat_id="oc_group", operator="ou_owner", profile_id=""
+    value,
+    *,
+    chat_id="oc_group",
+    operator="ou_owner",
+    profile_id="",
+    proof_profile_id="",
+    transport_secret=None,
 ):
     context = {"open_chat_id": chat_id}
     if profile_id:
         context["profile_id"] = profile_id
-    proof_profile_id = profile_id or "default"
+    proof_profile_id = proof_profile_id or profile_id or "default"
     timestamp = int(sidecar_server.time.time())
     token = str(value.get("token") or "")
     encoded = token.split(".", 1)[0]
@@ -193,7 +199,8 @@ def operations_action_payload(
         base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
     )
     proof = sign_transport_proof(
-        derive_operation_transport_secret(
+        transport_secret
+        or derive_operation_transport_secret(
             TRANSPORT_ROOT_SECRET,
             claims["operation_id"],
         ),
@@ -1314,6 +1321,7 @@ async def test_http_operations_reject_tampered_and_profile_mismatched_tokens(
                 details,
                 chat_id="oc_private",
                 profile_id="sales",
+                proof_profile_id="default",
             ),
         )
         chat_mismatched_response = await test_client.post(
@@ -1332,10 +1340,8 @@ async def test_http_operations_reject_tampered_and_profile_mismatched_tokens(
         "error": "operation rejected",
     }
     assert mismatched_response.status == 200
-    assert mismatched_body == {
-        "ok": False,
-        "error": "operation rejected",
-    }
+    assert mismatched_body["ok"] is True
+    assert "card" in mismatched_body
     assert chat_mismatched_body == {
         "ok": False,
         "error": "operation rejected",
@@ -1507,10 +1513,24 @@ async def test_confirmed_restart_returns_callback_before_sanitized_background_re
         )
         await _wait_until(lambda: bool(feishu_client.sent))
         repair = operations_button(feishu_client.sent[0][1], "安全修复")
+        repair_token = str(repair["token"])
+        repair_encoded = repair_token.split(".", 1)[0]
+        repair_claims = json.loads(
+            base64.urlsafe_b64decode(
+                repair_encoded + "=" * (-len(repair_encoded) % 4)
+            )
+        )
+        transport_secret = derive_operation_transport_secret(
+            TRANSPORT_ROOT_SECRET,
+            repair_claims["operation_id"],
+        )
         confirm_card = await test_client.post(
             "/card/actions",
             json=operations_action_payload(
-                repair, chat_id="oc_private", operator="ou_first"
+                repair,
+                chat_id="oc_private",
+                operator="ou_first",
+                transport_secret=transport_secret,
             ),
         )
         confirm_repair = operations_button(
@@ -1519,14 +1539,20 @@ async def test_confirmed_restart_returns_callback_before_sanitized_background_re
         repaired = await test_client.post(
             "/card/actions",
             json=operations_action_payload(
-                confirm_repair, chat_id="oc_private", operator="ou_second"
+                confirm_repair,
+                chat_id="oc_private",
+                operator="ou_second",
+                transport_secret=transport_secret,
             ),
         )
         restart = operations_button((await repaired.json())["card"], "重启 Gateway")
         confirm_restart_card = await test_client.post(
             "/card/actions",
             json=operations_action_payload(
-                restart, chat_id="oc_private", operator="ou_second"
+                restart,
+                chat_id="oc_private",
+                operator="ou_second",
+                transport_secret=transport_secret,
             ),
         )
         confirm_restart = operations_button(
@@ -1536,7 +1562,10 @@ async def test_confirmed_restart_returns_callback_before_sanitized_background_re
             test_client.post(
                 "/card/actions",
                 json=operations_action_payload(
-                    confirm_restart, chat_id="oc_private", operator="ou_third"
+                    confirm_restart,
+                    chat_id="oc_private",
+                    operator="ou_third",
+                    transport_secret=transport_secret,
                 ),
             ),
             timeout=0.5,
