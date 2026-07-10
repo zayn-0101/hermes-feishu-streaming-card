@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_EVENT_URL = "http://127.0.0.1:8765/events"
 DEFAULT_TIMEOUT_SECONDS = 0.8
 TERMINAL_TIMEOUT_SECONDS = 10.0
+OPERATIONS_ACTION_TIMEOUT_SECONDS = 2.0
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 MEDIA_RE = re.compile(r"MEDIA:([^\s\]]+)")
 LOCAL_FILE_RE = re.compile(
@@ -2371,7 +2372,11 @@ def _hfc_handle_operations_select_action(
     try:
         config = load_runtime_config()
         url = f"{_summary_base_url(config.event_url)}/card/actions"
-        result = _post_json_sync_response(url, sidecar_payload, 5.0)
+        result = _post_json_sync_response(
+            url,
+            sidecar_payload,
+            OPERATIONS_ACTION_TIMEOUT_SECONDS,
+        )
     except Exception as exc:
         _hfc_warn(
             f"operations.select forward failed: {exc.__class__.__name__}: {exc}"

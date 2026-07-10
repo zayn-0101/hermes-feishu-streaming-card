@@ -4528,7 +4528,16 @@ def test_operations_select_passes_admission_and_forwards_profile_context(monkeyp
 
     def fake_post(url, payload, timeout):
         posted.update(url=url, payload=payload, timeout=timeout)
-        return {"ok": True, "card": {"header": {"template": "orange"}}}
+        return {
+            "ok": True,
+            "operation_id": "operation-successor",
+            "card": {
+                "header": {"template": "orange"},
+                "body": {
+                    "elements": [{"tag": "markdown", "content": "正在重新检测"}]
+                },
+            },
+        }
 
     monkeypatch.setattr(hook_runtime, "_post_json_sync_response", fake_post)
     token = _operation_token()
@@ -4568,7 +4577,14 @@ def test_operations_select_passes_admission_and_forwards_profile_context(monkeyp
     }
     assert posted["payload"]["adapter_transport_proof"]["signature"]
     assert posted["payload"]["adapter_transport_proof"]["timestamp"] > 0
+    assert posted["timeout"] == 2.0
+    assert posted["timeout"] == hook_runtime.OPERATIONS_ACTION_TIMEOUT_SECONDS
     assert response.card.type == "raw"
+    assert "正在重新检测" in str(response.card.data)
+    assert hook_runtime._operation_transport_context("operation-successor") == (
+        b"process-local-secret",
+        "work",
+    )
 
 
 def test_operations_select_rejected_admission_is_claimed_without_forward(monkeypatch):

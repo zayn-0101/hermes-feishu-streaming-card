@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -445,7 +446,13 @@ async def test_installed_ws_hook_uses_real_http_for_operator_and_auth_matrix(
         completed_group = await _click_operations(
             adapter, confirm, chat_id="oc_group", operator="ou_owner"
         )
-        assert "安全修复已完成" in str(completed_group.card.data)
+        assert "正在安全修复" in str(completed_group.card.data)
+        await _wait_for(
+            lambda: any(
+                "安全修复已完成" in str(card)
+                for _message_id, card in feishu_client.updated
+            )
+        )
 
         private_card = await _establish_operations_card(
             feishu_client,
@@ -464,7 +471,14 @@ async def test_installed_ws_hook_uses_real_http_for_operator_and_auth_matrix(
         completed_private = await _click_operations(
             adapter, private_confirm, chat_id="oc_private", operator="ou_second"
         )
-        assert "安全修复已完成" in str(completed_private.card.data)
+        assert "正在安全修复" in str(completed_private.card.data)
+        await _wait_for(
+            lambda: sum(
+                "安全修复已完成" in str(card)
+                for _message_id, card in feishu_client.updated
+            )
+            == 2
+        )
 
         await adapter._handle_card_action_event(
             _card_action_data(repair, open_id="ou_owner", chat_id="oc_group")
@@ -475,6 +489,71 @@ async def test_installed_ws_hook_uses_real_http_for_operator_and_auth_matrix(
     assert len(recovery_calls) == 2
     assert adapter.native_actions == []
     assert adapter.gray_messages == []
+
+
+async def test_ws_operations_recheck_returns_in_progress_card_and_keeps_successor_transport(
+    monkeypatch,
+    tmp_path,
+):
+    report = _operations_report()
+    recheck_started = threading.Event()
+    release_recheck = threading.Event()
+
+    def blocked_report(*args, **kwargs):
+        if args[3] == "recheck":
+            recheck_started.set()
+            release_recheck.wait(2.0)
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", blocked_report)
+    monkeypatch.setattr(hook_runtime, "CallBackCard", _CallbackCard, raising=False)
+    monkeypatch.setattr(
+        hook_runtime, "P2CardActionTriggerResponse", _CallbackResponse, raising=False
+    )
+    hook_runtime.reset_runtime_state()
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("HERMES_FEISHU_CARD_STATE_DIR", str(state_dir))
+    root_secret = ensure_transport_root_secret(state_dir)
+    feishu_client = _OperationsFeishuClient()
+    app = create_app(feishu_client, operations_transport_root_secret=root_secret)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        monkeypatch.setenv(
+            "HERMES_FEISHU_CARD_EVENT_URL", str(client.make_url("/events"))
+        )
+        adapter = _installed_action_adapter()
+        initial_card = await _establish_operations_card(
+            feishu_client,
+            chat_id="oc_private",
+            chat_type="private",
+            operator="ou_owner",
+            index=1,
+        )
+        recheck = _operations_button(initial_card, "重新检测")
+        original_secret = hook_runtime._transport_secret_for_token(recheck["token"])
+
+        response = await _click_operations(
+            adapter, recheck, chat_id="oc_private", operator="ou_owner"
+        )
+        successor_id = next(
+            operation_id
+            for operation_id, operation in app[
+                sidecar_server.OPERATIONS_STORE_KEY
+            ]._records.items()
+            if operation.state == "preparing"
+        )
+        await asyncio.wait_for(asyncio.to_thread(recheck_started.wait), timeout=1.0)
+    finally:
+        release_recheck.set()
+        await client.close()
+
+    assert response.card.type == "raw"
+    assert "正在重新检测" in str(response.card.data)
+    assert hook_runtime._operation_transport_context(successor_id) == (
+        original_secret,
+        "default",
+    )
 
 
 @pytest.mark.parametrize(
@@ -801,9 +880,15 @@ async def test_ws_hook_to_real_local_actions_enforces_transport_scope_ownership_
             ]
         )
         assert len(recovery_calls) == 1
-        assert any(
-            item.card is not None and "安全修复已完成" in str(item.card.data)
+        assert all(
+            item.card is not None and "正在安全修复" in str(item.card.data)
             for item in duplicate_results
+        )
+        await _wait_for(
+            lambda: any(
+                "安全修复已完成" in str(card)
+                for _message_id, card in feishu_client.updated
+            )
         )
 
         command_locals["message_id"] = "om_doctor_expiry"
