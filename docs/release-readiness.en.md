@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current package version: `3.9.1`; it was released on 2026-07-11. It builds on the V3.9.0 operations foundation and fixes completed-answer truncation, interrupted terminal-card ordering, model-picker callback timeouts, loopback proxy interference, and verified marker-only installer damage. V3.9.0 was released on 2026-07-11 and built on the sidecar-only runtime, V3.8.2 timeline, group diagnostics, topic/cron routing, and WebSocket interactions. Normal streaming-card footer/layout is unchanged.
+Current release candidate: `3.10.0`. It adds a native bare `/resume` picker and escaped semantic model-footer color while reusing Hermes' original security path and preserving footer/layout. V3.9.1 was released on 2026-07-11; V3.9.0 was released on 2026-07-11 and built on the sidecar-only runtime, V3.8.2 timeline, group diagnostics, topic/cron routing, and WebSocket interactions.
 
 ## Ready
 
@@ -66,6 +66,8 @@ Current package version: `3.9.1`; it was released on 2026-07-11. It builds on th
 - Real Feishu private-chat acceptance passed on 2026-07-11: `/hfc doctor` produced no gray native unknown-command reply; localized details and two consecutive rechecks (including the background successor) ACKed in 156–201 ms without a target-callback timeout toast and updated the same card; sandboxed two-step safe repair, card-triggered Gateway restart, and the normal completed-card footer passed with zero sidecar send/update failures.
 - V3.9.1 regression coverage includes completed-answer boundaries, interrupted terminal ordering, asynchronous model-picker callbacks, loopback no-proxy behavior, marker-only recovery, and refusal of unknown edits.
 - V3.9.1 automated release gate: `1198 passed, 3 skipped` on both Python 3.9 and Python 3.12, followed by `git diff --check`.
+- V3.10.0 bare `/resume` picker tests cover the original Hermes handler, group initiator, topic metadata, expired/invalid state, fail-open behavior, and immediate ACK.
+- V3.10.0 footer tests prove only the escaped model label changes color; element ids, field order, separators, text size, and non-completed states remain unchanged.
 
 ## Required Pre-release Checks
 
@@ -84,7 +86,7 @@ Real Feishu integration must use local config or environment variables for `FEIS
 - Real Feishu private chat: `/hfc doctor`, localized details, recheck, a second click from the background successor, same-card PATCH, sandboxed two-step safe repair, card-triggered Gateway restart, and the normal footer snapshot. **Passed on 2026-07-11**.
 - Real Feishu cron: a no-agent one-shot result reached a normal completed card; sidecar event receive/apply/card-send metrics succeeded with no fallback. **Passed on 2026-07-11**.
 - Profile route mismatch: a temporary invalid `HERMES_FEISHU_CARD_PROFILE_ID` produced a redacted `profile_unknown` route chain, and removing the temporary environment restored the default profile without changing persistent config. **Passed on 2026-07-11**.
-- Remaining real Feishu gates: group initiator and changed-operator rejection, and topic. **Pending acceptance**.
+- V3.10.0 real Feishu `/resume`: private chat, group initiator, topic placement, and same-card PATCH passed; changed-operator rejection remains automation-backed because the test group had one human participant.
 
 Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a successful finite one-shot can print `Ran now: failed` because Hermes re-reads `last_status` after the completed job record has already been deleted. This does not indicate a card-delivery failure; the acceptance decision uses the matching Feishu card, sidecar metrics, and saved cron output. The plugin deliberately does not add another source patch for Hermes `tools/cronjob_tools.py` just to mask this upstream CLI issue.
 
@@ -94,6 +96,13 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - `git diff --check`: **passed**.
 - Real Feishu focus: model-picker callbacks, interrupted terminal cards, and completed-answer preservation follow the [Feishu acceptance checklist](wiki/feishu-acceptance.md); public evidence remains redacted.
 - Release assets: verify macOS, Linux, Windows, and checksums after tagging.
+
+## V3.10.0 Release Gates
+
+- Focused interaction/installer/render matrix: **passed (`416 passed`)**.
+- Python 3.9 / 3.12 full automation: **passed (`1216 passed, 3 skipped`)**.
+- Real Feishu: private chat, group initiator, topic same-thread update, and footer passed; changed-operator rejection is covered by automation.
+- Verify macOS, Linux, Windows, and checksums assets after tagging.
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
 

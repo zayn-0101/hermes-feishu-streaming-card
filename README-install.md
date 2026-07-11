@@ -123,6 +123,13 @@ closed. Source-stripped Hermes roots are shown as `version: unknown
 (source-stripped metadata)`. Local health checks bypass ambient proxies. These
 changes do not alter the normal streaming-card footer/layout.
 
+From V3.10.0, bare Feishu/Lark `/resume` can use a native session dropdown;
+typed `/resume <target>` and every unavailable/empty/unsupported path continue
+through Hermes' original text handler. Group/topic callbacks require the
+initiating user, while private chats do not add an extra identity comparison.
+Recognized model names receive HTML-escaped semantic color inside the existing
+footer; its layout, field order, separators, and text size are unchanged.
+
 Current installers default `PIP_ROOT_USER_ACTION=ignore` so Debian/Ubuntu root
 installs do not print pip's root-user warning. If Python reports
 `externally-managed-environment`, `install.sh` and `install-docker.sh` retry with
@@ -145,7 +152,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.9.1`, `v3.9.0`, `v3.8.18`, `v3.6.6`, or `main`. |
+| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.10.0`, `v3.9.1`, `v3.8.18`, `v3.6.6`, or `main`. |
 | `HFC_REPO` | `baileyh8/hermes-feishu-streaming-card` | GitHub repository to install from. |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent root directory. |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | Sidecar config path. |
@@ -165,7 +172,7 @@ script selects Hermes venv Python and does not fall back to system Python unless
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.9.1
+export HFC_VERSION=v3.10.0
 bash install-docker.sh
 ```
 

@@ -2,9 +2,20 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 / V3.9 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1
+## V3.8 / V3.9 / V3.10 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
+
+### V3.10.0：原生会话恢复与轻量视觉增强（待发布）
+
+- [x] Issue #94 / @colinaaa：裸 `/resume` 使用原生 `select_static` 会话选择器，带参数命令保持 Hermes 原行为。
+- [x] 选择回调即时 ACK，后台复用 original Hermes resume handler；权限、continuation、agent release 和 override cleanup 不重复实现。
+- [x] 私聊不额外比较操作者；群聊/topic 必须由发起者 `open_id` 点击，身份不可验证时 fail-open 到文本列表。
+- [x] PR #98 / @charles5g / jackmim：采用模型 footer 语义色创意，增加 HTML escape；footer/layout、字段顺序与字号不变。
+- [x] V3.9.1 相关 issue/PR 与 2026-07-11 旧队列已完成证据化回复和关闭，仅 #94 留待 V3.10.0 发布收口。
+- [x] Python 3.9 / 3.12 release gate 均为 `1216 passed, 3 skipped`，`git diff --check` 通过。
+- [x] 真实 Feishu 私聊、群聊发起者和 topic 原线程 smoke 通过；换操作者拒绝因测试群仅一位真人，保留自动化回归证据。
+- [ ] 完成 tag、Release 与资产验证。
 
 ### V3.9.1：可靠性热修（已发布）
 
@@ -17,7 +28,7 @@
 - [x] 普通流式卡 footer/layout 保持不变。
 - [x] Python 3.9 / 3.12 release gate 均为 `1198 passed, 3 skipped`，`git diff --check` 通过。
 - [x] v3.9.1 tag、GitHub Release 与四个 release assets 按发布流程完成。
-- [ ] 完成相关 issue/PR 的证据化回复与状态收口。
+- [x] 完成相关 issue/PR 的证据化回复与状态收口。
 
 ### V3.9.0：运维与可靠性基础（已完成自动化与文档）
 

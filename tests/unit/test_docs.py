@@ -419,7 +419,7 @@ def test_v3817_release_notes_are_linked():
 def test_todo_points_to_v38_public_plan_docs():
     todo = read_doc("TODO.md")
 
-    assert "## V3.8 / V3.9 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1" in todo
+    assert "## V3.8 / V3.9 / V3.10 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0" in todo
     assert "### V3.8.2：卡片 timeline 阅读体验补丁（已完成）" in todo
     assert "### V3.8.3：独立命令卡片（已完成）" in todo
     assert "### V3.8.4：Feishu WebSocket 命令卡片热修（已完成）" in todo
@@ -1092,10 +1092,6 @@ def test_v391_documents_reliability_hotfix_and_contributors():
 
     assert "## V3.9.1 — 2026-07-11" in changelog
     assert "[docs/release-notes-v3.9.1.md](docs/release-notes-v3.9.1.md)" in changelog
-    assert 'HFC_VERSION: "${HFC_VERSION:-v3.9.1}"' in compose
-    for doc in (readme, english_readme, install_doc, guide, english_guide):
-        assert "HFC_VERSION=v3.9.1" in doc
-
     for reference in ("#82", "#92", "#96", "PR #93", "PR #97", "PR #98"):
         assert reference in release_notes
     for contributor in ("@colinaaa", "@charles5g", "@wjiemin49-ux"):
@@ -1120,5 +1116,52 @@ def test_v391_documents_reliability_hotfix_and_contributors():
         "hermes-feishu-card-v3.9.1-linux.tar.gz",
         "hermes-feishu-card-v3.9.1-windows.zip",
         "hermes-feishu-card-v3.9.1-checksums.txt",
+    ):
+        assert asset in release_notes
+
+
+def test_v310_documents_resume_picker_footer_polish_and_contributors():
+    readme = read_doc("README.md")
+    english_readme = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    compose = read_doc("docker-compose.example.yml")
+    changelog = read_doc("CHANGELOG.md")
+    todo = read_doc("TODO.md")
+    guide = read_doc("docs/user-guide.md")
+    english_guide = read_doc("docs/user-guide.en.md")
+    event_flow = read_doc("docs/wiki/event-flow.md")
+    maintenance = read_doc("docs/wiki/maintenance-guide.md")
+    release_notes = read_doc("docs/release-notes-v3.10.0.md")
+
+    assert "## V3.10.0 — 2026-07-11" in changelog
+    assert "[docs/release-notes-v3.10.0.md](docs/release-notes-v3.10.0.md)" in changelog
+    assert 'HFC_VERSION: "${HFC_VERSION:-v3.10.0}"' in compose
+    for doc in (readme, english_readme, install_doc, guide, english_guide):
+        assert "HFC_VERSION=v3.10.0" in doc
+
+    for reference in ("#94", "PR #98"):
+        assert reference in release_notes
+    for contributor in ("@colinaaa", "@charles5g", "jackmim"):
+        assert contributor in release_notes
+    for phrase in (
+        "/resume",
+        "select_static",
+        "original Hermes",
+        "fail-open",
+        "footer/layout",
+        "HTML escape",
+    ):
+        assert phrase in release_notes
+    assert "group" in release_notes.lower()
+    assert "topic" in release_notes.lower()
+    assert "resume_picker" in event_flow
+    assert "_hfc_original_handle_resume_command" in maintenance
+    assert "### V3.10.0：原生会话恢复与轻量视觉增强" in todo
+
+    for asset in (
+        "hermes-feishu-card-v3.10.0-macos.tar.gz",
+        "hermes-feishu-card-v3.10.0-linux.tar.gz",
+        "hermes-feishu-card-v3.10.0-windows.zip",
+        "hermes-feishu-card-v3.10.0-checksums.txt",
     ):
         assert asset in release_notes

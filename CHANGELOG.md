@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V3.10.0 — 2026-07-11
+
+See also: [docs/release-notes-v3.10.0.md](docs/release-notes-v3.10.0.md)
+
+### Added
+- Bare Feishu/Lark `/resume` now opens a native `select_static` picker for up to ten visible named sessions. Topic reply metadata is preserved, and unavailable/empty/unsupported paths fail open to Hermes' existing text list.
+- Topic pickers retain an explicit reply anchor when Hermes represents the topic with an `om_...` root id, preventing Feishu field-validation fallback to the native numbered list.
+- Selecting a session ACKs immediately, then invokes the original Hermes resume handler in the runner loop. This preserves ownership checks, continuation resolution, agent release, boundary cleanup, and model/reasoning override reset.
+- Completed-card model labels use escaped semantic color for recognized provider prefixes while preserving footer element order, fields, separators, and text size.
+
+### Security
+- Group/topic resume cards can only be confirmed by the initiating Feishu `open_id`; private-chat callbacks do not add a second identity comparison. If the initiating `open_id` cannot be verified for a group, the picker is not sent and Hermes text fallback remains available.
+- Picker callbacks validate expiry, chat, visible session ids, and adapter authorization before executing exactly once.
+
+### Credits
+- Issue #94 by @colinaaa defined the native resume-picker workflow and fail-open/security acceptance criteria.
+- PR #98 by @charles5g, authored by jackmim, contributed the semantic model-color idea; mainline adds HTML escaping and layout-invariant tests.
+
 ## V3.9.1 — 2026-07-11
 
 See also: [docs/release-notes-v3.9.1.md](docs/release-notes-v3.9.1.md)
