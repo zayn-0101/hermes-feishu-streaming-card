@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前包版本为 `3.9.0`，已于 2026-07-11 发布。这一版在既有 sidecar-only、V3.8.2 timeline、群聊诊断、话题/cron 路由、Hermes 兼容和 WebSocket 交互基础上加入运维与可靠性基础：PR #84 / @Zanetach 的卡片 progress-status 路由与 `.env` 白名单扩展的 profile 环境支持、受控运维卡、安全 repair、restart 确认和 lifecycle cleanup。普通流式卡的 footer/layout 不变。
+当前候选包版本为 `3.9.1`。它在 V3.9.0 运维与可靠性基础上修复完成答案截断、打断任务终态竞争、模型选择 callback 超时、loopback 代理干扰和可验证的 marker-only 安装损坏。V3.9.0 已于 2026-07-11 发布，并建立在 sidecar-only、V3.8.2 timeline、群聊诊断、话题/cron 路由和 WebSocket 交互基础上。普通流式卡的 footer/layout 不变。
 
 ## 已具备
 
@@ -64,6 +64,8 @@
 - 运维按钮 WebSocket 回调会即时 ACK，认证动作进入有界后台队列并有限重试；所有认证后的状态统一由 sidecar PATCH 原卡，慢 PATCH 不阻塞 recheck/repair/restart。
 - 自动化 release gate：Python 3.9 / 3.12 均为 `1172 passed, 3 skipped`；运维 semaphore/publish-lock 仅在活跃 event loop 内初始化，保持声明的 Python 3.9 支持。
 - 2026-07-11 真实飞书私聊通过：`/hfc doctor` 无灰色原生未知命令；中文摘要/详情、连续两次重新检测（含后台 successor）在 156–201 ms 内 ACK、无目标回调超时提示并更新同一卡；sandbox 两步安全修复、卡片实际重启 Gateway 与普通流式完成卡 footer 均通过，sidecar 发送/更新零失败。
+- V3.9.1 完成答案边界、打断任务终态排序、异步模型选择 callback、loopback no-proxy、marker-only 恢复与未知编辑拒绝均有回归测试。
+- V3.9.1 自动化 release gate：Python 3.9 / 3.12 均为 `1198 passed, 3 skipped`，`git diff --check` 通过。
 
 ## 发布前必须验证
 
@@ -85,6 +87,13 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - 真实飞书剩余项：群内发起者与 changed-operator rejection、topic。**待验收**。
 
 验收时发现 Hermes 上游 `cron run` 对成功后自动删除的一次性任务仍可能显示 `Ran now: failed`：它在任务记录删除后再次读取 `last_status`，因此把缺失记录误判为失败。该提示不代表插件投递失败；本次以 Feishu 卡片、sidecar metrics 和保存的 cron 输出三方一致作为验收依据。插件不为此额外 patch Hermes `tools/cronjob_tools.py`，避免扩大安装修改面。
+
+## V3.9.1 发布门禁
+
+- Python 3.9 / 3.12 全量自动化：**已通过（`1198 passed, 3 skipped`）**。
+- `git diff --check`：**已通过**。
+- 真实飞书重点复测：模型选择 callback、打断任务终态和完成答案保留按 [真实飞书验收清单](wiki/feishu-acceptance.md) 执行；公开记录仅保留脱敏结果。
+- Release assets：tag 后验证 macOS、Linux、Windows 与 checksums 四个文件。
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
 

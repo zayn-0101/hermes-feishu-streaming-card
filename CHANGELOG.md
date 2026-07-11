@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V3.9.1 — 2026-07-11
+
+See also: [docs/release-notes-v3.9.1.md](docs/release-notes-v3.9.1.md)
+
+### Fixed
+- Preserved the complete final answer when a completed event contains a substantial suffix, fixing issue #96 without reintroducing duplicated native replies (PR #97 by @colinaaa).
+- Serialized interrupted-session terminal updates so a late coalesced PATCH cannot overwrite the abandoned card state, fixing issue #92 (PR #93 by @colinaaa).
+- ACKed model-picker callbacks immediately and performed the switch asynchronously; the original card is updated first and a single fallback card is sent only when needed (PR #98 by @charles5g).
+- Recovered issue #82's verified marker-only hook damage from the owned backup/manifest while continuing to reject unknown edits; source-stripped Hermes diagnostics now report `version: unknown (source-stripped metadata)` instead of a misleading version.
+- Made local health checks bypass ambient HTTP proxies and repaired the tools package syntax, adopting the loopback diagnosis from PR #52 by @wjiemin49-ux.
+
+### Compatibility
+- Normal streaming-card footer/layout remains unchanged.
+- Unknown or unverifiable installer states remain fail-closed; unsupported runtime paths remain fail-open.
+
+### Credits
+- @colinaaa: PR #93 and PR #97.
+- @charles5g: PR #98.
+- @wjiemin49-ux: PR #52 diagnosis and repair direction.
+
 ## V3.9.0 — 2026-07-11
 
 See also: [docs/release-notes-v3.9.0.md](docs/release-notes-v3.9.0.md)

@@ -841,6 +841,19 @@ def test_module_doctor_reports_unsupported_hermes_detection(tmp_path):
     assert "reason: gateway/run.py missing" in result.stdout
 
 
+def test_supported_anchor_fallback_labels_source_stripped_version(tmp_path):
+    hermes_dir = tmp_path / "source-stripped-hermes"
+    shutil.copytree(FIXTURE, hermes_dir)
+    (hermes_dir / "VERSION").unlink(missing_ok=True)
+    detection = cli_module.detect_hermes(hermes_dir)
+
+    formatted = cli_module._format_hermes_detection(detection)
+
+    assert detection.supported is True
+    assert "version_source: gateway anchors" in formatted
+    assert "version: unknown (source-stripped metadata)" in formatted
+
+
 def test_module_doctor_suggests_hermes_cli_project_when_hermes_dir_is_wrong(
     tmp_path, monkeypatch
 ):

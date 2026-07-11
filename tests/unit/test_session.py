@@ -649,6 +649,27 @@ def test_session_strips_archived_preface_prefix_from_completed_answer():
     assert entries[-1].content == "3. 补查结果\nREADME 和 diff 都查完了。"
 
 
+def test_completed_answer_keeps_nearly_complete_streamed_body_after_tools():
+    session = CardSession(
+        conversation_id="chat-1",
+        message_id="msg-1",
+        chat_id="oc_abc",
+    )
+    answer = "Today test_node status: 95% success rate. Overall healthy."
+
+    assert session.apply(
+        event(
+            "tool.updated",
+            1,
+            {"tool_id": "terminal-1", "name": "terminal", "status": "completed"},
+        )
+    )
+    assert session.apply(event("answer.delta", 2, {"text": answer}))
+    assert session.apply(event("message.completed", 3, {"answer": answer + "."}))
+
+    assert session.answer_text == answer + "."
+
+
 def test_session_raw_thinking_blocks_do_not_enter_timeline():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
 

@@ -24,7 +24,7 @@ python3 -m hermes_feishu_card.cli doctor --config config.yaml.example --hermes-d
 python3 -m hermes_feishu_card.cli doctor --config config.yaml.example --hermes-dir ~/.hermes/hermes-agent --json
 ```
 
-诊断输出会展示 Hermes 是否支持、Hermes root、`gateway/run.py` 路径、`run_py_exists`、`version_source`、`version`、`minimum_supported_version`、`hook_strategy`、`compatibility`、anchors 和 `reason`。V3.6.2 起还会展示 `runtime_import`，用于确认 Hermes Gateway 实际运行的 Python 是否能 import `hermes_feishu_card.hook_runtime`。`--explain` 会把 runtime import、streaming 配置、manifest/backup/run.py 安装状态和下一步建议整理成人可读摘要；`--json` 会输出包含 `schema_version`、顶层 `status`、`runtime_import`、`install_state` 和 `recommendations` 的机器可读报告，适合 issue 模板和自动化排障。`doctor` 所有模式都是只读诊断，不会写入 Hermes 文件。
+诊断输出会展示 Hermes 是否支持、Hermes root、`gateway/run.py` 路径、`run_py_exists`、`version_source`、`version`、`minimum_supported_version`、`hook_strategy`、`compatibility`、anchors 和 `reason`。V3.9.1 起，只有 anchors 可用而版本 metadata 缺失的 source-stripped Hermes 会显示 `version: unknown (source-stripped metadata)`，避免把 anchor 策略误解为实际版本号。V3.6.2 起还会展示 `runtime_import`，用于确认 Hermes Gateway 实际运行的 Python 是否能 import `hermes_feishu_card.hook_runtime`。`--explain` 会把 runtime import、streaming 配置、manifest/backup/run.py 安装状态和下一步建议整理成人可读摘要；`--json` 会输出包含 `schema_version`、顶层 `status`、`runtime_import`、`install_state` 和 `recommendations` 的机器可读报告，适合 issue 模板和自动化排障。`doctor` 所有模式都是只读诊断，不会写入 Hermes 文件。
 
 `install` 在拒绝不支持的目录时也会输出同一组 Hermes 检测信息，便于用户判断是版本过低、版本文件不可读、`gateway/run.py` 缺失，还是 hook 锚点结构不兼容。
 
@@ -35,7 +35,7 @@ python3 -m hermes_feishu_card.cli repair --hermes-dir ~/.hermes/hermes-agent --y
 python3 -m hermes_feishu_card.cli setup --repair --hermes-dir ~/.hermes/hermes-agent --config ~/.hermes_feishu_card/config.yaml --yes
 ```
 
-`repair` 只修复本项目能验证的安装状态文件：backup 缺失但当前 `run.py` 能安全移除本项目 owned patch 时，会重建 backup；manifest 缺失、损坏或因 backup 重建而过期时，会重建 manifest；Hermes 升级后如果 `run.py` 已经是不含本项目补丁的上游文件，旧 backup/manifest 会被识别为 stale state 并清理，随后可重新安装 hook。它不会直接改写 `gateway/run.py`，也不会覆盖无法验证的用户编辑。若 `run.py changed since install`、backup hash 不匹配、symlink、corrupt markers 或 cron 状态不可判定，命令会 fail-closed。
+`repair` 只修复本项目能验证的安装状态文件：backup 缺失但当前 `run.py` 能安全移除本项目 owned patch 时，会重建 backup；manifest 缺失、损坏或因 backup 重建而过期时，会重建 manifest；Hermes 升级后如果 `run.py` 已经是不含本项目补丁的上游文件，旧 backup/manifest 会被识别为 stale state 并清理，随后可重新安装 hook。V3.9.1 还允许恢复严格受限的 marker-only 损坏：manifest 的 patched hash 必须等于从已验证 backup 重建出的预期补丁 hash，并且当前文件与预期补丁只能在本项目 owned BEGIN/END marker 行上不同。任何非 marker 编辑、未知 marker、hash 不一致或 symlink 仍会 fail-closed。
 
 ## 备份与 manifest
 

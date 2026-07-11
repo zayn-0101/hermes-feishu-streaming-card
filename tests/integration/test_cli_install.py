@@ -1393,13 +1393,12 @@ def test_setup_auto_repairs_issue_82_corrupt_completion_marker(
     )
     assert cli.main(["install", "--hermes-dir", str(hermes_dir), "--yes"]) == 0
     current = run_py(hermes_dir).read_text(encoding="utf-8")
-    corrupt = current.replace("# HERMES_FEISHU_CARD_COMPLETE_PATCH_END\n", "")
-    run_py(hermes_dir).write_text(corrupt, encoding="utf-8")
-    manifest = json.loads(manifest_path(hermes_dir).read_text(encoding="utf-8"))
-    manifest["patched_sha256"] = sha256(corrupt.encode("utf-8")).hexdigest()
-    manifest_path(hermes_dir).write_text(
-        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+    corrupt = "".join(
+        line
+        for line in current.splitlines(keepends=True)
+        if "HERMES_FEISHU_CARD_COMPLETE_PATCH_END" not in line
     )
+    run_py(hermes_dir).write_text(corrupt, encoding="utf-8")
 
     exit_code = cli.main(
         [

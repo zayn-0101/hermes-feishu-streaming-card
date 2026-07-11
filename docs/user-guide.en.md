@@ -38,6 +38,7 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 - **Cron routing intents keep card delivery**: Since V3.8.17, cron `deliver: origin`, `deliver: all`, and `origin,all` resolve to Feishu targets and send cards.
 - **Cron topic threads stay consistent**: Since V3.8.18, cron jobs created from Feishu topic threads preserve `thread_id` and return cards to the originating thread; non-Feishu origin thread ids are ignored.
 - **Bounded operations recovery**: V3.9.0 operations cards provide diagnosis, recheck, two-step safe repair, and restart confirmation; private chats do not compare operators, group confirmation stays with the initiator, and the CLI remains the fallback. Normal streaming-card footer/layout is unchanged.
+- **Reliability hotfix**: V3.9.1 fixes completed-answer truncation, interrupted terminal cards, model-picker callback timeouts, and verified marker-only installer damage while preserving the normal streaming-card footer/layout.
 - **Long content protection**: Markdown tables and fenced code blocks split on structure boundaries instead of raw character cuts.
 - **Richer tool details**: `tool.updated` can show argument summaries, duration, and failure reason while keeping long details compact.
 - **Multi-bot / multi-profile**: bot registry, chat bindings, profile-aware session keys, titles, and routing diagnostics.
@@ -60,6 +61,12 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 | Long tables/code blocks render as raw Markdown | Markdown-aware table/code splitting with repeated headers and complete fences |
 | Multi-bot, group, and profile routing is hard to inspect | `bindings.chats`, safe `group_rules` diagnostics, profile-aware sessions, and `/health.routing` diagnostics |
 | Hook or sidecar failures are hard to debug | `doctor`, runtime import checks, `/health` metrics, fail-closed installer, restore/uninstall |
+
+## V3.9.1 Reliability Hotfix
+
+V3.9.1 fixes completed-answer truncation in issue #96 / PR #97, interrupted-card terminal ordering in issue #92 / PR #93, and model-picker callback timeouts in PR #98. The installer can recover fully verified marker-only damage and labels source-stripped Hermes metadata explicitly. Normal streaming-card footer/layout is unchanged.
+
+Credits: @colinaaa (PR #93 and PR #97), @charles5g (PR #98), and @wjiemin49-ux (PR #52 loopback diagnosis and repair direction). Full details: [V3.9.1 release notes](release-notes-v3.9.1.md).
 
 ## V3.9.0 Operations and Reliability Foundation
 
@@ -424,7 +431,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.9.0
+export HFC_VERSION=v3.9.1
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -651,6 +658,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v3.9.1](release-notes-v3.9.1.md) | 2026-07-11 | Reliability fixes for completed answers, interrupted terminal cards, model-picker callbacks, and marker-only installer recovery; normal footer/layout unchanged |
 | [v3.9.0](release-notes-v3.9.0.md) | 2026-07-11 | PR #84 / @Zanetach: card progress-status routing and `.env` allowlist expansion for profile environment support, operations safe repair/restart, and CLI fallback; normal streaming-card footer/layout remains unchanged |
 | [v3.8.18](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.18) | 2026-07 | PR #91: cron cards preserve `thread_id` and return to the originating Feishu topic thread |
 | [v3.8.17](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.17) | 2026-07 | PR #77: cron `deliver=origin/all` routing intents resolve to Feishu targets and send cards |
@@ -729,6 +737,9 @@ Thanks to these contributors for improving the project:
 - [colinaaa](https://github.com/colinaaa) — [PR #91](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/91) cron `thread_id` routing back to the originating Feishu topic-group thread (V3.8.18)
 - [zayn-0101](https://github.com/zayn-0101) — [PR #77](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/77) cron `deliver=origin/all` routing-intent card delivery fix (V3.8.17)
 - [Zanetach](https://github.com/Zanetach) — [PR #84](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/84) card progress-status routing and `.env` allowlist expansion for profile environment support (V3.9.0)
+- [colinaaa](https://github.com/colinaaa) — [PR #93](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/93) interrupted terminal cards; [PR #97](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/97) completed-answer preservation (V3.9.1)
+- [charles5g](https://github.com/charles5g) — [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) asynchronous model-picker callbacks and original-card updates (V3.9.1)
+- [wjiemin49-ux](https://github.com/wjiemin49-ux) — [PR #52](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/52) loopback proxy diagnosis and repair direction (adopted in V3.9.1)
 
 ## Security
 

@@ -122,7 +122,7 @@ For an existing Hermes container:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.9.0
+export HFC_VERSION=v3.9.1
 bash install-docker.sh
 ```
 
@@ -165,6 +165,7 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 
 | Version | Highlights |
 |---|---|
+| [v3.9.1](docs/release-notes-v3.9.1.md) | Reliability hotfix: preserve completed answers, serialize interrupted terminal cards, make model-picker callbacks asynchronous, and recover verifiable marker-only installer damage; normal streaming-card footer/layout remains unchanged |
 | [v3.9.0](docs/release-notes-v3.9.0.md) | Operations/reliability foundation: PR #84 / @Zanetach contributed card progress-status routing and `.env` allowlist expansion for profile environment support, plus safe repair/restart operations cards and CLI fallback; normal streaming-card footer/layout remains unchanged |
 | [v3.8.18](docs/release-notes-v3.8.18.md) | Cron cards preserve `thread_id` and return to the originating Feishu topic thread (PR #91, contributed by @colinaaa) |
 | [v3.8.17](docs/release-notes-v3.8.17.md) | Cron `deliver=origin/all` routing intents resolve to Feishu targets and send cards |
@@ -221,6 +222,9 @@ This is a sidecar-only design: the Hermes hook stays fail-open, while Feishu del
 - [colinaaa](https://github.com/colinaaa) - [PR #91](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/91) cron `thread_id` routing back to the originating Feishu topic-group thread
 - [zayn-0101](https://github.com/zayn-0101) - [PR #77](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/77) cron `deliver=origin/all` routing-intent card delivery fix
 - [Zanetach](https://github.com/Zanetach) - [PR #84](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/84) card progress-status routing and `.env` allowlist expansion for profile environment support (V3.9.0)
+- [colinaaa](https://github.com/colinaaa) - [PR #93](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/93) reliable terminal cards for interrupted tasks; [PR #97](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/97) completed-answer preservation (V3.9.1)
+- [charles5g](https://github.com/charles5g) - [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) asynchronous model-picker callbacks and original-card status updates (V3.9.1)
+- [wjiemin49-ux](https://github.com/wjiemin49-ux) - [PR #52](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/52) diagnosis and direction for loopback health checks bypassing proxies (adopted in V3.9.1)
 
 ## Security
 

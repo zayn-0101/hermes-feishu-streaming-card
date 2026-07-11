@@ -10,6 +10,14 @@
 - 飞书 bot 已在目标会话可用。
 - 不在仓库、issue 或日志中暴露 App Secret、tenant token、真实 chat id。
 
+## V3.9.1 可靠性热修
+
+- 完成答案：构造 completed event 带较长 suffix 的任务，确认卡片保留完整正文且没有灰色重复 reply。
+- 打断任务：旧任务仍在更新时发起新任务，确认旧卡收束为中断终态，迟到更新不再恢复运行态。
+- 模型选择：打开 `/model`，选择模型后 callback 不出现超时 toast；先显示切换中，随后原卡显示成功或失败终态，不额外重复发送结果卡。
+- 安装恢复：在临时 Hermes sandbox 验证 marker-only 安全恢复；不要在真实运行目录手工编辑 `gateway/run.py`。
+- 回归：普通流式卡 footer/layout 不变。
+
 ## V3.9.0 运维卡（部分通过）
 
 以下项目必须在真实飞书完成后才可标记通过；当前自动化证据不替代这些 smoke。

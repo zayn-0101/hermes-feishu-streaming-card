@@ -36,6 +36,10 @@ KNOWN_STATES = {
 }
 
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_OWNED_GATEWAY_MARKER_LINE_RE = re.compile(
+    r"(?m)^[ \t]*# HERMES_FEISHU_CARD_[A-Z0-9_]+_(?:BEGIN|END)"
+    r"[ \t]*(?:\r?\n|$)"
+)
 _STATUS_PREFIX = "!recovery:"
 _MANIFEST_ERROR = "_recovery_error"
 _LOCK_NAME = ".hermes_feishu_card_recovery.lock"
@@ -781,6 +785,19 @@ def _classify_gateway_evidence(
         return _classification(state, executable, actions, findings, parts)
 
     if marker_corrupt:
+        marker_only_damage = _matches_owned_gateway_marker_damage(
+            detection,
+            evidence,
+            manifest_checks=manifest_checks,
+            backup_checks=backup_checks,
+        )
+        if marker_only_damage:
+            findings = [
+                finding
+                for finding in findings
+                if finding.code != "current_hash_mismatch"
+            ]
+            findings.append(_finding("owned_marker_damage", "warning"))
         findings.insert(0, _finding("marker_error", "error"))
         actions = ("restore_verified_backup", "reapply_current_hook")
         reapply = _validate_reapplication(detection, evidence.backup_text)
@@ -790,7 +807,7 @@ def _classify_gateway_evidence(
             findings.append(_finding("reapplication_invalid", "error"))
         executable = bool(
             manifest_checks.valid
-            and manifest_checks.current_matches
+            and (manifest_checks.current_matches or marker_only_damage)
             and backup_checks.valid
             and manifest_checks.backup_matches
             and not reapply
@@ -1219,6 +1236,45 @@ def _check_manifest(
     )
 
 
+def _matches_owned_gateway_marker_damage(
+    detection: HermesDetection,
+    evidence: RecoveryEvidence,
+    *,
+    manifest_checks: _ManifestChecks,
+    backup_checks: _BackupChecks,
+) -> bool:
+    manifest = evidence.manifest
+    backup_text = evidence.backup_text
+    if (
+        manifest is None
+        or manifest.get(_MANIFEST_ERROR)
+        or backup_text is None
+        or not manifest_checks.valid
+        or not manifest_checks.backup_matches
+        or not backup_checks.valid
+        or not detection.hook_strategy
+    ):
+        return False
+    try:
+        expected_patched = apply_patch(
+            backup_text,
+            strategy=detection.hook_strategy,
+        )
+    except (SyntaxError, ValueError):
+        return False
+    if _manifest_hash(manifest, "patched_sha256") != _text_sha256(
+        expected_patched
+    ):
+        return False
+    return _normalize_owned_gateway_markers(
+        evidence.current_text
+    ) == _normalize_owned_gateway_markers(expected_patched)
+
+
+def _normalize_owned_gateway_markers(text: str) -> str:
+    return _OWNED_GATEWAY_MARKER_LINE_RE.sub("", text)
+
+
 def _check_cron_manifest(
     detection: HermesDetection,
     evidence: RecoveryEvidence,
@@ -1609,6 +1665,7 @@ def _safe_message(code: str) -> str:
         "manifest_missing": "The owned hook manifest is missing.",
         "manifest_path_mismatch": "Manifest ownership paths do not match the detected install.",
         "marker_error": "Owned hook markers are incomplete or invalid.",
+        "owned_marker_damage": "Only owned hook marker lines differ from the verified install.",
         "reapplication_invalid": "The current hook cannot be validated in memory.",
         "symlink_refused": "Recovery does not operate on symbolic links.",
         "unsupported_anchors": "Verified source does not support the current hook strategy.",

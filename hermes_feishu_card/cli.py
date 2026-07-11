@@ -1377,6 +1377,13 @@ def _format_doctor_explanation(report: dict[str, Any]) -> str:
 def _format_hermes_detection(detection: HermesDetection) -> str:
     status = "supported" if detection.supported else "unsupported"
     run_py_exists = "yes" if detection.run_py_exists else "no"
+    version = detection.version
+    if (
+        detection.supported
+        and version == "unknown"
+        and detection.version_source == "gateway anchors"
+    ):
+        version = "unknown (source-stripped metadata)"
     lines = [
         f"hermes: {status}",
         f"hermes_root: {detection.root}",
@@ -1385,7 +1392,7 @@ def _format_hermes_detection(detection: HermesDetection) -> str:
         f"cron_py: {detection.cron_py}",
         f"cron_py_exists: {'yes' if detection.cron_py_exists else 'no'}",
         f"version_source: {detection.version_source}",
-        f"version: {detection.version}",
+        f"version: {version}",
         f"minimum_supported_version: {detection.minimum_version}",
         f"hook_strategy: {detection.hook_strategy}",
         f"cron_hook_strategy: {detection.cron_hook_strategy}",

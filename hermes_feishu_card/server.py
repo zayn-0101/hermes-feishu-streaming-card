@@ -1984,6 +1984,12 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 metrics.events_ignored += 1
                 return web.json_response({"ok": True, "applied": False}), None
     if event.event == "message.started" and session is None:
+        # Abandon stale sessions for the same conversation — covers the case
+        # where a new message arrives with its own explicit message_id (e.g.
+        # after /stop or a generation-bump interrupt).
+        await _abandon_stale_sessions_for_chat(
+            request.app, event.chat_id, session_key, event,
+        )
         session = CardSession(
             conversation_id=event.conversation_id,
             message_id=event.message_id,
@@ -2037,6 +2043,14 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
 
     if session is None:
         if event.event in SESSION_CREATING_EVENTS:
+            # Abandon stale sessions for the same conversation when a new
+            # session is being created.  This handles the interrupt scenario:
+            # the gateway interrupts a running turn and starts a new one
+            # without sending message.completed for the old turn — the old
+            # card would be stuck at "生成中" forever.
+            await _abandon_stale_sessions_for_chat(
+                request.app, event.chat_id, session_key, event,
+            )
             session = CardSession(
                 conversation_id=event.conversation_id,
                 message_id=event.message_id,
@@ -2128,6 +2142,17 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
     if applied:
         _refresh_session_display_status(request, session)
         _register_session_aliases(request.app, incoming_event, session_key)
+    # When a terminal event arrives for a session already completed (e.g. by
+    # _abandon_stale_sessions_for_chat), the apply() returns False but the
+    # session IS handled — report applied=True so the gateway hook suppresses
+    # the native text message (avoiding duplicate delivery).
+    terminal_already_handled = (
+        not applied
+        and event.event in TERMINAL_EVENTS
+        and session.status in {"completed", "failed"}
+    )
+    if terminal_already_handled:
+        applied = True
     if applied and event.event.startswith("interaction."):
         _store_interaction_result(request.app, session)
     if event.event in TERMINAL_EVENTS:
@@ -2139,6 +2164,9 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             "session_status": session.status,
             "answer_chars": len(session.answer_text),
         }
+    if terminal_already_handled:
+        metrics.events_applied += 1
+        return web.json_response({"ok": True, "applied": True}), None
     post_lock_task = None
     if applied and feishu_message_id is not None:
         if event.event in TERMINAL_EVENTS:
@@ -2428,21 +2456,27 @@ def _refresh_session_display_status(
 
 
 def _render_session_card(request: web.Request, session: CardSession) -> dict[str, Any]:
-    card_config = request.app[SESSION_CARD_CONFIGS_KEY].get(
-        _session_key_for_session(request.app, session),
+    return _render_session_card_for_app(request.app, session)
+
+
+def _render_session_card_for_app(
+    app: web.Application, session: CardSession
+) -> dict[str, Any]:
+    card_config = app[SESSION_CARD_CONFIGS_KEY].get(
+        _session_key_for_session(app, session),
         {},
     )
-    footer_fields = card_config.get("footer_fields", request.app[FOOTER_FIELDS_KEY])
+    footer_fields = card_config.get("footer_fields", app[FOOTER_FIELDS_KEY])
     if isinstance(footer_fields, list):
         footer_fields = list(footer_fields)
     elif footer_fields is not None:
-        footer_fields = request.app[FOOTER_FIELDS_KEY]
-    title = card_config.get("title", request.app[CARD_TITLE_KEY])
+        footer_fields = app[FOOTER_FIELDS_KEY]
+    title = card_config.get("title", app[CARD_TITLE_KEY])
     if not isinstance(title, str):
-        title = request.app[CARD_TITLE_KEY]
+        title = app[CARD_TITLE_KEY]
     interaction_mode = _interaction_mode_for_session_key(
-        request.app,
-        _session_key_for_session(request.app, session),
+        app,
+        _session_key_for_session(app, session),
     )
     return render_card(
         session,
@@ -2630,6 +2664,113 @@ def _reset_session_for_new_turn(app: web.Application, session_key: str) -> None:
     controller = controllers.pop(session_key, None)
     if controller is not None:
         controller.close()
+
+
+async def _abandon_stale_sessions_for_chat(
+    app: web.Application,
+    chat_id: str,
+    new_session_key: str,
+    event: "SidecarEvent",
+) -> None:
+    """Mark stale active sessions for the same chat+conversation as completed.
+
+    When the gateway interrupts a running turn and starts a new one (e.g. user
+    sends a new message mid-turn), no message.completed is sent for the old turn.
+    The old card stays stuck at "生成中" forever.  This function finds such
+    orphaned sessions and marks them completed so their cards render properly.
+
+    Only abandons sessions that share the same chat_id AND conversation_id AND
+    profile_id prefix (to avoid cross-profile or cross-thread interference),
+    and skips the new session itself.
+    """
+    sessions: Dict[str, CardSession] = app[SESSIONS_KEY]
+    feishu_message_ids: Dict[str, str] = app[FEISHU_MESSAGE_IDS_KEY]
+    message_bot_ids: Dict[str, str] = app[MESSAGE_BOT_IDS_KEY]
+
+    # Extract profile_id prefix from new_session_key (format: "profile:msg_id")
+    new_profile = new_session_key.split(":", 1)[0] if ":" in new_session_key else ""
+    new_conversation_id = event.conversation_id
+
+    stale_keys = []
+    for key, sess in sessions.items():
+        if key == new_session_key:
+            continue
+        if sess.chat_id != chat_id:
+            continue
+        if sess.conversation_id != new_conversation_id:
+            continue
+        if sess.status in {"completed", "failed"}:
+            continue
+        # Match profile prefix
+        key_profile = key.split(":", 1)[0] if ":" in key else ""
+        if key_profile != new_profile:
+            continue
+        stale_keys.append(key)
+
+    for key in stale_keys:
+        sess = sessions.get(key)
+        if sess is None:
+            continue
+        sess.timeline.complete()
+        sess.status = "completed"
+        sess.updated_at = time.time()
+        card_config = app[SESSION_CARD_CONFIGS_KEY].get(
+            key, app[BASE_CARD_CONFIG_KEY]
+        )
+        sess.refresh_display_status_source(
+            StatusConfig.from_mapping(card_config.get("status"))
+        )
+        logger.info(
+            "Abandoning stale session %s (chat_hash=%s, ans=%d chars) "
+            "— new session %s is taking over",
+            _diagnostic_id_hash(key),
+            _diagnostic_id_hash(chat_id),
+            len(sess.answer_text),
+            _diagnostic_id_hash(new_session_key),
+        )
+        feishu_msg_id = feishu_message_ids.get(key)
+        bot_id = message_bot_ids.get(key)
+        if feishu_msg_id is not None:
+            await _schedule_abandoned_session_terminal_update(
+                app,
+                session_key=key,
+                session=sess,
+                feishu_message_id=feishu_msg_id,
+                bot_id=bot_id,
+            )
+
+
+async def _schedule_abandoned_session_terminal_update(
+    app: web.Application,
+    *,
+    session_key: str,
+    session: CardSession,
+    feishu_message_id: str,
+    bot_id: str | None,
+) -> None:
+    controller = _flush_controller_for_session(app, session_key)
+    await controller.drain(_final_drain_timeout_seconds(app, session_key))
+
+    async def render_and_update() -> bool:
+        if app[SESSIONS_KEY].get(session_key) is not session:
+            return False
+        return await _update_card_for_app(
+            app,
+            feishu_message_id,
+            _render_session_card_for_app(app, session),
+            bot_id,
+        )
+
+    task = controller.schedule(render_and_update, terminal=True)
+    controller.close()
+    task.add_done_callback(
+        lambda completed: _post_terminal_cleanup(
+            app,
+            session_key,
+            controller,
+            completed,
+        )
+    )
 
 
 def _flush_controller_for_session(

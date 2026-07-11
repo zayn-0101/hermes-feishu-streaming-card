@@ -598,6 +598,27 @@ def test_plan_recovery_allows_manifest_owned_corrupt_completion_markers(
     assert plan.actions == ("restore_verified_backup", "reapply_current_hook")
 
 
+def test_plan_recovery_allows_marker_only_damage_with_original_manifest_hash(
+    installed_state,
+):
+    detection, _original, patched, _manifest_path = installed_state
+    corrupt = "".join(
+        line
+        for line in patched.splitlines(keepends=True)
+        if "HERMES_FEISHU_CARD_COMPLETE_PATCH_END" not in line
+    )
+    detection.run_py.write_text(corrupt, encoding="utf-8")
+
+    plan = plan_recovery(detection)
+
+    assert plan.state == "corrupt_owned"
+    assert plan.executable is True
+    assert plan.actions == ("restore_verified_backup", "reapply_current_hook")
+    assert "current_hash_mismatch" not in {
+        finding.code for finding in plan.findings
+    }
+
+
 def test_plan_recovery_refuses_corrupt_markers_after_user_edit(installed_state):
     detection, _original, patched, _manifest_path = installed_state
     detection.run_py.write_text(
@@ -611,6 +632,23 @@ def test_plan_recovery_refuses_corrupt_markers_after_user_edit(installed_state):
 
     assert plan.executable is False
     assert any(item.code == "current_hash_mismatch" for item in plan.findings)
+
+
+def test_plan_recovery_refuses_marker_line_damage_with_non_marker_edit(
+    installed_state,
+):
+    detection, _original, patched, _manifest_path = installed_state
+    corrupt = "".join(
+        line
+        for line in patched.splitlines(keepends=True)
+        if "HERMES_FEISHU_CARD_COMPLETE_PATCH_END" not in line
+    ).replace("import asyncio", "import asyncio\nUSER_EDIT = True", 1)
+    detection.run_py.write_text(corrupt, encoding="utf-8")
+
+    plan = plan_recovery(detection)
+
+    assert plan.executable is False
+    assert "current_hash_mismatch" in {finding.code for finding in plan.findings}
 
 
 def test_plan_recovery_reports_healthy_installed_state(installed_state):

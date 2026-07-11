@@ -2,9 +2,21 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 / V3.9 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0
+## V3.8 / V3.9 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
+
+### V3.9.1：可靠性热修（待发布）
+
+- [x] Issue #96 / PR #97 / @colinaaa：完成事件携带有效 suffix 时保留完整最终答案，同时保持原生重复 reply suppression。
+- [x] Issue #92 / PR #93 / @colinaaa：打断旧任务时先 drain 更新队列，再串行写入 abandoned 终态，迟到 PATCH 不再覆盖终态。
+- [x] PR #98 / @charles5g：模型选择 callback 即时 ACK，后台切换并优先更新原卡，失败时只发送一张 fallback 卡。
+- [x] Issue #82：对 manifest/backup 可验证且仅 owned marker 行损坏的状态安全恢复；未知用户编辑继续 fail-closed。
+- [x] PR #52 / @wjiemin49-ux：采用 loopback 健康检查应绕过环境代理的诊断方向，并修复 tools package 语法。
+- [x] source-stripped Hermes 的诊断文案明确显示 metadata 缺失，不伪造版本号。
+- [x] 普通流式卡 footer/layout 保持不变。
+- [x] Python 3.9 / 3.12 release gate 均为 `1198 passed, 3 skipped`，`git diff --check` 通过。
+- [ ] 完成 tag、GitHub Release、资产校验和 issue/PR 回复。
 
 ### V3.9.0：运维与可靠性基础（已完成自动化与文档）
 
