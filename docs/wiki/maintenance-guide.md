@@ -19,6 +19,7 @@
 - 从 Hermes runtime `locals()` 里抽取事件信息。
 - 向 sidecar 发送 `message.*`、`tool.updated`、`system.notice` 等事件。
 - monkeypatch Feishu adapter 的 `send`、`edit_message`、slash confirm、model picker。
+- 运行时包装 bare `/resume` 并安装 native resume picker；选择结果复用 original Hermes resume handler。
 - 处理新版 Hermes 缺少 `message.started` 的首事件场景。
 
 高风险点：
@@ -27,6 +28,8 @@
 - Feishu topic 场景必须保留 `source.message_id` 和 `reply_to_message_id`。
 - 已识别 `system.notice` 不能在卡片投递超时后再次退回灰色原生文本。
 - `/update` 不进入命令卡片，保持 Hermes 后台升级。
+- `_hfc_original_handle_resume_command` 必须保留为唯一恢复执行路径；不要在 HFC 重写 session ownership、continuation 或 `switch_session` 规则。
+- 群聊/topic picker 只有在发起者 `open_id` 可验证时才显示；不可验证时 fail-open。私聊不额外比较操作者。
 
 ### `hermes_feishu_card/server.py`
 
@@ -77,6 +80,7 @@
 | 改动 | 先跑 | 发布前还要跑 |
 |---|---|---|
 | runtime event 抽取、topic、notice | `python -m pytest tests/unit/test_hook_runtime.py tests/integration/test_server.py -q` | `python -m pytest -q` |
+| `/resume` / `/model` 原生 picker | `python -m pytest tests/unit/test_hook_runtime.py tests/unit/test_patcher.py tests/integration/test_cli_install.py -q` | 真实 Feishu 私聊、群聊、topic smoke + `python -m pytest -q` |
 | 群聊路由诊断 / 工具详情 | `python -m pytest tests/unit/test_bots.py tests/unit/test_session.py tests/unit/test_render.py tests/integration/test_server.py -q` | `python -m pytest -q` |
 | patcher / install hook | `python -m pytest tests/unit/test_patcher.py tests/integration/test_cli_install.py -q` | `python -m pytest -q` |
 | renderer / timeline / Markdown | `python -m pytest tests/unit/test_render.py tests/unit/test_session.py -q` | `python -m pytest -q` |

@@ -10,6 +10,16 @@
 - 飞书 bot 已在目标会话可用。
 - 不在仓库、issue 或日志中暴露 App Secret、tenant token、真实 chat id。
 
+## V3.10.0 `/resume` 与 footer
+
+- 私聊：发送裸 `/resume`，确认只出现一张原生下拉卡、当前会话有标记；选择其他会话后先显示恢复中，再在原卡显示结果，无灰色文本列表和 callback timeout。
+- 当前会话：再次打开 picker 并选择当前项，确认 original Hermes handler 返回 already-on 结果，不执行第二套 switch 逻辑。
+- 过期/无效：使用过期 state 或无效 option，确认原卡显示失效提示且不切换会话。
+- 群聊：发起者可选择；另一位用户点击被拒绝且 state 保留，随后发起者仍可完成。
+- topic：picker 与结果留在原 topic；reply anchor/thread metadata 不丢失。
+- fallback：session DB 空、adapter/card 不可用、群聊发起者 `open_id` 无法验证时，Hermes 原生文本列表仍可用。
+- footer：常见模型名只有文本颜色变化；divider、字段顺序、分隔符、字号和普通卡 footer/layout 不变，未知/特殊字符模型名无 markup 注入。
+
 ## V3.9.1 可靠性热修
 
 - 完成答案：构造 completed event 带较长 suffix 的任务，确认卡片保留完整正文且没有灰色重复 reply。

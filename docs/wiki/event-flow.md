@@ -101,6 +101,17 @@ Hermes 原生运行提示会被归一为 `system.notice`：
 - `/update` 是 Hermes 后台升级命令，不渲染交互命令卡片。
 - sidecar 或 command card 不可用时，允许回到 Hermes 原生文本 fallback。
 
+### 裸 `/resume` 原生选择器
+
+V3.10.0 的 command-card adapter hook 会在运行时包装 runner 的 `_handle_resume_command`，不增加新的 patcher block：
+
+1. 只有无参数、Feishu/Lark、session DB 可用且存在可见命名会话时才发送 `resume_picker` / `select_static` 卡片。
+2. 会话先经过 Hermes `_resume_row_visible(...)`；卡片 state 只保存允许的 session id、原事件、original handler 和 5 分钟 expiry。
+3. topic metadata 与 reply anchor 原样传给 Feishu send helper。
+4. 点击后校验 chat、expiry、允许 id 和操作者。私聊不额外比较操作者；群聊/topic 必须匹配发起者 `open_id`。
+5. callback 即时返回“会话恢复中”，后台复制原事件为 `/resume <session_id>` 并调用 original Hermes handler；成功后更新原卡，更新失败最多发送一张 fallback 卡。
+6. 任一前置条件或卡片发送失败都 fail-open 到原生 `/resume` 文本流程；带参数 `/resume` 从不进入 picker。
+
 ## Agent clarify / approval 交互
 
 Agent 任务内的 `interaction.requested` 会渲染为当前 streaming card 里的按钮。

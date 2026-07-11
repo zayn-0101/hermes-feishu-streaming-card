@@ -39,6 +39,8 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 - **Cron topic threads stay consistent**: Since V3.8.18, cron jobs created from Feishu topic threads preserve `thread_id` and return cards to the originating thread; non-Feishu origin thread ids are ignored.
 - **Bounded operations recovery**: V3.9.0 operations cards provide diagnosis, recheck, two-step safe repair, and restart confirmation; private chats do not compare operators, group confirmation stays with the initiator, and the CLI remains the fallback. Normal streaming-card footer/layout is unchanged.
 - **Reliability hotfix**: V3.9.1 fixes completed-answer truncation, interrupted terminal cards, model-picker callback timeouts, and verified marker-only installer damage while preserving the normal streaming-card footer/layout.
+- **Direct session recovery**: Since V3.10.0, bare `/resume` uses a native Feishu dropdown; group/topic cards stay with the initiator and unavailable cards fall open to Hermes' text list.
+- **Restrained footer polish**: recognized model prefixes color only the escaped model label; footer/layout, field order, and text size remain unchanged.
 - **Long content protection**: Markdown tables and fenced code blocks split on structure boundaries instead of raw character cuts.
 - **Richer tool details**: `tool.updated` can show argument summaries, duration, and failure reason while keeping long details compact.
 - **Multi-bot / multi-profile**: bot registry, chat bindings, profile-aware session keys, titles, and routing diagnostics.
@@ -61,6 +63,14 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 | Long tables/code blocks render as raw Markdown | Markdown-aware table/code splitting with repeated headers and complete fences |
 | Multi-bot, group, and profile routing is hard to inspect | `bindings.chats`, safe `group_rules` diagnostics, profile-aware sessions, and `/health.routing` diagnostics |
 | Hook or sidecar failures are hard to debug | `doctor`, runtime import checks, `/health` metrics, fail-closed installer, restore/uninstall |
+
+## V3.10.0 Native Session Recovery and Restrained Visual Polish
+
+Bare `/resume` lists recent named sessions already filtered by Hermes for the current user/origin and sends one `select_static` picker. A click ACKs immediately, then a copied `/resume <session_id>` event enters the original Hermes handler, preserving ownership, continuation, running-agent release, and model/reasoning override cleanup. Typed `/resume`, non-Feishu platforms, empty lists, card failures, and unverifiable group ownership all fail open.
+
+Group and topic callbacks require the initiating `open_id`; private chats do not add an extra identity comparison. The model-footer color concept comes from PR #98 by @charles5g / jackmim; mainline adds HTML escape and leaves footer/layout unchanged. @colinaaa proposed issue #94's UX, flow, and security acceptance criteria.
+
+Full details: [V3.10.0 release notes](release-notes-v3.10.0.md).
 
 ## V3.9.1 Reliability Hotfix
 
@@ -431,7 +441,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.9.1
+export HFC_VERSION=v3.10.0
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -658,6 +668,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v3.10.0](release-notes-v3.10.0.md) | 2026-07-11 | Native bare `/resume` picker and safe semantic model-footer color; layout and Hermes' security path remain unchanged |
 | [v3.9.1](release-notes-v3.9.1.md) | 2026-07-11 | Reliability fixes for completed answers, interrupted terminal cards, model-picker callbacks, and marker-only installer recovery; normal footer/layout unchanged |
 | [v3.9.0](release-notes-v3.9.0.md) | 2026-07-11 | PR #84 / @Zanetach: card progress-status routing and `.env` allowlist expansion for profile environment support, operations safe repair/restart, and CLI fallback; normal streaming-card footer/layout remains unchanged |
 | [v3.8.18](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.18) | 2026-07 | PR #91: cron cards preserve `thread_id` and return to the originating Feishu topic thread |
@@ -740,6 +751,8 @@ Thanks to these contributors for improving the project:
 - [colinaaa](https://github.com/colinaaa) — [PR #93](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/93) interrupted terminal cards; [PR #97](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/97) completed-answer preservation (V3.9.1)
 - [charles5g](https://github.com/charles5g) — [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) asynchronous model-picker callbacks and original-card updates (V3.9.1)
 - [wjiemin49-ux](https://github.com/wjiemin49-ux) — [PR #52](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/52) loopback proxy diagnosis and repair direction (adopted in V3.9.1)
+- [colinaaa](https://github.com/colinaaa) — [Issue #94](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/94) bare `/resume` picker requirements, flow, and security boundary (V3.10.0)
+- [charles5g](https://github.com/charles5g) / jackmim — [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) semantic model-footer color concept (V3.10.0, with mainline HTML escaping)
 
 ## Security
 
