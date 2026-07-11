@@ -21,7 +21,8 @@ PR #84 by @Zanetach contributed card progress-status routing and `.env` allowlis
 
 - Automated release gate: `1171 passed, 3 skipped`.
 - Real Feishu private-chat acceptance passed on 2026-07-11: `/hfc doctor` without a gray native unknown-command reply; localized details and two consecutive rechecks, including the background successor, ACKed in 156–201 ms without a callback-timeout toast and PATCHed the same card; sandboxed two-step safe repair, card-triggered Gateway restart, and the normal streaming-card footer also passed.
-- Pending real Feishu acceptance: group initiator repair/restart, changed-operator rejection, topic, cron, and profile route mismatch. These are not claimed as verified here.
+- Real Feishu cron acceptance passed on 2026-07-11: a no-agent one-shot result produced the expected completed card with successful sidecar receive/apply/send metrics and no native fallback. Hermes upstream can still mislabel the same successful finite one-shot as `Ran now: failed` after auto-deleting its job record; this is an upstream CLI status bug, not a card-delivery failure.
+- Pending real Feishu acceptance: group initiator repair/restart, changed-operator rejection, topic, and profile route mismatch. These are not claimed as verified here.
 - Pending existing-container Docker smoke: fresh install, pinned upgrade, known-safe corrupt-marker auto-repair, refusal of user edits, main/child profile endpoint mapping, and final `doctor`.
 
 ## Expected Release Assets

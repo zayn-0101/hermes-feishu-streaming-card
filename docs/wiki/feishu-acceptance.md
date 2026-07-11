@@ -29,8 +29,10 @@
 - 临时 Hermes sandbox 中两步安全修复成功；卡片实际重启 Gateway，先显示进行态，随后同卡显示完成态。
 - 普通流式卡从生成中到完成态保持一张卡，完成 footer/layout 不变，没有灰色重复答案。
 - 本轮 sidecar 发送与更新均成功，Gateway 日志没有新的 operations forward timeout。
+- no-agent 一次性 cron 的结果正文进入普通完成卡；sidecar 的 event receive/apply/card-send 指标均成功且没有 native fallback。
+- Hermes 上游 `cron run` 会在成功的一次性任务自动删除后再次读取 `last_status`，因此本次终端显示 `Ran now: failed`。这属于上游 CLI 状态误报；以飞书卡片、sidecar metrics 和保存的 cron 输出三方一致判定 cron 卡片验收通过。
 
-仍待真实验收：群聊发起者与换操作者拒绝、topic、cron、profile route mismatch。existing-container Docker 见 release-readiness 单独门禁。
+仍待真实验收：群聊发起者与换操作者拒绝、topic、profile route mismatch。existing-container Docker 见 release-readiness 单独门禁。
 
 真实验收状态：**部分通过**。
 
