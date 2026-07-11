@@ -1,6 +1,6 @@
 # V3.9.0 — Operations and Reliability
 
-Pending release. Release candidate for acceptance. The tag has not been created, and the release assets have not been created.
+Released on 2026-07-11. The annotated `v3.9.0` tag triggers the release-assets workflow; assets are published by that workflow.
 
 V3.9.0 establishes an operations and reliability foundation for the sidecar-only plugin. It adds focused recovery controls and diagnostics without changing the normal streaming-card layout or footer.
 
@@ -26,9 +26,9 @@ PR #84 by @Zanetach contributed card progress-status routing and `.env` allowlis
 - Pending real Feishu acceptance: group initiator repair/restart, changed-operator rejection, and topic. These are not claimed as verified here.
 - Pending existing-container Docker smoke: fresh install, pinned upgrade, known-safe corrupt-marker auto-repair, refusal of user edits, main/child profile endpoint mapping, and final `doctor`.
 
-## Expected Release Assets
+## Release Assets
 
-The release-assets workflow is expected to publish four assets after the approved tag is created; this preparation does not create them:
+The release-assets workflow publishes four assets for the `v3.9.0` tag:
 
 - `hermes-feishu-card-v3.9.0-macos.tar.gz`
 - `hermes-feishu-card-v3.9.0-linux.tar.gz`

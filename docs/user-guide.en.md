@@ -651,7 +651,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
-| [v3.9.0](release-notes-v3.9.0.md) | Pending release | PR #84 / @Zanetach: card progress-status routing and `.env` allowlist expansion for profile environment support, operations safe repair/restart, and CLI fallback; normal streaming-card footer/layout remains unchanged |
+| [v3.9.0](release-notes-v3.9.0.md) | 2026-07-11 | PR #84 / @Zanetach: card progress-status routing and `.env` allowlist expansion for profile environment support, operations safe repair/restart, and CLI fallback; normal streaming-card footer/layout remains unchanged |
 | [v3.8.18](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.18) | 2026-07 | PR #91: cron cards preserve `thread_id` and return to the originating Feishu topic thread |
 | [v3.8.17](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.17) | 2026-07 | PR #77: cron `deliver=origin/all` routing intents resolve to Feishu targets and send cards |
 | [v3.8.16](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.16) | 2026-07 | issue #89 / PR #88: topic groups that reuse `message_id` send a fresh card for the second and later messages |

@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前包版本为 `3.9.0`，处于待发布、待验收状态。这一版在既有 sidecar-only、V3.8.2 timeline、群聊诊断、话题/cron 路由、Hermes 兼容和 WebSocket 交互基础上加入运维与可靠性基础：PR #84 / @Zanetach 的卡片 progress-status 路由与 `.env` 白名单扩展的 profile 环境支持、受控运维卡、安全 repair、restart 确认和 lifecycle cleanup。普通流式卡的 footer/layout 不变。
+当前包版本为 `3.9.0`，已于 2026-07-11 发布。这一版在既有 sidecar-only、V3.8.2 timeline、群聊诊断、话题/cron 路由、Hermes 兼容和 WebSocket 交互基础上加入运维与可靠性基础：PR #84 / @Zanetach 的卡片 progress-status 路由与 `.env` 白名单扩展的 profile 环境支持、受控运维卡、安全 repair、restart 确认和 lifecycle cleanup。普通流式卡的 footer/layout 不变。
 
 ## 已具备
 
@@ -86,7 +86,7 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 
 验收时发现 Hermes 上游 `cron run` 对成功后自动删除的一次性任务仍可能显示 `Ran now: failed`：它在任务记录删除后再次读取 `last_status`，因此把缺失记录误判为失败。该提示不代表插件投递失败；本次以 Feishu 卡片、sidecar metrics 和保存的 cron 输出三方一致作为验收依据。插件不为此额外 patch Hermes `tools/cronjob_tools.py`，避免扩大安装修改面。
 
-release-assets workflow 预计在获批 tag 后产生 4 个 assets（本任务不创建）：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
+`v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
 
 ## 当前边界
 

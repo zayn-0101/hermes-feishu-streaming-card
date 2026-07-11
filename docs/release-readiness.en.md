@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current package version: `3.9.0`; it is pending release and acceptance. Building on the sidecar-only, V3.8.2 timeline, group diagnostics, topic/cron routing, Hermes compatibility, and WebSocket interaction work, this release candidate adds an operations/reliability foundation: card progress-status routing and `.env` allowlist expansion for profile environment support (PR #84, contributed by @Zanetach), bounded operations cards, safe repair, restart confirmation, and lifecycle cleanup. Normal streaming-card footer/layout is unchanged.
+Current package version: `3.9.0`; it was released on 2026-07-11. Building on the sidecar-only, V3.8.2 timeline, group diagnostics, topic/cron routing, Hermes compatibility, and WebSocket interaction work, this release adds an operations/reliability foundation: card progress-status routing and `.env` allowlist expansion for profile environment support (PR #84, contributed by @Zanetach), bounded operations cards, safe repair, restart confirmation, and lifecycle cleanup. Normal streaming-card footer/layout is unchanged.
 
 ## Ready
 
@@ -86,7 +86,7 @@ Real Feishu integration must use local config or environment variables for `FEIS
 
 Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a successful finite one-shot can print `Ran now: failed` because Hermes re-reads `last_status` after the completed job record has already been deleted. This does not indicate a card-delivery failure; the acceptance decision uses the matching Feishu card, sidecar metrics, and saved cron output. The plugin deliberately does not add another source patch for Hermes `tools/cronjob_tools.py` just to mask this upstream CLI issue.
 
-After the approved tag, the release-assets workflow is expected to produce four assets (not created by this task): the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
+The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
 
 ## Current Boundaries
 

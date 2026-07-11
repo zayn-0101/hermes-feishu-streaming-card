@@ -990,12 +990,12 @@ def test_v390_documents_operations_reliability_release_gate():
     acceptance = read_doc("docs/wiki/feishu-acceptance.md")
     release_notes = read_doc("docs/release-notes-v3.9.0.md")
 
-    unreleased = re.search(r"(?ms)^## Unreleased\n.*?(?=^## V3\.8\.18|\Z)", changelog).group(0)
-    assert "[docs/release-notes-v3.9.0.md](docs/release-notes-v3.9.0.md)" in unreleased
-    assert "operations and reliability foundation" in unreleased
-    assert "PR #84" in unreleased
-    assert "@Zanetach" in unreleased
-    assert "## V3.9.0 —" not in changelog
+    released = re.search(r"(?ms)^## V3\.9\.0 — 2026-07-11\n.*?(?=^## V3\.8\.18|\Z)", changelog).group(0)
+    assert "[docs/release-notes-v3.9.0.md](docs/release-notes-v3.9.0.md)" in released
+    assert "operations and reliability foundation" in released
+    assert "PR #84" in released
+    assert "@Zanetach" in released
+    assert "## Unreleased" not in changelog
     assert "安全修复" in readme
     assert "profile" in install_doc.lower()
     assert "group" in acceptance.lower()
@@ -1059,13 +1059,14 @@ def test_v390_documents_operations_reliability_release_gate():
         "hermes-feishu-card-v3.9.0-checksums.txt",
     ):
         assert asset in release_notes
-    assert "Release candidate" in release_notes
-    assert "Pending release" in release_notes
-    assert "tag has not been created" in release_notes
-    assert "assets have not been created" in release_notes
+    assert "Released on 2026-07-11" in release_notes
+    assert "release-assets workflow" in release_notes
+    assert "Pending release" not in release_notes
+    assert "tag has not been created" not in release_notes
+    assert "assets have not been created" not in release_notes
     assert "Pending real Feishu acceptance" in release_notes
-    assert not re.search(r"(?im)^released:\s*\d{4}-\d{2}-\d{2}", release_notes)
-    assert "has been released" not in release_notes.lower()
+    assert "已于 2026-07-11 发布" in readiness
+    assert "was released on 2026-07-11" in english_readiness
     assert "待验收" in readiness
     assert "pending acceptance" in english_readiness.lower()
     assert "真实 Feishu" in "\\n".join((release_notes, readiness, guide))
