@@ -17,7 +17,8 @@
 - [x] Release gate 证据：`1171 passed, 3 skipped`；普通卡片 footer/layout 不变。
 - [x] 2026-07-11 真实飞书私聊：`/hfc doctor` 无灰色未知命令，中文详情、连续两次 recheck（含后台 successor）在 156–201 ms 内 ACK 且无回调超时提示；sandbox 两步安全修复、卡片实际重启 Gateway 和普通流式完成卡通过，发送/更新零失败。
 - [x] 2026-07-11 真实 Feishu cron：no-agent 一次性任务结果进入普通完成卡，sidecar 接收/应用/发送成功且无 fallback；Hermes `cron run` 的一次性任务删除后状态误报记为上游问题，不扩大插件 patch 面。
-- [ ] 待真实验收：existing-container Docker、群聊发起者与换操作者拒绝、topic、profile route mismatch。
+- [x] 2026-07-11 profile route mismatch：临时错误 profile 被诊断为 `profile_unknown` 且 route chain 脱敏；移除临时环境后恢复默认 profile，持久配置未变。
+- [ ] 待真实验收：existing-container Docker、群聊发起者与换操作者拒绝、topic。
 
 ### V3.8.0：卡片体验与流式稳定性（已完成）
 

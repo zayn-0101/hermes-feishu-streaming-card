@@ -31,8 +31,9 @@
 - 本轮 sidecar 发送与更新均成功，Gateway 日志没有新的 operations forward timeout。
 - no-agent 一次性 cron 的结果正文进入普通完成卡；sidecar 的 event receive/apply/card-send 指标均成功且没有 native fallback。
 - Hermes 上游 `cron run` 会在成功的一次性任务自动删除后再次读取 `last_status`，因此本次终端显示 `Ran now: failed`。这属于上游 CLI 状态误报；以飞书卡片、sidecar metrics 和保存的 cron 输出三方一致判定 cron 卡片验收通过。
+- 临时设置错误 `HERMES_FEISHU_CARD_PROFILE_ID` 后，`doctor --explain` 显示 `profile_unknown` 与缺失 route，不暴露 chat id、token 或 secret；移除临时环境后恢复默认 profile，持久配置未变。
 
-仍待真实验收：群聊发起者与换操作者拒绝、topic、profile route mismatch。existing-container Docker 见 release-readiness 单独门禁。
+仍待真实验收：群聊发起者与换操作者拒绝、topic。existing-container Docker 见 release-readiness 单独门禁。
 
 真实验收状态：**部分通过**。
 
