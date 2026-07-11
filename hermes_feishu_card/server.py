@@ -1,29 +1,62 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from contextlib import suppress
+from concurrent.futures import Future, ThreadPoolExecutor
 import hashlib
+import json
 import os
+from pathlib import Path
+import secrets
+import shutil
+import subprocess
 import time
 import asyncio
 import logging
 import re
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from aiohttp import web
 
 from .bots import RouteResult
+from .config import load_config, resolve_operations_hermes_root
+from .diagnostics import DiagnosticFinding, DiagnosticReport, build_diagnostic_report
 from .events import EventValidationError, SidecarEvent
 from .flush import FlushController
+from .lifecycle import (
+    cleanup_closed_controller,
+    cleanup_orphan_message_lock,
+    cleanup_runtime_state,
+)
 from .metrics import SidecarMetrics
+from .operations import (
+    OperationRecord,
+    OperationRejected,
+    OperationStore,
+    render_operations_card,
+)
+from .operations_transport import (
+    CommandProofVerifier,
+    TransportAuthenticationError,
+    derive_operation_transport_secret,
+)
+from .profile_sources import PROFILE_SOURCE_FALLBACK, PROFILE_SOURCES
 from .render import render_card
 from .session import CardSession
+from .status import StatusConfig
+from .install.detect import HermesDetection, detect_hermes
+from .install.recovery import execute_recovery, plan_recovery
 
 FEISHU_CLIENT_KEY = web.AppKey("feishu_client", Any)
 SESSIONS_KEY = web.AppKey("sessions", dict)
 FEISHU_MESSAGE_IDS_KEY = web.AppKey("feishu_message_ids", dict)
 SESSION_ALIASES_KEY = web.AppKey("session_aliases", dict)
 CARD_SUMMARIES_KEY = web.AppKey("card_summaries", dict)
+CARD_SUMMARY_SESSION_KEYS_KEY = web.AppKey("card_summary_session_keys", dict)
 INTERACTION_RESULTS_KEY = web.AppKey("interaction_results", dict)
+INTERACTION_RESULT_SESSION_KEYS_KEY = web.AppKey(
+    "interaction_result_session_keys", dict
+)
 MESSAGE_BOT_IDS_KEY = web.AppKey("message_bot_ids", dict)
 SESSION_CARD_CONFIGS_KEY = web.AppKey("session_card_configs", dict)
 BOT_ROUTER_KEY = web.AppKey("bot_router", Any)
@@ -32,12 +65,42 @@ PROFILE_DIAGNOSTICS_KEY = web.AppKey("profile_diagnostics", dict)
 PROCESS_TOKEN_KEY = web.AppKey("process_token", str)
 METRICS_KEY = web.AppKey("metrics", SidecarMetrics)
 MESSAGE_LOCKS_KEY = web.AppKey("message_locks", dict)
+MESSAGE_LOCK_USERS_KEY = web.AppKey("message_lock_users", dict)
 FOOTER_FIELDS_KEY = web.AppKey("footer_fields", Any)
 CARD_TITLE_KEY = web.AppKey("card_title", str)
 BASE_CARD_CONFIG_KEY = web.AppKey("base_card_config", dict)
+OPERATIONS_STORE_KEY = web.AppKey("operations_store", OperationStore)
+OPERATIONS_CONFIG_PATH_KEY = web.AppKey("operations_config_path", Path)
+OPERATIONS_HERMES_ROOT_KEY = web.AppKey("operations_hermes_root", Path)
+OPERATIONS_DELIVERIES_KEY = web.AppKey("operations_deliveries", dict)
+OPERATIONS_COMMAND_AUTH_KEY = web.AppKey(
+    "operations_command_auth", CommandProofVerifier
+)
+OPERATIONS_TRANSPORT_ROOT_KEY = web.AppKey("operations_transport_root", bytes)
+OPERATIONS_DIAGNOSTIC_TASKS_KEY = web.AppKey("operations_diagnostic_tasks", set)
+OPERATIONS_DIAGNOSTIC_SEMAPHORE_KEY = web.AppKey(
+    "operations_diagnostic_semaphore", Any
+)
+OPERATIONS_DIAGNOSTIC_EXECUTOR_KEY = web.AppKey(
+    "operations_diagnostic_executor", ThreadPoolExecutor
+)
+OPERATIONS_DIAGNOSTIC_FUTURES_KEY = web.AppKey("operations_diagnostic_futures", set)
+OPERATIONS_MUTATION_EXECUTOR_KEY = web.AppKey("operations_mutation_executor", ThreadPoolExecutor)
+OPERATIONS_MUTATION_FUTURES_KEY = web.AppKey("operations_mutation_futures", set)
+OPERATIONS_MUTATIONS_STOPPING_KEY = web.AppKey("operations_mutations_stopping", bool)
+OPERATIONS_PUBLISH_LOCKS_KEY = web.AppKey("operations_publish_locks", dict)
+OPERATIONS_PUBLISH_LOCKS_GUARD_KEY = web.AppKey("operations_publish_locks_guard", Any)
 FLUSH_CONTROLLERS_KEY = web.AppKey("flush_controllers", dict)
+CLEANUP_TASK_KEY = web.AppKey("cleanup_task", asyncio.Task)
 UPDATE_MAX_ATTEMPTS = 3
 UPDATE_MIN_INTERVAL_SECONDS = 0.2
+RUNTIME_CLEANUP_INTERVAL_SECONDS = 60.0
+MAX_OPERATION_DELIVERIES = 200
+MAX_STALE_OPERATIONS_REPUBLISHES = 1
+MAX_CONCURRENT_OPERATION_DIAGNOSTICS = 4
+OPERATIONS_DIAGNOSTIC_TIMEOUT_SECONDS = 12.0
+RESTART_CALLBACK_GRACE_SECONDS = 0.25
+_STABLE_PROFILE_SOURCES = PROFILE_SOURCES
 TERMINAL_EVENTS = {"message.completed", "message.failed"}
 SESSION_CREATING_EVENTS = {
     "thinking.delta",
@@ -53,11 +116,45 @@ PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 logger = logging.getLogger(__name__)
 
 
+class _OperationsDiagnosticCapacityError(RuntimeError):
+    pass
+
+
+class _AfterEofJsonResponse(web.Response):
+    def __init__(self, data: dict[str, object], after_eof: Any):
+        super().__init__(
+            body=json.dumps(data, ensure_ascii=False).encode("utf-8"),
+            content_type="application/json",
+        )
+        self._after_eof = after_eof
+
+    async def write_eof(self, data: bytes = b"") -> None:
+        after_eof = self._after_eof
+        self._after_eof = None
+        try:
+            await super().write_eof(data)
+        except BaseException:
+            if callable(after_eof):
+                try:
+                    after_eof()
+                except Exception:
+                    logger.warning(
+                        "HFC after-EOF callback failed while response closed",
+                        exc_info=True,
+                    )
+            raise
+        if callable(after_eof):
+            after_eof()
+
+
 def create_app(
     feishu_client: Any,
     process_token: str = "",
     card_config: dict[str, Any] | None = None,
     bot_router: Any = None,
+    operations_config_path: str | Path | None = None,
+    operations_hermes_root: str | Path | None = None,
+    operations_transport_root_secret: bytes | None = None,
 ) -> web.Application:
     app = web.Application()
     card_config = card_config or {}
@@ -67,13 +164,16 @@ def create_app(
     app[SESSION_ALIASES_KEY] = {}
     # TODO: replace this short-lived in-process index with bounded shared storage.
     app[CARD_SUMMARIES_KEY] = {}
+    app[CARD_SUMMARY_SESSION_KEYS_KEY] = {}
     app[INTERACTION_RESULTS_KEY] = {}
+    app[INTERACTION_RESULT_SESSION_KEYS_KEY] = {}
     app[MESSAGE_BOT_IDS_KEY] = {}
     app[SESSION_CARD_CONFIGS_KEY] = {}
     app[BOT_ROUTER_KEY] = bot_router
     app[PROCESS_TOKEN_KEY] = process_token
     app[METRICS_KEY] = SidecarMetrics()
     app[MESSAGE_LOCKS_KEY] = {}
+    app[MESSAGE_LOCK_USERS_KEY] = {}
     app[FLUSH_CONTROLLERS_KEY] = {}
     app[DIAGNOSTICS_KEY] = {
         "last_update_error": "",
@@ -83,6 +183,39 @@ def create_app(
     app[ROUTING_DIAGNOSTICS_KEY] = _initial_routing_diagnostics(feishu_client)
     app[PROFILE_DIAGNOSTICS_KEY] = {}
     app[BASE_CARD_CONFIG_KEY] = dict(card_config)
+    app[OPERATIONS_STORE_KEY] = OperationStore(secret=secrets.token_bytes(32))
+    app[OPERATIONS_DIAGNOSTIC_TASKS_KEY] = set()
+    app[OPERATIONS_DIAGNOSTIC_SEMAPHORE_KEY] = {"value": None}
+    app[OPERATIONS_DIAGNOSTIC_EXECUTOR_KEY] = ThreadPoolExecutor(
+        max_workers=MAX_CONCURRENT_OPERATION_DIAGNOSTICS,
+        thread_name_prefix="hfc-operations",
+    )
+    app[OPERATIONS_DIAGNOSTIC_FUTURES_KEY] = set()
+    app[OPERATIONS_MUTATION_EXECUTOR_KEY] = ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="hfc-operations-mutation"
+    )
+    app[OPERATIONS_MUTATION_FUTURES_KEY] = set()
+    app[OPERATIONS_MUTATIONS_STOPPING_KEY] = {"stopping": False}
+    app[OPERATIONS_PUBLISH_LOCKS_KEY] = {}
+    app[OPERATIONS_PUBLISH_LOCKS_GUARD_KEY] = {"value": None}
+    operations_config = Path(
+        operations_config_path
+        or os.environ.get("HFC_CONFIG")
+        or Path.home() / ".hermes_feishu_card" / "config.yaml"
+    ).expanduser()
+    app[OPERATIONS_CONFIG_PATH_KEY] = operations_config
+    app[OPERATIONS_HERMES_ROOT_KEY] = resolve_operations_hermes_root(
+        operations_hermes_root, config_path=operations_config
+    )
+    app[OPERATIONS_DELIVERIES_KEY] = {}
+    if (
+        isinstance(operations_transport_root_secret, bytes)
+        and len(operations_transport_root_secret) == 32
+    ):
+        app[OPERATIONS_TRANSPORT_ROOT_KEY] = operations_transport_root_secret
+        app[OPERATIONS_COMMAND_AUTH_KEY] = CommandProofVerifier(
+            operations_transport_root_secret
+        )
     footer_fields = card_config.get("footer_fields")
     app[FOOTER_FIELDS_KEY] = list(footer_fields) if isinstance(footer_fields, list) else None
     title = card_config.get("title")
@@ -93,7 +226,55 @@ def create_app(
     app.router.add_post("/card/actions", _card_actions)
     app.router.add_post("/commands", _commands)
     app.router.add_post("/events", _events)
+    app.on_startup.append(_start_runtime_cleanup)
+    app.on_cleanup.append(_stop_operations_diagnostics)
+    app.on_cleanup.append(_stop_runtime_cleanup)
     return app
+
+
+async def _start_runtime_cleanup(app: web.Application) -> None:
+    task = app.get(CLEANUP_TASK_KEY)
+    if task is None or task.done():
+        app[CLEANUP_TASK_KEY] = asyncio.create_task(_runtime_cleanup_loop(app))
+
+
+async def _stop_runtime_cleanup(app: web.Application) -> None:
+    task = app.get(CLEANUP_TASK_KEY)
+    if task is None:
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def _stop_operations_diagnostics(app: web.Application) -> None:
+    app[OPERATIONS_MUTATIONS_STOPPING_KEY]["stopping"] = True
+    mutation_futures = list(app[OPERATIONS_MUTATION_FUTURES_KEY])
+    for future in mutation_futures:
+        future.cancel()
+    tasks = list(app[OPERATIONS_DIAGNOSTIC_TASKS_KEY])
+    if not mutation_futures:
+        for task in tasks:
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    app[OPERATIONS_DIAGNOSTIC_TASKS_KEY].clear()
+    for future in app[OPERATIONS_DIAGNOSTIC_FUTURES_KEY]:
+        future.cancel()
+    app[OPERATIONS_DIAGNOSTIC_EXECUTOR_KEY].shutdown(wait=True, cancel_futures=True)
+    app[OPERATIONS_MUTATION_EXECUTOR_KEY].shutdown(wait=True, cancel_futures=True)
+    app[OPERATIONS_DIAGNOSTIC_FUTURES_KEY].clear()
+    app[OPERATIONS_MUTATION_FUTURES_KEY].clear()
+
+
+async def _runtime_cleanup_loop(app: web.Application) -> None:
+    while True:
+        await _cleanup_sleep(RUNTIME_CLEANUP_INTERVAL_SECONDS)
+        cleanup_runtime_state(app, time.time())
+
+
+async def _cleanup_sleep(delay: float) -> None:
+    await asyncio.sleep(delay)
 
 
 async def _health(request: web.Request) -> web.Response:
@@ -177,6 +358,21 @@ async def _card_actions(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "invalid json"}, status=400)
 
     value = _extract_action_value(payload)
+    if str(value.get("hfc_action") or "").strip() == "operations.select":
+        try:
+            return await _operations_action(request, payload, value)
+        except (_OperationsDiagnosticCapacityError, asyncio.TimeoutError):
+            return web.json_response(
+                {"ok": False, "error": "operations unavailable"}, status=503
+            )
+    return await _interaction_action(request, payload, value)
+
+
+async def _interaction_action(
+    request: web.Request,
+    payload: dict[str, Any],
+    value: dict[str, Any],
+) -> web.Response:
     interaction_id = str(value.get("interaction_id") or "").strip()
     token = str(value.get("token") or "").strip()
     choice = str(value.get("choice") or "").strip()
@@ -227,6 +423,174 @@ async def _card_actions(request: web.Request) -> web.Response:
     )
 
 
+async def _operations_action(
+    request: web.Request,
+    payload: dict[str, Any],
+    value: dict[str, Any],
+) -> web.Response:
+    action = str(value.get("operation_action") or "").strip()
+    token = str(value.get("token") or "").strip()
+    profile_scope = str(value.get("profile_scope") or "").strip()
+    chat_id = _extract_callback_chat_id(payload)
+    profile_id = _extract_callback_profile_id(payload)
+    operator_open_id = _extract_operator_open_id(payload)
+    if not action or not token or not chat_id:
+        return web.json_response(
+            {"ok": False, "error": "operation rejected"}, status=400
+        )
+
+    store: OperationStore = request.app[OPERATIONS_STORE_KEY]
+    try:
+        transport_proof = payload.get("adapter_transport_proof")
+        if not isinstance(transport_proof, dict):
+            raise OperationRejected("invalid transport proof")
+        timestamp = transport_proof.get("timestamp")
+        if isinstance(timestamp, bool) or not isinstance(timestamp, int):
+            raise OperationRejected("invalid transport proof")
+        authenticated_record = store.verify_transport_proof(
+            proof=str(transport_proof.get("signature") or ""),
+            token=token,
+            action=action,
+            callback_chat_id=chat_id,
+            callback_profile_id=profile_id,
+            callback_profile_scope=profile_scope,
+            operator_open_id=operator_open_id,
+            timestamp=timestamp,
+        )
+    except OperationRejected:
+        return web.json_response(
+            {"ok": False, "error": "operation rejected"}, status=403
+        )
+
+    try:
+        _claims, record = store.inspect(
+            token,
+            callback_chat_id=chat_id,
+            callback_profile_id=authenticated_record.profile_id,
+            callback_profile_scope=profile_scope,
+            allow_expired=True,
+            allow_recheck_predecessor=action == "recheck",
+            allow_successor_predecessor=True,
+        )
+    except OperationRejected:
+        return web.json_response({"ok": False, "error": "operation rejected"})
+
+    report = _operation_report_snapshot(record)
+    successor = store.current_successor(record.operation_id)
+    if successor is not None and successor.operation_id != record.operation_id:
+        return _operations_response(
+            request.app,
+            _operation_report_snapshot(successor),
+            successor,
+            toast="已更新",
+        )
+    if action == "recheck":
+        if record.state in {"preparing", "executing", "restarting"}:
+            return _operations_response(
+                request.app,
+                report,
+                record,
+                toast="操作进行中",
+            )
+        try:
+            transitioned, created = store.begin_recheck(
+                token,
+                callback_chat_id=chat_id,
+                callback_profile_id=record.profile_id,
+                callback_profile_scope=profile_scope,
+                callback_report_fingerprint=record.report_fingerprint,
+                callback_recovery_fingerprint=record.recovery_fingerprint,
+            )
+        except OperationRejected:
+            return _operations_response(
+                request.app, report, record, ok=False, toast="操作不可用"
+            )
+        if created:
+            _transfer_operation_delivery(
+                request.app, record.operation_id, transitioned.operation_id
+            )
+        return _operations_response(
+            request.app,
+            report,
+            transitioned,
+            after_eof=(
+                lambda: _schedule_operations_recheck(request.app, transitioned)
+                if created
+                else None
+            ),
+        )
+    try:
+        transitioned = store.transition(
+            token,
+            action=action,
+            operator_open_id=operator_open_id,
+            callback_chat_id=chat_id,
+            callback_profile_id=record.profile_id,
+            callback_report_fingerprint=record.report_fingerprint,
+            callback_recovery_fingerprint=record.recovery_fingerprint,
+        )
+    except OperationRejected as exc:
+        if str(exc) in {
+            "operation expired",
+            "diagnosis changed",
+            "recovery changed",
+        }:
+            expired = _successor_operation(
+                request.app,
+                record,
+                report,
+                state="expired",
+                result={"message": "诊断状态已变化，请重新检测。"},
+            )
+            return _operations_response(
+                request.app,
+                report,
+                expired,
+                ok=False,
+                toast="诊断已过期",
+            )
+        return _operations_response(
+            request.app,
+            report,
+            record,
+            ok=action in {"confirm_repair", "confirm_restart"}
+            and record.state in {"executing", "restarting"},
+            toast=(
+                "操作进行中"
+                if action in {"confirm_repair", "confirm_restart"}
+                and record.state in {"executing", "restarting"}
+                else "操作不可用"
+            ),
+        )
+
+    if action == "details":
+        transitioned = store.complete(
+            transitioned.operation_id,
+            expected_state="diagnosed",
+            state="diagnosed",
+            result={"show_details": True},
+        )
+    elif action == "confirm_repair":
+        return _operations_response(
+            request.app,
+            report,
+            transitioned,
+            after_eof=lambda: _schedule_operations_repair(
+                request.app, transitioned
+            ),
+        )
+    elif action == "confirm_restart":
+        return _operations_response(
+            request.app,
+            report,
+            transitioned,
+            after_eof=lambda: _schedule_operations_restart(
+                request.app, transitioned
+            ),
+        )
+    return _operations_response(request.app, report, transitioned)
+
+
 async def _commands(request: web.Request) -> web.Response:
     try:
         payload = await request.json()
@@ -236,6 +600,20 @@ async def _commands(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "payload must be an object"}, status=400)
 
     command = _normalize_hfc_command(payload.get("command"))
+    if command == "doctor":
+        verifier = request.app.get(OPERATIONS_COMMAND_AUTH_KEY)
+        if verifier is None:
+            return web.json_response(
+                {"ok": False, "error": "operations authentication unavailable"},
+                status=503,
+            )
+        try:
+            verifier.verify(payload)
+        except TransportAuthenticationError:
+            return web.json_response(
+                {"ok": False, "error": "command authentication rejected"},
+                status=403,
+            )
     chat_id = _safe_command_string(payload.get("chat_id"))
     message_id = _safe_command_string(payload.get("message_id"))
     reply_to_message_id = _safe_command_string(payload.get("reply_to_message_id"))
@@ -253,6 +631,11 @@ async def _commands(request: web.Request) -> web.Response:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             data[key] = value.strip()
+    chat_type = _safe_command_string(payload.get("chat_type")) or _safe_command_string(
+        data.get("chat_type")
+    )
+    if chat_type:
+        data["chat_type"] = chat_type
     event = SidecarEvent(
         schema_version="1",
         event="message.started",
@@ -266,7 +649,51 @@ async def _commands(request: web.Request) -> web.Response:
         data=data,
     )
     route = _resolve_route(request, event)
-    card = _render_hfc_command_card(request, command, event, route)
+    operation_id = ""
+    if command == "doctor":
+        profile_id = _safe_profile_id(data.get("profile_id"))
+        profile_source = _safe_command_string(data.get("profile_source"))
+        try:
+            root_secret = request.app[OPERATIONS_TRANSPORT_ROOT_KEY]
+            prepared_operation_id = secrets.token_urlsafe(18)
+            operation, created = request.app[OPERATIONS_STORE_KEY].prepare(
+                chat_id=chat_id,
+                profile_id=profile_id,
+                group=_is_group_chat(chat_type),
+                initiator_open_id=_safe_command_operator(payload.get("operator")),
+                operation_id=prepared_operation_id,
+                transport_secret=derive_operation_transport_secret(
+                    root_secret, prepared_operation_id
+                ),
+                idempotency_key=_doctor_idempotency_key(
+                    chat_id, profile_id, message_id
+                ),
+            )
+        except (KeyError, OperationRejected, ValueError):
+            return web.json_response(
+                {"ok": False, "error": "operations overloaded"},
+                status=503,
+            )
+        if created:
+            _schedule_operations_diagnosis(
+                request.app,
+                operation,
+                bot_id=route.bot_id if route is not None else None,
+                thread_id=thread_id or None,
+                reply_to_message_id=reply_to_message_id or message_id,
+                profile_source=profile_source,
+            )
+        operation_id = operation.operation_id
+        return web.json_response(
+            {
+                "ok": True,
+                "handled": True,
+                "command": command,
+                "operation_id": operation_id,
+            }
+        )
+    else:
+        card = _render_hfc_command_card(request, command, event, route)
     task = asyncio.create_task(
         _send_command_card(
             request.app,
@@ -275,11 +702,15 @@ async def _commands(request: web.Request) -> web.Response:
             route.bot_id if route is not None else None,
             thread_id=thread_id or None,
             reply_to_message_id=reply_to_message_id or message_id,
+            operation_id=operation_id,
         )
     )
     task.add_done_callback(_log_background_task_failure)
     await asyncio.sleep(0)
-    return web.json_response({"ok": True, "handled": True, "command": command})
+    response = {"ok": True, "handled": True, "command": command}
+    if operation_id:
+        response["operation_id"] = operation_id
+    return web.json_response(response)
 
 
 async def _send_command_card(
@@ -289,7 +720,8 @@ async def _send_command_card(
     bot_id: str | None,
     thread_id: str | None = None,
     reply_to_message_id: str | None = None,
-) -> None:
+    operation_id: str = "",
+) -> str | None:
     message_id = await _send_card_for_app(
         app,
         chat_id,
@@ -300,6 +732,12 @@ async def _send_command_card(
     )
     if message_id is None:
         logger.warning("HFC command card send failed: chat_id=%s bot_id=%s", chat_id, bot_id)
+    elif operation_id:
+        _store_operation_delivery(app, operation_id, {
+            "message_id": message_id,
+            "bot_id": bot_id,
+        })
+    return message_id
 
 
 def _log_background_task_failure(task: asyncio.Task[None]) -> None:
@@ -309,6 +747,821 @@ def _log_background_task_failure(task: asyncio.Task[None]) -> None:
         return
     except Exception:
         logger.warning("HFC command card background task failed", exc_info=True)
+
+
+def _doctor_idempotency_key(chat_id: str, profile_id: str, message_id: str) -> str:
+    value = f"doctor\0{chat_id}\0{profile_id}\0{message_id}".encode("utf-8")
+    return hashlib.sha256(value).hexdigest()
+
+
+def _schedule_operations_diagnosis(
+    app: web.Application,
+    operation: OperationRecord,
+    *,
+    bot_id: str | None,
+    thread_id: str | None,
+    reply_to_message_id: str | None,
+    profile_source: str,
+) -> None:
+    task = asyncio.create_task(
+        _run_operations_diagnosis(
+            app,
+            operation,
+            bot_id=bot_id,
+            thread_id=thread_id,
+            reply_to_message_id=reply_to_message_id,
+            profile_source=profile_source,
+        )
+    )
+    _track_operations_task(app, task)
+
+
+def _track_operations_task(app: web.Application, task: asyncio.Task[None]) -> None:
+    if app[OPERATIONS_MUTATIONS_STOPPING_KEY]["stopping"]:
+        task.cancel()
+        return
+    tasks = app[OPERATIONS_DIAGNOSTIC_TASKS_KEY]
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    task.add_done_callback(_log_background_task_failure)
+
+
+async def _run_operations_diagnosis(
+    app: web.Application,
+    operation: OperationRecord,
+    *,
+    bot_id: str | None,
+    thread_id: str | None,
+    reply_to_message_id: str | None,
+    profile_source: str,
+) -> None:
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    if not store.is_preparing(operation.operation_id):
+        return
+    try:
+        report, _detection = await _bounded_operations_report(
+            app,
+            profile_id=operation.profile_id,
+            profile_source=profile_source,
+            preparing_operation_id=operation.operation_id,
+        )
+        diagnosed = store.diagnose(operation.operation_id, report=report)
+        message_id = await _send_command_card(
+            app,
+            operation.chat_id,
+            _render_operations_for_app(app, report, diagnosed),
+            bot_id,
+            thread_id=thread_id,
+            reply_to_message_id=reply_to_message_id,
+            operation_id=operation.operation_id,
+        )
+        if message_id is not None:
+            return
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
+
+    failed_report = _failed_operations_report(operation.profile_id)
+    failed = _mark_operations_diagnosis_failed(
+        store, operation.operation_id, report=failed_report
+    )
+    if failed is None:
+        return
+    await _send_command_card(
+        app,
+        failed.chat_id,
+        _render_operations_for_app(
+            app, failed_report, failed
+        ),
+        bot_id,
+        thread_id=thread_id,
+        reply_to_message_id=reply_to_message_id,
+        operation_id=failed.operation_id,
+    )
+
+
+def _mark_operations_diagnosis_failed(
+    store: OperationStore,
+    operation_id: str,
+    *,
+    report: DiagnosticReport | None = None,
+) -> OperationRecord | None:
+    for expected_state in ("preparing", "diagnosed"):
+        try:
+            failed = store.complete(
+                operation_id,
+                expected_state=expected_state,
+                state="failed",
+                result={"message": "诊断暂时不可用，请稍后重新检测。"},
+            )
+            if report is not None:
+                failed.report = report
+                failed.report_fingerprint = report.fingerprint
+                failed.recovery_fingerprint = report.recovery_fingerprint
+            return failed
+        except OperationRejected:
+            continue
+    return None
+
+
+def _failed_operations_report(profile_id: str) -> DiagnosticReport:
+    return DiagnosticReport(
+        status="error",
+        created_at=time.time(),
+        config={"loaded": False},
+        hermes={"checked": False, "status": "unavailable"},
+        streaming={"status": "not_checked"},
+        install_state={"status": "unavailable", "recovery_executable": False},
+        routing={"profile_id": profile_id},
+        runtime={},
+        findings=(
+            DiagnosticFinding(
+                code="operations_diagnosis_failed",
+                severity="error",
+                message="Operations diagnosis could not be completed.",
+            ),
+        ),
+    )
+
+
+def _operations_report_available(report: DiagnosticReport) -> bool:
+    return not any(
+        finding.code == "operations_diagnosis_failed"
+        for finding in report.findings
+    )
+
+
+async def _build_operations_report(
+    app: web.Application,
+    *,
+    profile_id: str,
+    profile_source: str,
+    preparing_operation_id: str = "",
+) -> tuple[DiagnosticReport, HermesDetection]:
+    routing = app[ROUTING_DIAGNOSTICS_KEY]
+    last_route = routing.get("last_route") if isinstance(routing, dict) else None
+    health = {"routing": {"last_route": dict(last_route or {})}}
+    async with _operations_diagnostic_semaphore(app):
+        if preparing_operation_id and not app[OPERATIONS_STORE_KEY].is_preparing(
+            preparing_operation_id
+        ):
+            raise OperationRejected("operation state changed")
+        futures = app[OPERATIONS_DIAGNOSTIC_FUTURES_KEY]
+        if len(futures) >= MAX_CONCURRENT_OPERATION_DIAGNOSTICS:
+            raise _OperationsDiagnosticCapacityError("operations diagnostics busy")
+        future = asyncio.get_running_loop().run_in_executor(
+            app[OPERATIONS_DIAGNOSTIC_EXECUTOR_KEY],
+            _build_operations_report_sync,
+            app[OPERATIONS_CONFIG_PATH_KEY],
+            app[OPERATIONS_HERMES_ROOT_KEY],
+            profile_id,
+            profile_source,
+            health,
+        )
+        futures.add(future)
+        future.add_done_callback(futures.discard)
+        return await asyncio.shield(future)
+
+
+def _operations_diagnostic_semaphore(app: web.Application) -> asyncio.Semaphore:
+    holder = app[OPERATIONS_DIAGNOSTIC_SEMAPHORE_KEY]
+    semaphore = holder["value"]
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPERATION_DIAGNOSTICS)
+        holder["value"] = semaphore
+    return semaphore
+
+
+async def _bounded_operations_report(
+    app: web.Application,
+    *,
+    profile_id: str,
+    profile_source: str,
+    preparing_operation_id: str = "",
+) -> tuple[DiagnosticReport, HermesDetection]:
+    return await asyncio.wait_for(
+        _build_operations_report(
+            app,
+            profile_id=profile_id,
+            profile_source=profile_source,
+            preparing_operation_id=preparing_operation_id,
+        ),
+        timeout=OPERATIONS_DIAGNOSTIC_TIMEOUT_SECONDS,
+    )
+
+
+def _build_operations_report_sync(
+    config_path: Path,
+    hermes_root: Path,
+    profile_id: str,
+    profile_source: str,
+    health: dict[str, object],
+) -> tuple[DiagnosticReport, HermesDetection]:
+    detection = detect_hermes(hermes_root)
+    try:
+        config = load_config(config_path)
+        recovery_plan = plan_recovery(detection)
+        server = config.get("server", {})
+        event_url = (
+            f"http://{server.get('host', '127.0.0.1')}:"
+            f"{server.get('port', 8765)}/events"
+        )
+        report = build_diagnostic_report(
+            config_path,
+            config,
+            detection,
+            recovery_plan,
+            health=health,
+            profile_id=profile_id,
+            profile_source=profile_source,
+            event_url=event_url,
+        )
+    except Exception:
+        report = DiagnosticReport(
+            status="error",
+            created_at=time.time(),
+            config={"loaded": False},
+            hermes={"checked": True, "status": "unsupported"},
+            streaming={"status": "not_checked"},
+            install_state={
+                "status": "unavailable",
+                "recovery_executable": False,
+                "recovery_fingerprint": "",
+            },
+            routing={"profile_id": profile_id},
+            runtime={},
+            findings=(
+                DiagnosticFinding(
+                    code="operations_diagnosis_failed",
+                    severity="error",
+                    message="Operations diagnosis could not be completed.",
+                ),
+            ),
+        )
+    return report, detection
+
+
+def _create_operation(
+    app: web.Application,
+    report: DiagnosticReport,
+    *,
+    chat_id: str,
+    profile_id: str,
+    group: bool,
+    initiator_open_id: str = "",
+    transport_secret: bytes | None = None,
+    transport_source_operation_id: str = "",
+) -> OperationRecord:
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id=chat_id,
+        profile_id=profile_id,
+        report_fingerprint=report.fingerprint,
+        recovery_fingerprint=report.recovery_fingerprint,
+        group=group,
+        initiator_open_id=initiator_open_id,
+        transport_secret=transport_secret,
+        transport_source_operation_id=transport_source_operation_id,
+    )
+    operation.report = report
+    return operation
+
+
+def _successor_operation(
+    app: web.Application,
+    previous: OperationRecord,
+    report: DiagnosticReport,
+    *,
+    state: str = "diagnosed",
+    result: dict[str, object] | None = None,
+) -> OperationRecord:
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    successor = store.create_successor(previous.operation_id, report=report)
+    if state != "diagnosed" or result is not None:
+        successor = store.complete(
+            successor.operation_id,
+            expected_state="diagnosed",
+            state=state,
+            result=result or {},
+        )
+    _transfer_operation_delivery(app, previous.operation_id, successor.operation_id)
+    return successor
+
+
+def _transfer_operation_delivery(
+    app: web.Application, previous_operation_id: str, successor_operation_id: str
+) -> None:
+    delivery = app[OPERATIONS_DELIVERIES_KEY].pop(previous_operation_id, None)
+    if isinstance(delivery, dict):
+        transferred = dict(delivery)
+        transferred["generation"] = int(transferred.get("generation") or 0) + 1
+        _store_operation_delivery(app, successor_operation_id, transferred)
+
+
+def _store_operation_delivery(
+    app: web.Application,
+    operation_id: str,
+    delivery: dict[str, object],
+) -> None:
+    deliveries = app[OPERATIONS_DELIVERIES_KEY]
+    stored = dict(delivery)
+    generation = stored.get("generation")
+    if isinstance(generation, bool) or not isinstance(generation, int):
+        generation = 1
+    stored["generation"] = generation
+    deliveries[operation_id] = stored
+    while len(deliveries) > MAX_OPERATION_DELIVERIES:
+        store: OperationStore = app[OPERATIONS_STORE_KEY]
+        candidate = next(
+            (
+                item_id
+                for item_id in deliveries
+                if not store.is_inflight(item_id)
+            ),
+            None,
+        )
+        if candidate is None:
+            break
+        deliveries.pop(candidate, None)
+
+
+def _render_operations_for_app(
+    app: web.Application,
+    report: DiagnosticReport,
+    operation: OperationRecord,
+) -> dict[str, object]:
+    card = render_operations_card(
+        report,
+        operation,
+        "Hermes Feishu Card · 本地运行诊断",
+        store=app[OPERATIONS_STORE_KEY],
+    )
+    title = app[CARD_TITLE_KEY]
+    if isinstance(title, str) and title.strip():
+        card["header"]["title"]["content"] = title.strip()
+    return card
+
+
+def _operations_response(
+    app: web.Application,
+    report: DiagnosticReport,
+    operation: OperationRecord,
+    *,
+    ok: bool = True,
+    toast: str = "已更新",
+    after_eof: Any = None,
+) -> web.Response:
+    data = {
+        "ok": ok,
+        "operation_id": operation.operation_id,
+        "toast": {
+            "type": "success" if ok else "warning",
+            "content": toast,
+        },
+        "card": _render_operations_for_app(app, report, operation),
+    }
+    return _AfterEofJsonResponse(
+        data,
+        lambda: _schedule_operations_transition(
+            app, report, operation, after_eof
+        ),
+    )
+
+
+def _operation_report_snapshot(operation: OperationRecord) -> DiagnosticReport:
+    return operation.report or _failed_operations_report(operation.profile_id)
+
+
+def _operation_profile_source(operation: OperationRecord) -> str:
+    routing = operation.report.routing if operation.report is not None else {}
+    source = str(routing.get("profile_source") or "") if isinstance(routing, dict) else ""
+    return source if source in _STABLE_PROFILE_SOURCES else PROFILE_SOURCE_FALLBACK
+
+
+def _operation_evidence_matches(
+    operation: OperationRecord, report: DiagnosticReport
+) -> bool:
+    return (
+        report.fingerprint == operation.report_fingerprint
+        and report.recovery_fingerprint == operation.recovery_fingerprint
+    )
+
+
+def _schedule_operations_recheck(
+    app: web.Application, operation: OperationRecord
+) -> None:
+    _track_operations_task(
+        app, asyncio.create_task(_run_operations_recheck(app, operation))
+    )
+
+
+def _schedule_operations_transition(
+    app: web.Application,
+    report: DiagnosticReport,
+    operation: OperationRecord,
+    follow_up: Callable[[], None] | None = None,
+) -> None:
+    if app[OPERATIONS_MUTATIONS_STOPPING_KEY]["stopping"]:
+        return
+    _track_operations_task(
+        app,
+        asyncio.create_task(_publish_operations_transition(app, report, operation)),
+    )
+    if follow_up is not None:
+        follow_up()
+
+
+async def _publish_operations_transition(
+    app: web.Application,
+    report: DiagnosticReport,
+    operation: OperationRecord,
+) -> None:
+    await _publish_operations_card(app, report, operation)
+
+
+def _schedule_operations_repair(
+    app: web.Application, operation: OperationRecord
+) -> None:
+    _track_operations_task(
+        app, asyncio.create_task(_run_operations_repair(app, operation))
+    )
+
+
+def _schedule_operations_restart(
+    app: web.Application, operation: OperationRecord
+) -> None:
+    _track_operations_task(
+        app, asyncio.create_task(_run_operations_restart(app, operation))
+    )
+
+
+async def _run_operations_mutation(app: web.Application, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    if app[OPERATIONS_MUTATIONS_STOPPING_KEY]["stopping"]:
+        raise OperationRejected("operations are stopping")
+    future: Future[Any] = app[OPERATIONS_MUTATION_EXECUTOR_KEY].submit(func, *args, **kwargs)
+    futures: set[Future[Any]] = app[OPERATIONS_MUTATION_FUTURES_KEY]
+    futures.add(future)
+    loop = asyncio.get_running_loop()
+    future.add_done_callback(
+        lambda completed: loop.call_soon_threadsafe(futures.discard, completed)
+    )
+    return await asyncio.shield(asyncio.wrap_future(future))
+
+
+async def _run_operations_recheck(
+    app: web.Application, operation: OperationRecord
+) -> None:
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    if not store.is_preparing(operation.operation_id):
+        return
+    try:
+        report, _detection = await _bounded_operations_report(
+            app,
+            profile_id=operation.profile_id,
+            profile_source=_operation_profile_source(operation),
+            preparing_operation_id=operation.operation_id,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        failed_report = _failed_operations_report(operation.profile_id)
+        failed = _complete_operations_recheck(
+            app,
+            operation,
+            failed_report,
+            state="failed",
+            result={"message": "诊断暂时不可用，请稍后重新检测。"},
+        )
+        if failed is not None:
+            await _publish_operations_card(app, failed_report, failed)
+        return
+    diagnosed = _complete_operations_recheck(app, operation, report)
+    if diagnosed is not None:
+        await _publish_operations_card(app, report, diagnosed)
+
+
+def _complete_operations_recheck(
+    app: web.Application,
+    preparing: OperationRecord,
+    report: DiagnosticReport,
+    *,
+    state: str = "diagnosed",
+    result: dict[str, object] | None = None,
+) -> OperationRecord | None:
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    if not store.is_preparing(preparing.operation_id):
+        return None
+    try:
+        return _successor_operation(
+            app,
+            preparing,
+            report,
+            state=state,
+            result=result,
+        )
+    except OperationRejected:
+        return None
+
+
+async def _run_operations_repair(
+    app: web.Application, operation: OperationRecord
+) -> None:
+    if operation.state != "executing":
+        return
+    try:
+        report, detection = await _bounded_operations_report(
+            app,
+            profile_id=operation.profile_id,
+            profile_source=_operation_profile_source(operation),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        await _finish_operations_repair(
+            app,
+            operation,
+            _failed_operations_report(operation.profile_id),
+            state="failed",
+            result={"message": "诊断暂时不可用，请重新检测后再决定下一步。"},
+        )
+        return
+
+    if not _operation_evidence_matches(operation, report):
+        await _finish_operations_repair(
+            app,
+            operation,
+            report,
+            state="failed",
+            result={"message": "诊断状态已变化，请重新检测后再决定下一步。"},
+        )
+        return
+
+    metrics: SidecarMetrics = app[METRICS_KEY]
+    metrics.recovery_attempts += 1
+    try:
+        recovery_result = await _run_operations_mutation(
+            app, execute_recovery, detection, operation.recovery_fingerprint
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        metrics.recovery_refusals += 1
+        await _finish_operations_repair(
+            app,
+            operation,
+            report,
+            state="failed",
+            result={"message": "安全修复未执行；当前证据不再满足自动修复条件。"},
+        )
+        return
+
+    metrics.recovery_successes += 1
+    try:
+        post_repair_report, _post_repair_detection = await _bounded_operations_report(
+            app,
+            profile_id=operation.profile_id,
+            profile_source=_operation_profile_source(operation),
+        )
+        post_repair_available = _operations_report_available(post_repair_report)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        post_repair_report = _failed_operations_report(operation.profile_id)
+        post_repair_available = False
+    await _finish_operations_repair(
+        app,
+        operation,
+        post_repair_report,
+        state="repaired",
+        result={
+            "status": str(getattr(recovery_result, "status", "repaired")),
+            "message": (
+                "已完成安全修复并重新检测。"
+                if post_repair_available
+                else "已完成安全修复，但重新检测暂时不可用。"
+            ),
+            "restart_available": post_repair_available and bool(shutil.which("hermes")),
+        },
+    )
+
+
+async def _finish_operations_repair(
+    app: web.Application,
+    operation: OperationRecord,
+    report: DiagnosticReport,
+    *,
+    state: str,
+    result: dict[str, object],
+) -> None:
+    if operation.state != "executing":
+        return
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    try:
+        store.complete(
+            operation.operation_id,
+            expected_state="executing",
+            state=state,
+            result=result,
+        )
+        completed = _successor_operation(
+            app, operation, report, state=state, result=result
+        )
+    except OperationRejected:
+        return
+    await _publish_operations_card(app, report, completed)
+
+
+async def _run_operations_restart(
+    app: web.Application, operation: OperationRecord
+) -> None:
+    if operation.state != "restarting":
+        return
+    try:
+        report, detection = await _bounded_operations_report(
+            app,
+            profile_id=operation.profile_id,
+            profile_source=_operation_profile_source(operation),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        await _finish_operations_restart(
+            app,
+            operation,
+            _failed_operations_report(operation.profile_id),
+            state="restart_failed",
+            result={"message": "Gateway 重启前的诊断暂时不可用，请重新检测。"},
+        )
+        return
+
+    if not _operation_evidence_matches(operation, report):
+        await _finish_operations_restart(
+            app,
+            operation,
+            report,
+            state="restart_failed",
+            result={"message": "诊断状态已变化，请重新检测后再决定下一步。"},
+        )
+        return
+
+    hermes_binary = shutil.which("hermes")
+    if not hermes_binary:
+        await _finish_operations_restart(
+            app,
+            operation,
+            report,
+            state="restart_failed",
+            result={"message": "未找到可用的 Hermes Gateway 重启命令。"},
+        )
+        return
+
+    await asyncio.sleep(RESTART_CALLBACK_GRACE_SECONDS)
+    try:
+        completed = await _run_operations_mutation(
+            app,
+            subprocess.run,
+            [hermes_binary, "gateway", "restart"],
+            cwd=detection.root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return_code = int(completed.returncode)
+        output_status = _restart_output_status(
+            f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return_code = -1
+        output_status = "unavailable"
+    await _finish_operations_restart(
+        app,
+        operation,
+        report,
+        state="restarted" if return_code == 0 else "restart_failed",
+        result={
+            "return_code": return_code,
+            "output_status": output_status,
+            "message": (
+                "Gateway 重启已完成。"
+                if return_code == 0
+                else "安全修复已完成，但 Gateway 重启失败。"
+            ),
+        },
+    )
+
+
+async def _finish_operations_restart(
+    app: web.Application,
+    operation: OperationRecord,
+    report: DiagnosticReport,
+    *,
+    state: str,
+    result: dict[str, object],
+) -> None:
+    if operation.state != "restarting":
+        return
+    store: OperationStore = app[OPERATIONS_STORE_KEY]
+    try:
+        store.complete(
+            operation.operation_id,
+            expected_state="restarting",
+            state=state,
+            result=result,
+        )
+        completed = _successor_operation(
+            app, operation, report, state=state, result=result
+        )
+    except OperationRejected:
+        return
+    await _publish_operations_card(app, report, completed)
+
+
+async def _publish_operations_card(
+    app: web.Application,
+    report: DiagnosticReport,
+    operation: OperationRecord,
+) -> bool:
+    delivery = app[OPERATIONS_DELIVERIES_KEY].get(operation.operation_id)
+    if not isinstance(delivery, dict):
+        return False
+    message_id = str(delivery.get("message_id") or "")
+    if not message_id:
+        return False
+    lock_key = (str(delivery.get("bot_id") or ""), message_id)
+    locks: dict[tuple[str, str], dict[str, Any]] = app[OPERATIONS_PUBLISH_LOCKS_KEY]
+    guard = _operations_publish_locks_guard(app)
+    async with guard:
+        entry = locks.get(lock_key)
+        if entry is None:
+            entry = {"lock": asyncio.Lock(), "users": 0}
+            locks[lock_key] = entry
+        entry["users"] += 1
+    try:
+        async with entry["lock"]:
+            while True:
+                delivery = app[OPERATIONS_DELIVERIES_KEY].get(operation.operation_id)
+                if not isinstance(delivery, dict) or str(delivery.get("message_id") or "") != message_id:
+                    return False
+                generation = delivery.get("generation")
+
+                def still_current() -> bool:
+                    current = app[OPERATIONS_DELIVERIES_KEY].get(operation.operation_id)
+                    return current is delivery and current.get("generation") == generation
+
+                updated = await _update_card_for_app(
+                    app, message_id, _render_operations_for_app(app, report, operation),
+                    delivery.get("bot_id"), is_current=still_current,
+                )
+                current = app[OPERATIONS_STORE_KEY].current_successor(operation.operation_id)
+                if current is not None and current.operation_id != operation.operation_id:
+                    operation = current
+                    report = _operation_report_snapshot(current)
+                    continue
+                if not still_current():
+                    latest = app[OPERATIONS_DELIVERIES_KEY].get(operation.operation_id)
+                    if (
+                        isinstance(latest, dict)
+                        and str(latest.get("message_id") or "") == message_id
+                    ):
+                        continue
+                    return False
+                if not updated:
+                    result = dict(operation.result or {})
+                    result["delivery_error"] = "card update unavailable"
+                    operation.result = result
+                return updated
+    finally:
+        async with guard:
+            entry["users"] -= 1
+            if entry["users"] == 0 and locks.get(lock_key) is entry:
+                locks.pop(lock_key, None)
+
+
+def _operations_publish_locks_guard(app: web.Application) -> asyncio.Lock:
+    holder = app[OPERATIONS_PUBLISH_LOCKS_GUARD_KEY]
+    guard = holder["value"]
+    if guard is None:
+        guard = asyncio.Lock()
+        holder["value"] = guard
+    return guard
+
+
+def _restart_output_status(output: str) -> str:
+    normalized = " ".join(str(output or "").split()).strip().lower()
+    if not normalized:
+        return "empty"
+    if normalized in {
+        "gateway restart completed",
+        "gateway restarted",
+        "restart completed",
+        "restart successful",
+    }:
+        return "reported_success"
+    return "suppressed"
 
 
 async def _events(request: web.Request) -> web.Response:
@@ -322,11 +1575,24 @@ async def _events(request: web.Request) -> web.Response:
 
     metrics.events_received += 1
     message_locks: Dict[str, asyncio.Lock] = request.app[MESSAGE_LOCKS_KEY]
-    lock = message_locks.setdefault(_session_key(event), asyncio.Lock())
-    async with lock:
-        response, post_lock_task = await _apply_event_locked(request, event)
+    lock_users: Dict[str, int] = request.app[MESSAGE_LOCK_USERS_KEY]
+    lock_key = _session_key(event)
+    lock = message_locks.setdefault(lock_key, asyncio.Lock())
+    lock_users[lock_key] = lock_users.get(lock_key, 0) + 1
+    try:
+        async with lock:
+            response, post_lock_task = await _apply_event_locked(request, event)
+    finally:
+        remaining_users = lock_users.get(lock_key, 1) - 1
+        if remaining_users > 0:
+            lock_users[lock_key] = remaining_users
+        else:
+            lock_users.pop(lock_key, None)
+            cleanup_orphan_message_lock(request.app, lock_key, lock)
     if post_lock_task is not None and _should_await_card_update(event):
         await post_lock_task
+    if event.event in TERMINAL_EVENTS and post_lock_task is None:
+        cleanup_runtime_state(request.app, time.time())
     return response
 
 
@@ -341,6 +1607,19 @@ def _safe_command_string(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()
+
+
+def _safe_command_operator(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return str(value.get("open_id") or "").strip()
+    return ""
+
+
+def _is_group_chat(chat_type: str) -> bool:
+    normalized = str(chat_type or "").strip().lower()
+    return normalized in {"group", "group_chat", "chat", "groupchat"}
 
 
 def _render_hfc_command_card(
@@ -581,6 +1860,48 @@ def _register_session_aliases(
             aliases[alias_key] = canonical_key
 
 
+def _cleanup_failed_session_state(
+    app: web.Application,
+    session_key: str,
+    failed_session: CardSession | None = None,
+    session_card_config: dict[str, Any] | None = None,
+) -> None:
+    sessions: Dict[str, CardSession] = app[SESSIONS_KEY]
+    current_session = sessions.get(session_key)
+    if failed_session is not None:
+        if current_session is not failed_session:
+            return
+        sessions.pop(session_key, None)
+    elif current_session is not None:
+        return
+
+    if sessions.get(session_key) is not None:
+        return
+
+    aliases: Dict[str, str] = app[SESSION_ALIASES_KEY]
+    for alias_key, canonical_key in tuple(aliases.items()):
+        if canonical_key == session_key and aliases.get(alias_key) == session_key:
+            aliases.pop(alias_key, None)
+
+    owned_state = (
+        (CARD_SUMMARIES_KEY, CARD_SUMMARY_SESSION_KEYS_KEY),
+        (INTERACTION_RESULTS_KEY, INTERACTION_RESULT_SESSION_KEYS_KEY),
+    )
+    for values_key, owners_key in owned_state:
+        values = app[values_key]
+        owners = app[owners_key]
+        for value_key, owner_key in tuple(owners.items()):
+            if owner_key == session_key and owners.get(value_key) == session_key:
+                owners.pop(value_key, None)
+                values.pop(value_key, None)
+
+    if (
+        session_card_config is not None
+        and app[SESSION_CARD_CONFIGS_KEY].get(session_key) is session_card_config
+    ):
+        app[SESSION_CARD_CONFIGS_KEY].pop(session_key, None)
+
+
 def _event_for_session(event: SidecarEvent, session: CardSession) -> SidecarEvent:
     if (
         event.conversation_id == session.conversation_id
@@ -675,15 +1996,17 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         if applied and session_key not in feishu_message_ids:
             route = _resolve_route(request, event)
             if route is None:
-                sessions.pop(session_key, None)
+                _cleanup_failed_session_state(request.app, session_key, session)
                 metrics.events_rejected += 1
                 return web.json_response(
                     {"ok": False, "error": "bot route failed"},
                     status=502,
                 ), None
-            request.app[SESSION_CARD_CONFIGS_KEY][session_key] = (
-                _resolve_session_card_config(request.app, route.bot_id, event)
+            session_card_config = _resolve_session_card_config(
+                request.app, route.bot_id, event
             )
+            request.app[SESSION_CARD_CONFIGS_KEY][session_key] = session_card_config
+            _refresh_session_display_status(request, session)
             message_id = await _send_card(
                 request,
                 event.chat_id,
@@ -693,8 +2016,12 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 reply_to_message_id=_reply_to_message_id_for_event(event),
             )
             if message_id is None:
-                sessions.pop(session_key, None)
-                request.app[SESSION_CARD_CONFIGS_KEY].pop(session_key, None)
+                _cleanup_failed_session_state(
+                    request.app,
+                    session_key,
+                    session,
+                    session_card_config,
+                )
                 metrics.events_rejected += 1
                 return web.json_response(
                     {"ok": False, "error": "feishu send failed"},
@@ -725,7 +2052,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 )
                 route = _resolve_route(request, event)
                 if route is None:
-                    sessions.pop(session_key, None)
+                    _cleanup_failed_session_state(request.app, session_key, session)
                     if is_cron_completed:
                         metrics.cron_fallbacks += 1
                     metrics.events_rejected += 1
@@ -733,9 +2060,11 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                         {"ok": False, "error": "bot route failed"},
                         status=502,
                     ), None
-                request.app[SESSION_CARD_CONFIGS_KEY][session_key] = (
-                    _resolve_session_card_config(request.app, route.bot_id, event)
+                session_card_config = _resolve_session_card_config(
+                    request.app, route.bot_id, event
                 )
+                request.app[SESSION_CARD_CONFIGS_KEY][session_key] = session_card_config
+                _refresh_session_display_status(request, session)
                 message_id = await _send_card(
                     request,
                     event.chat_id,
@@ -745,8 +2074,12 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     reply_to_message_id=_reply_to_message_id_for_event(event),
                 )
                 if message_id is None:
-                    sessions.pop(session_key, None)
-                    request.app[SESSION_CARD_CONFIGS_KEY].pop(session_key, None)
+                    _cleanup_failed_session_state(
+                        request.app,
+                        session_key,
+                        session,
+                        session_card_config,
+                    )
                     if is_cron_completed:
                         metrics.cron_fallbacks += 1
                     metrics.events_rejected += 1
@@ -793,6 +2126,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
 
     applied = session.apply(event)
     if applied:
+        _refresh_session_display_status(request, session)
         _register_session_aliases(request.app, incoming_event, session_key)
     if applied and event.event.startswith("interaction."):
         _store_interaction_result(request.app, session)
@@ -837,6 +2171,14 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             await controller.drain(_final_drain_timeout_seconds(request.app, session_key))
             current_task = controller.schedule(_render_and_update, terminal=True)
             controller.close()
+            current_task.add_done_callback(
+                lambda task: _post_terminal_cleanup(
+                    request.app,
+                    session_key,
+                    controller,
+                    task,
+                )
+            )
         else:
             current_task = controller.schedule(_render_and_update, terminal=False)
         post_lock_task = current_task
@@ -853,6 +2195,26 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
     return web.json_response(response_payload), post_lock_task
 
 
+def _post_terminal_cleanup(
+    app: web.Application,
+    session_key: str,
+    controller: FlushController,
+    task: asyncio.Task[None],
+) -> None:
+    try:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.warning("terminal card update task failed", exc_info=error)
+    except asyncio.CancelledError:
+        return
+    finally:
+        now = time.time()
+        cleanup_closed_controller(app, session_key, controller, now=now)
+        cleanup_runtime_state(app, now)
+
+
 def _store_interaction_result(app: web.Application, session: CardSession) -> None:
     interaction = session.active_interaction
     if interaction is None:
@@ -863,6 +2225,9 @@ def _store_interaction_result(app: web.Application, session: CardSession) -> Non
         "choice": interaction.choice,
         "choice_label": interaction.choice_label,
     }
+    app[INTERACTION_RESULT_SESSION_KEYS_KEY][interaction.interaction_id] = (
+        _session_key_for_session(app, session)
+    )
 
 
 def _extract_action_value(payload: dict[str, Any]) -> dict[str, Any]:
@@ -882,6 +2247,22 @@ def _extract_callback_chat_id(payload: dict[str, Any]) -> str:
     if isinstance(context, dict):
         return str(context.get("open_chat_id") or context.get("chat_id") or "").strip()
     return ""
+
+
+def _extract_callback_profile_id(payload: dict[str, Any]) -> str:
+    event = payload.get("event") if isinstance(payload, dict) else None
+    context = event.get("context") if isinstance(event, dict) else None
+    if not isinstance(context, dict):
+        return ""
+    return _safe_profile_id(context.get("profile_id")) if context.get("profile_id") else ""
+
+
+def _extract_operator_open_id(payload: dict[str, Any]) -> str:
+    event = payload.get("event") if isinstance(payload, dict) else None
+    operator = event.get("operator") if isinstance(event, dict) else None
+    if not isinstance(operator, dict):
+        return ""
+    return str(operator.get("open_id") or "").strip()
 
 
 def _extract_operator_name(payload: dict[str, Any]) -> str:
@@ -935,6 +2316,9 @@ def _store_card_summary(
         "message_id_hash": _diagnostic_id_hash(feishu_message_id),
         "source_message_id_hash": _diagnostic_id_hash(event.message_id),
     }
+    app[CARD_SUMMARY_SESSION_KEYS_KEY][feishu_message_id] = (
+        _session_key_for_session(app, session)
+    )
 
 
 def _record_profile_diagnostics(app: web.Application, event: SidecarEvent) -> None:
@@ -1031,6 +2415,18 @@ def _safe_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _refresh_session_display_status(
+    request: web.Request, session: CardSession
+) -> None:
+    card_config = request.app[SESSION_CARD_CONFIGS_KEY].get(
+        _session_key_for_session(request.app, session),
+        {},
+    )
+    session.refresh_display_status_source(
+        StatusConfig.from_mapping(card_config.get("status"))
+    )
+
+
 def _render_session_card(request: web.Request, session: CardSession) -> dict[str, Any]:
     card_config = request.app[SESSION_CARD_CONFIGS_KEY].get(
         _session_key_for_session(request.app, session),
@@ -1064,6 +2460,7 @@ def _render_session_card(request: web.Request, session: CardSession) -> dict[str
         max_tool_result_chars=_safe_positive_int(
             card_config.get("max_tool_result_chars"), 600
         ),
+        status_config=StatusConfig.from_mapping(card_config.get("status")),
     )
 
 
@@ -1171,10 +2568,17 @@ async def _update_card(
 
 
 async def _update_card_for_app(
-    app: web.Application, message_id: str, card: dict[str, Any], bot_id: str | None
+    app: web.Application,
+    message_id: str,
+    card: dict[str, Any],
+    bot_id: str | None,
+    *,
+    is_current: Callable[[], bool] | None = None,
 ) -> bool:
     metrics: SidecarMetrics = app[METRICS_KEY]
     for attempt in range(UPDATE_MAX_ATTEMPTS):
+        if is_current is not None and not is_current():
+            return False
         if attempt > 0:
             metrics.feishu_update_retries += 1
         metrics.feishu_update_attempts += 1
@@ -1189,9 +2593,13 @@ async def _update_card_for_app(
             app[DIAGNOSTICS_KEY]["last_update_error"] = message[:500]
             logger.warning("Feishu card update failed: %s", message)
             metrics.feishu_update_failures += 1
+            if is_current is not None and not is_current():
+                return False
             continue
         metrics.feishu_update_latency_ms = int((time.monotonic() - started_at) * 1000)
         metrics.feishu_update_successes += 1
+        if is_current is not None and not is_current():
+            return False
         return True
     return False
 

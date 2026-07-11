@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -8,13 +9,17 @@ from pathlib import Path
 import pytest
 import yaml
 
+import hermes_feishu_card.cli as cli_module
 from hermes_feishu_card.cli import main
+from hermes_feishu_card.diagnostics import DiagnosticReport
 
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "hermes_v2026_4_23"
 CONFIG_ENV_VARS = {
     "HERMES_FEISHU_CARD_HOST",
     "HERMES_FEISHU_CARD_PORT",
+    "HERMES_FEISHU_CARD_PROFILE_ID",
+    "HERMES_FEISHU_CARD_EVENT_URL",
     "FEISHU_APP_ID",
     "FEISHU_APP_SECRET",
 }
@@ -46,6 +51,42 @@ def test_status_reports_process_state(capsys):
     assert "status" in captured.out.lower()
     assert "not implemented" not in captured.out.lower()
     assert "running" in captured.out.lower() or "stopped" in captured.out.lower()
+
+
+def test_start_passes_explicit_env_file_to_sidecar(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / "CUSTOM.env"
+    config_path.write_text("server: {}\n", encoding="utf-8")
+    env_path.write_text("HERMES_DIR=custom-hermes\n", encoding="utf-8")
+    started = {}
+    monkeypatch.setattr(
+        cli_module,
+        "start_sidecar",
+        lambda path, config, **kwargs: started.update(
+            path=Path(path), config=config, kwargs=kwargs
+        )
+        or "started",
+    )
+
+    assert main(["start", "--config", str(config_path), "--env-file", str(env_path)]) == 0
+    assert capsys.readouterr().err == ""
+    assert started["path"] == config_path
+    assert started["kwargs"] == {"env_file": str(env_path)}
+
+
+def test_start_keeps_default_sidecar_arguments(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server: {}\n", encoding="utf-8")
+    started = {}
+    monkeypatch.setattr(
+        cli_module,
+        "start_sidecar",
+        lambda path, config, **kwargs: started.update(kwargs=kwargs) or "started",
+    )
+
+    assert main(["start", "--config", str(config_path)]) == 0
+    assert capsys.readouterr().err == ""
+    assert started == {"kwargs": {}}
 
 
 def test_status_reports_cron_metrics_when_sidecar_is_running(monkeypatch, capsys):
@@ -194,7 +235,8 @@ def test_module_doctor_json_reports_skipped_hermes(tmp_path):
     report = json.loads(result.stdout)
     assert report["schema_version"] == "1"
     assert report["status"] == "ok"
-    assert report["config"]["path"] == str(config_path)
+    assert report["config"]["path"] == "[redacted]"
+    assert str(config_path) not in result.stdout
     assert report["config"]["loaded"] is True
     assert report["config"]["server"] == {"host": "0.0.0.0", "port": 9012}
     assert report["sidecar"]["address"] == "0.0.0.0:9012"
@@ -202,6 +244,142 @@ def test_module_doctor_json_reports_skipped_hermes(tmp_path):
     assert report["hermes"]["status"] == "skipped"
     assert report["install_state"]["status"] == "skipped"
     assert isinstance(report["recommendations"], list)
+
+
+def test_module_doctor_json_redacts_paths_inside_error_and_recommendation_text(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "private" / "bad.yaml"
+    config_path.parent.mkdir()
+    monkeypatch.setattr(
+        cli_module,
+        "load_config",
+        lambda _path: (_ for _ in ()).throw(ValueError(f"invalid config {config_path}")),
+    )
+
+    exit_code = main(["doctor", "--config", str(config_path), "--skip-hermes", "--json"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert str(config_path) not in captured.out
+    report = json.loads(captured.out)
+    assert report["config"]["path"] == "[redacted]"
+    assert report["config"]["error"].startswith("[redacted-path-text:")
+    assert report["recommendations"][0]["message"].startswith("[redacted-path-text:")
+
+
+@pytest.mark.parametrize(
+    "sensitive_path",
+    [
+        "/Users/Alice/My Project/config.yaml",
+        r"C:\Users\Alice\My Project\config.yaml",
+        r"\\server\share\My Folder\config.yaml",
+    ],
+)
+def test_doctor_json_redacts_common_absolute_paths_in_text_fields(sensitive_path):
+    payload = {
+        "config": {"error": f"could not load {sensitive_path}"},
+        "hermes": {"reason": f"unsupported root {sensitive_path}"},
+        "recommendations": [
+            {"next_step": f"inspect {sensitive_path} then retry"},
+        ],
+    }
+
+    output = cli_module._doctor_json_output_payload(payload)
+    output_text = json.dumps(output)
+
+    assert sensitive_path not in output_text
+    assert output["config"]["error"].startswith("[redacted-path-text:")
+    assert output["hermes"]["reason"].startswith("[redacted-path-text:")
+    assert output["recommendations"][0]["next_step"].startswith("[redacted-path-text:")
+
+
+@pytest.mark.parametrize(
+    "sensitive_path",
+    [
+        "/Users/Alice/My Project/config.yaml",
+        r"C:\Users\Alice\My Project\config.yaml",
+        r"\\server\share\My Folder\config.yaml",
+    ],
+)
+def test_doctor_json_config_load_failure_redacts_common_absolute_paths(
+    sensitive_path, tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "config.yaml"
+    monkeypatch.setattr(
+        cli_module,
+        "load_config",
+        lambda _path: (_ for _ in ()).throw(ValueError(f"invalid config {sensitive_path}")),
+    )
+
+    assert main(["doctor", "--config", str(config_path), "--skip-hermes", "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    output_text = json.dumps(report)
+
+    assert sensitive_path not in output_text
+    assert report["config"]["error"].startswith("[redacted-path-text:")
+    assert report["recommendations"][0]["message"].startswith("[redacted-path-text:")
+
+
+@pytest.mark.parametrize(
+    "path_text",
+    [
+        "/Users/Alice/My Project",
+        "/var/log/hermes.log",
+        "/opt/hermes/config.bak",
+        r"C:\Users\Alice\My Project",
+        r"C:\Program Files\Hermes",
+        r"C:\Logs\hermes.log",
+        r"C:\Backups\config.bak",
+        r"\\server\share\My Folder",
+    ],
+)
+def test_doctor_json_redacts_entire_text_field_for_absolute_path_prefix(path_text):
+    value = f"operation failed near {path_text} and should be retried"
+
+    result = cli_module._redact_doctor_json_paths({"message": value})["message"]
+
+    assert result.startswith("[redacted-path-text:")
+    assert result.endswith("]")
+    assert path_text not in result
+    assert "operation failed" not in result
+    assert "retried" not in result
+
+
+def test_doctor_json_redacts_entire_text_field_when_it_contains_multiple_paths():
+    first_path = "/Users/Alice/My Project/config.yaml"
+    second_path = r"C:\Backups\config.bak"
+    value = f"copy {first_path} to {second_path} before retrying the operation"
+
+    result = cli_module._redact_doctor_json_paths({"message": value})["message"]
+
+    assert result.startswith("[redacted-path-text:")
+    assert first_path not in result
+    assert second_path not in result
+    assert "before retrying" not in result
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "ordinary diagnostic text",
+        "see https://example.com/health for details",
+        "/health",
+    ],
+)
+def test_doctor_json_keeps_non_local_path_text(value):
+    assert cli_module._redact_doctor_json_paths({"message": value})["message"] == value
+
+
+def test_doctor_json_path_text_summaries_are_stable_and_distinct():
+    first = "failure at /Users/Alice/private/config.yaml"
+    second = "failure at /Users/Bob/private/config.yaml"
+
+    first_summary = cli_module._redact_doctor_json_paths({"message": first})["message"]
+
+    assert first_summary == (
+        f"[redacted-path-text:{hashlib.sha256(first.encode('utf-8')).hexdigest()[:12]}]"
+    )
+    assert first_summary == cli_module._redact_doctor_json_paths({"message": first})["message"]
+    assert first_summary != cli_module._redact_doctor_json_paths({"message": second})["message"]
 
 
 def test_module_doctor_json_reports_supported_hermes_and_clean_install_state(tmp_path):
@@ -235,6 +413,37 @@ def test_module_doctor_json_reports_supported_hermes_and_clean_install_state(tmp
     assert report["install_state"]["status"] == "clean"
     assert report["streaming"]["status"] == "enabled"
     assert any(item["code"] == "hermes_compatibility_partial" for item in report["recommendations"])
+    assert str(config_path) not in result.stdout
+    assert str(hermes_dir) not in result.stdout
+
+
+def test_module_doctor_json_is_read_only_and_has_stable_fingerprint(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server:\n  port: 9013\n", encoding="utf-8")
+    hermes_dir = tmp_path / "hermes"
+    shutil.copytree(FIXTURE, hermes_dir)
+    before = {
+        path.relative_to(hermes_dir): path.read_bytes()
+        for path in hermes_dir.rglob("*")
+        if path.is_file()
+    }
+
+    first = run_cli(
+        "doctor", "--config", str(config_path), "--hermes-dir", str(hermes_dir), "--json"
+    )
+    second = run_cli(
+        "doctor", "--config", str(config_path), "--hermes-dir", str(hermes_dir), "--json"
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert json.loads(first.stdout)["fingerprint"] == json.loads(second.stdout)["fingerprint"]
+    after = {
+        path.relative_to(hermes_dir): path.read_bytes()
+        for path in hermes_dir.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
 
 
 def test_module_doctor_json_reports_runtime_import_failure(tmp_path):
@@ -271,7 +480,8 @@ exit 0
     assert report["status"] == "warning"
     assert report["runtime_import"]["checked"] is True
     assert report["runtime_import"]["status"] == "failed"
-    assert report["runtime_import"]["python"] == str(runtime_python)
+    assert report["runtime_import"]["python"] == "[redacted]"
+    assert str(runtime_python) not in result.stdout
     assert "hook_runtime" in report["runtime_import"]["message"]
     assert any(item["code"] == "runtime_import_failed" for item in report["recommendations"])
 
@@ -296,6 +506,298 @@ def test_module_doctor_explain_reports_summary_and_next_steps(tmp_path):
     assert "Runtime import:" in result.stdout
     assert "Install state: clean" in result.stdout
     assert "Next steps" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "expected_bot_id"),
+    [("default", "main-bot"), ("child", "child-bot")],
+)
+def test_doctor_explain_reports_profile_route_without_credentials(
+    profile_id, expected_bot_id, tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """server:
+  host: 127.0.0.1
+  port: 8765
+profiles:
+  default:
+    feishu:
+      app_id: cli-default-app
+      app_secret: cli-default-secret
+    bots:
+      default: main-bot
+      items:
+        main-bot:
+          app_id: cli-main-bot-app
+          app_secret: cli-main-bot-secret
+  child:
+    feishu:
+      app_id: cli-child-app
+      app_secret: cli-child-secret
+    bots:
+      default: child-bot
+      items:
+        child-bot:
+          app_id: cli-child-bot-app
+          app_secret: cli-child-bot-secret
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "HERMES_FEISHU_CARD_EVENT_URL", "http://127.0.0.1:8765/events"
+    )
+
+    exit_code = main(
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--hermes-dir",
+            str(FIXTURE),
+            "--profile-id",
+            profile_id,
+            "--explain",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    assert "Route Chain" in captured.out
+    assert "identity_source: argument" in captured.out
+    assert f"profile_id: {profile_id}" in captured.out
+    assert "event_endpoint: http://127.0.0.1:8765/events" in captured.out
+    assert f"config_profile: {profile_id}" in captured.out
+    assert f"bot_id: {expected_bot_id}" in captured.out
+    assert "route_reason: bots.default" in captured.out
+    assert "profile_credentials_missing" not in captured.out
+    assert "cli-child-app" not in captured.out
+    assert "cli-child-secret" not in captured.out
+    assert "cli-default-secret" not in captured.out
+
+
+@pytest.mark.parametrize(
+    ("hermes_args", "expected_hermes"),
+    [(["--skip-hermes"], "Hermes: skipped"), ([], "Hermes: not_checked")],
+)
+def test_doctor_explain_reports_profile_route_before_hermes_detection(
+    hermes_args, expected_hermes, tmp_path, capsys
+):
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        """server:
+  host: 127.0.0.1
+  port: 8765
+profiles:
+  child:
+    feishu:
+      app_id: child-app
+      app_secret: child-secret
+    bots:
+      default: child-bot
+      items:
+        child-bot:
+          app_id: child-bot-app
+          app_secret: child-bot-secret
+""",
+        encoding="utf-8",
+    )
+    original_env = (
+        "# doctor must stay read-only\n"
+        "HERMES_FEISHU_CARD_EVENT_URL=http://127.0.0.1:8765/events\n"
+    )
+    env_path.write_text(original_env, encoding="utf-8")
+
+    exit_code = main(
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--profile-id",
+            "child",
+            "--explain",
+            *hermes_args,
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    assert expected_hermes in captured.out
+    assert "Route Chain" in captured.out
+    assert "profile_id: child" in captured.out
+    assert "event_endpoint: http://127.0.0.1:8765/events" in captured.out
+    assert "config_profile: child" in captured.out
+    assert "bot_id: child-bot" in captured.out
+    assert "route_reason: bots.default" in captured.out
+    assert "profile_credentials_missing" not in captured.out
+    assert env_path.read_text(encoding="utf-8") == original_env
+
+
+@pytest.mark.parametrize("secret_segment", ["SECRET_TOKEN", "oc_private", "ou_private"])
+def test_doctor_explain_redacts_unreviewed_nested_event_path(
+    secret_segment, tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """server:
+  host: 127.0.0.1
+  port: 8765
+profiles:
+  child:
+    feishu:
+      app_id: child-app
+      app_secret: child-secret
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "HERMES_FEISHU_CARD_EVENT_URL",
+        f"http://127.0.0.1:8765/private/{secret_segment}/events",
+    )
+
+    exit_code = main(
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--hermes-dir",
+            str(FIXTURE),
+            "--profile-id",
+            "child",
+            "--explain",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    assert "event_endpoint: http://127.0.0.1:8765/[redacted-path]" in captured.out
+    assert secret_segment not in captured.out
+    assert "event_endpoint_mismatch" in captured.out
+
+
+@pytest.mark.parametrize("hermes_mode", ["normal", "skip", "no_hermes"])
+@pytest.mark.parametrize(
+    ("event_path", "expected_output_path", "sensitive_value"),
+    [
+        ("/events", "/events", None),
+        ("/private/SECRET_TOKEN/events", "/[redacted-path]", "SECRET_TOKEN"),
+        ("/private/oc_SECRET_CHAT/events", "/[redacted-path]", "oc_SECRET_CHAT"),
+        ("/private/ou_SECRET_USER/events", "/[redacted-path]", "ou_SECRET_USER"),
+    ],
+)
+def test_doctor_json_sanitizes_only_endpoint_output_copy(
+    hermes_mode,
+    event_path,
+    expected_output_path,
+    sensitive_value,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """server:
+  host: 127.0.0.1
+  port: 8765
+profiles:
+  child:
+    feishu:
+      app_id: child-app
+      app_secret: child-secret
+    bots:
+      default: child-bot
+      items:
+        child-bot:
+          app_id: child-bot-app
+          app_secret: child-bot-secret
+""",
+        encoding="utf-8",
+    )
+    event_endpoint = f"http://127.0.0.1:8765{event_path}"
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", event_endpoint)
+    captured_report = {}
+    original_build = cli_module._build_doctor_report
+
+    def capture_report(config_path, config, args):
+        report = original_build(config_path, config, args)
+        captured_report["report"] = report
+        if isinstance(report, DiagnosticReport):
+            captured_report["fingerprint"] = report.fingerprint
+        return report
+
+    monkeypatch.setattr(cli_module, "_build_doctor_report", capture_report)
+    hermes_args = {
+        "normal": ["--hermes-dir", str(FIXTURE)],
+        "skip": ["--skip-hermes"],
+        "no_hermes": [],
+    }[hermes_mode]
+
+    exit_code = main(
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--profile-id",
+            "child",
+            "--json",
+            *hermes_args,
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    payload = json.loads(captured.out)
+    assert payload["routing"]["event_endpoint"] == (
+        f"http://127.0.0.1:8765{expected_output_path}"
+    )
+    if sensitive_value is not None:
+        assert sensitive_value not in captured.out
+
+    report = captured_report["report"]
+    raw_payload = report.to_dict() if isinstance(report, DiagnosticReport) else report
+    raw_routing = raw_payload["routing"]
+    assert raw_routing["event_endpoint"] == event_endpoint
+    assert set(payload) == set(raw_payload)
+    for section, value in raw_payload.items():
+        if isinstance(value, dict):
+            assert set(payload[section]) == set(value)
+
+    if isinstance(report, DiagnosticReport):
+        assert payload["fingerprint"] == captured_report["fingerprint"]
+        assert report.fingerprint == captured_report["fingerprint"]
+        finding_codes = {finding.code for finding in report.findings}
+    else:
+        finding_codes = {item["code"] for item in report["recommendations"]}
+    if event_path == "/events":
+        assert "event_endpoint_mismatch" not in finding_codes
+    else:
+        assert "event_endpoint_mismatch" in finding_codes
+
+
+@pytest.mark.parametrize(
+    "profile_id",
+    ["../child", "child profile", "x" * 65],
+)
+def test_doctor_rejects_invalid_profile_id(profile_id, tmp_path, capsys):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server:\n  port: 8765\n", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--skip-hermes",
+            "--profile-id",
+            profile_id,
+            "--explain",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code != 0
+    assert "invalid profile id" in captured.out + captured.err
 
 
 def test_module_doctor_explain_supports_hermes_015_without_v_prefix(tmp_path):

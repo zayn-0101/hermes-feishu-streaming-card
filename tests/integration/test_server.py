@@ -1,4 +1,12 @@
 import asyncio
+import base64
+import json
+from pathlib import Path
+import secrets
+import threading
+import time
+from types import SimpleNamespace
+import warnings
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -6,10 +14,104 @@ from aiohttp.test_utils import TestClient, TestServer
 from hermes_feishu_card.bots import RouteResult
 from hermes_feishu_card import flush as flush_module
 from hermes_feishu_card import server as sidecar_server
-from hermes_feishu_card.server import FEISHU_MESSAGE_IDS_KEY, create_app
+from hermes_feishu_card.events import SidecarEvent
+from hermes_feishu_card.diagnostics import DiagnosticFinding, DiagnosticReport
+from hermes_feishu_card.flush import FlushController
+from hermes_feishu_card.lifecycle import (
+    cleanup_closed_controller,
+    cleanup_orphan_message_lock,
+    cleanup_runtime_state,
+)
+from hermes_feishu_card.operations import OperationStore, sign_transport_proof
+from hermes_feishu_card.operations_transport import (
+    derive_operation_transport_secret,
+    sign_command_transport_proof,
+)
+from hermes_feishu_card.session import CardSession, InteractionState
+from hermes_feishu_card.server import (
+    CARD_SUMMARIES_KEY,
+    CARD_SUMMARY_SESSION_KEYS_KEY,
+    CLEANUP_TASK_KEY,
+    DIAGNOSTICS_KEY,
+    FEISHU_MESSAGE_IDS_KEY,
+    FLUSH_CONTROLLERS_KEY,
+    INTERACTION_RESULTS_KEY,
+    INTERACTION_RESULT_SESSION_KEYS_KEY,
+    MESSAGE_BOT_IDS_KEY,
+    MESSAGE_LOCKS_KEY,
+    MESSAGE_LOCK_USERS_KEY,
+    METRICS_KEY,
+    RUNTIME_CLEANUP_INTERVAL_SECONDS,
+    SESSION_ALIASES_KEY,
+    SESSION_CARD_CONFIGS_KEY,
+    SESSIONS_KEY,
+    create_app as _create_app,
+)
 
 
 _REAL_ASYNCIO_SLEEP = asyncio.sleep
+TRANSPORT_SECRET = "test-adapter-process-local-secret"
+TRANSPORT_ROOT_SECRET = b"r" * 32
+
+
+def create_app(*args, **kwargs):
+    kwargs.setdefault(
+        "operations_transport_root_secret",
+        TRANSPORT_ROOT_SECRET,
+    )
+    return _create_app(*args, **kwargs)
+
+
+def signed_operations_command(payload):
+    signed = dict(payload)
+    signed.pop("adapter_transport_secret", None)
+    signed["adapter_command_proof"] = sign_command_transport_proof(
+        TRANSPORT_ROOT_SECRET,
+        signed,
+        timestamp=int(sidecar_server.time.time()),
+        nonce=secrets.token_urlsafe(18),
+    )
+    return signed
+
+
+async def test_after_eof_runs_once_after_connection_reset_and_preserves_eof_error(
+    monkeypatch,
+):
+    callbacks = []
+
+    async def failed_write_eof(self, data=b""):
+        raise ConnectionResetError("client disconnected")
+
+    def failed_after_eof():
+        callbacks.append(True)
+        raise RuntimeError("schedule failed")
+
+    monkeypatch.setattr(sidecar_server.web.Response, "write_eof", failed_write_eof)
+    response = sidecar_server._AfterEofJsonResponse({}, failed_after_eof)
+
+    with pytest.raises(ConnectionResetError, match="client disconnected"):
+        await response.write_eof()
+    with pytest.raises(ConnectionResetError, match="client disconnected"):
+        await response.write_eof()
+
+    assert callbacks == [True]
+
+
+async def test_after_eof_runs_once_on_successful_repeated_write_eof(monkeypatch):
+    callbacks = []
+    writes = []
+
+    async def successful_write_eof(self, data=b""):
+        writes.append(data)
+
+    monkeypatch.setattr(sidecar_server.web.Response, "write_eof", successful_write_eof)
+    response = sidecar_server._AfterEofJsonResponse({}, lambda: callbacks.append(True))
+
+    await response.write_eof()
+    await response.write_eof(b"again")
+
+    assert callbacks == [True]
+    assert writes == [b"", b"again"]
 
 
 class FakeFeishuClient:
@@ -52,6 +154,24 @@ class ReorderingFeishuClient(FakeFeishuClient):
         self.updated.append((message_id, card))
 
 
+class ControlledOperationsUpdateClient(FakeFeishuClient):
+    def __init__(self):
+        super().__init__()
+        self.update_started = asyncio.Event()
+        self.release_update = asyncio.Event()
+        self.block_first_update = True
+
+    async def update_card_message(self, message_id, card):
+        if self.block_first_update:
+            self.block_first_update = False
+            self.update_started.set()
+            await self.release_update.wait()
+        if self.update_failures_remaining > 0:
+            self.update_failures_remaining -= 1
+            raise RuntimeError(self.update_error_message)
+        self.updated.append((message_id, card))
+
+
 class FakeBotRegistry:
     def safe_diagnostics(self):
         return {
@@ -80,6 +200,193 @@ class FakeFeishuClientFactory:
         card.update(profile_card or self.profile_card)
         card.update(self.cards.get(bot_id, {}))
         return card
+
+
+def operations_report(
+    *,
+    report_marker="report-a",
+    recovery_fingerprint="recovery-a",
+    executable=True,
+    profile_source="",
+):
+    return DiagnosticReport(
+        status="warning",
+        created_at=100.0,
+        config={"path": "/private/config.yaml", "marker": report_marker},
+        hermes={"root": "/private/hermes", "status": "supported"},
+        streaming={"status": "enabled"},
+        install_state={
+            "status": "incomplete",
+            "recovery_executable": executable,
+            "recovery_fingerprint": recovery_fingerprint,
+        },
+        routing={"profile_id": "default", "profile_source": profile_source},
+        runtime={},
+        findings=(
+            DiagnosticFinding(
+                code="owned_incomplete",
+                severity="warning",
+                message="Hook state needs repair.",
+            ),
+        ),
+    )
+
+
+async def test_operations_callbacks_keep_full_recovery_fingerprint_internal(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    full_fingerprint = "a" * 64
+    report = DiagnosticReport(
+        status="warning",
+        created_at=100.0,
+        config={"path": "/private/config.yaml", "marker": "full-fingerprint"},
+        hermes={"root": "/private/hermes", "status": "supported"},
+        streaming={"status": "enabled"},
+        install_state={
+            "status": "incomplete",
+            "recovery_executable": True,
+            "recovery_fingerprint": full_fingerprint[:12],
+        },
+        routing={"profile_id": "default"},
+        runtime={},
+        findings=(
+            DiagnosticFinding(
+                code="owned_incomplete",
+                severity="warning",
+                message="Hook state needs repair.",
+            ),
+        ),
+        internal_recovery_fingerprint=full_fingerprint,
+    )
+    calls = []
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (report, SimpleNamespace(root=Path("/private/hermes"))),
+    )
+    monkeypatch.setattr(
+        sidecar_server,
+        "execute_recovery",
+        lambda *args: calls.append(args) or SimpleNamespace(status="repaired"),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_doctor",
+                "chat_type": "private",
+                "operator": "ou_owner",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        card = feishu_client.sent[0][1]
+        details = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                operations_button(card, "查看诊断"), chat_id="oc_private"
+            ),
+        )
+        details_body = await details.json()
+        repair = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                operations_button(details_body["card"], "安全修复"),
+                chat_id="oc_private",
+            ),
+        )
+        confirm = operations_button((await repair.json())["card"], "确认修复")
+        completed = await test_client.post(
+            "/card/actions", json=operations_action_payload(confirm, chat_id="oc_private")
+        )
+        completed_body = await completed.json()
+    finally:
+        await test_client.close()
+
+    assert details_body["ok"] is True
+    assert completed_body["ok"] is True
+    assert calls == [(SimpleNamespace(root=Path("/private/hermes")), full_fingerprint)]
+
+
+def operations_button(card, label):
+    def find_button(elements):
+        for element in elements:
+            if element.get("tag") == "button":
+                text = element.get("text")
+                behaviors = element.get("behaviors")
+                if (
+                    isinstance(text, dict)
+                    and text.get("content") == label
+                    and isinstance(behaviors, list)
+                    and behaviors
+                    and isinstance(behaviors[0], dict)
+                    and isinstance(behaviors[0].get("value"), dict)
+                ):
+                    return behaviors[0]["value"]
+            if element.get("tag") == "column_set":
+                for column in element.get("columns", []):
+                    value = find_button(column.get("elements", []))
+                    if value is not None:
+                        return value
+            for button in element.get("actions", []):
+                if button["text"]["content"] == label:
+                    return button["value"]
+        return None
+
+    value = find_button(card["body"]["elements"])
+    if value is not None:
+        return value
+    raise AssertionError(f"missing operations button: {label}")
+
+
+def operations_action_payload(
+    value,
+    *,
+    chat_id="oc_group",
+    operator="ou_owner",
+    profile_id="",
+    proof_profile_id="",
+    transport_secret=None,
+):
+    context = {"open_chat_id": chat_id}
+    if profile_id:
+        context["profile_id"] = profile_id
+    proof_profile_id = proof_profile_id or profile_id or "default"
+    timestamp = int(sidecar_server.time.time())
+    token = str(value.get("token") or "")
+    encoded = token.split(".", 1)[0]
+    claims = json.loads(
+        base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+    )
+    proof = sign_transport_proof(
+        transport_secret
+        or derive_operation_transport_secret(
+            TRANSPORT_ROOT_SECRET,
+            claims["operation_id"],
+        ),
+        token=token,
+        action=str(value.get("operation_action") or ""),
+        callback_chat_id=chat_id,
+        callback_profile_id=proof_profile_id,
+        callback_profile_scope=str(value.get("profile_scope") or ""),
+        operator_open_id=operator,
+        timestamp=timestamp,
+    )
+    return {
+        "adapter_transport_proof": {
+            "timestamp": timestamp,
+            "signature": proof,
+        },
+        "event": {
+            "action": {"value": value},
+            "context": context,
+            "operator": {"open_id": operator} if operator else {},
+        }
+    }
 
 
 def event_payload(
@@ -130,6 +437,14 @@ async def wait_for_card_update(feishu_client, expected_text, attempts=80):
     raise AssertionError(f"card update containing {expected_text!r} was not observed")
 
 
+async def _wait_until(predicate, attempts=80):
+    for _ in range(attempts):
+        if predicate():
+            return
+        await _REAL_ASYNCIO_SLEEP(0.01)
+    raise AssertionError("condition was not observed")
+
+
 async def wait_for_metric(test_client, metric_name, expected_value, attempts=80):
     body = None
     for _ in range(attempts):
@@ -141,6 +456,23 @@ async def wait_for_metric(test_client, metric_name, expected_value, attempts=80)
     raise AssertionError(
         f"metric {metric_name!r} did not become {expected_value!r}: {body}"
     )
+
+
+def test_create_app_does_not_require_a_current_event_loop():
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            previous_loop = asyncio.get_event_loop()
+    except RuntimeError:
+        previous_loop = None
+    try:
+        asyncio.set_event_loop(None)
+        app = create_app(FakeFeishuClient())
+    finally:
+        asyncio.set_event_loop(previous_loop)
+
+    assert app[sidecar_server.OPERATIONS_DIAGNOSTIC_SEMAPHORE_KEY]["value"] is None
+    assert app[sidecar_server.OPERATIONS_PUBLISH_LOCKS_GUARD_KEY]["value"] is None
 
 
 async def test_health_reports_healthy_status_and_active_sessions(client):
@@ -173,10 +505,349 @@ async def test_health_reports_healthy_status_and_active_sessions(client):
         "feishu_update_latency_ms": 0,
         "cron_cards_sent": 0,
         "cron_fallbacks": 0,
+        "recovery_plans_available": 0,
+        "recovery_attempts": 0,
+        "recovery_successes": 0,
+        "recovery_refusals": 0,
+        "profile_mismatches": 0,
+        "sessions_collected": 0,
+        "zombie_sessions_collected": 0,
+        "flush_controllers_collected": 0,
     }
     assert body["reply_index"] == {"entries": 0, "last_lookup": {}}
     assert body["cron"] == {"cards_sent": 0, "fallbacks": 0}
     assert body["profile_diagnostics"] == {}
+
+
+def test_cleanup_runtime_state_removes_related_state_and_counts_once():
+    app = create_app(FakeFeishuClient())
+    session_key = "profile:om_terminal"
+    alias_key = "profile:om_reply"
+    session = CardSession("oc_1", "om_terminal", "oc_1")
+    session.status = "completed"
+    session.updated_at = 100.0
+    session.answer_text = "final answer"
+    session.active_interaction = InteractionState(
+        interaction_id="approval-old",
+        kind="approval",
+        prompt="Old approval",
+        status="completed",
+    )
+    controller = FlushController(interval_seconds=0.2, metrics=app[METRICS_KEY])
+    controller.close()
+    app[SESSIONS_KEY][session_key] = session
+    app[SESSION_ALIASES_KEY][alias_key] = session_key
+    app[MESSAGE_LOCKS_KEY][session_key] = SimpleNamespace(locked=lambda: False)
+    app[MESSAGE_LOCKS_KEY][alias_key] = SimpleNamespace(locked=lambda: False)
+    app[FEISHU_MESSAGE_IDS_KEY][session_key] = "om_card"
+    app[MESSAGE_BOT_IDS_KEY][session_key] = "profile:default"
+    app[SESSION_CARD_CONFIGS_KEY][session_key] = {"title": "Card"}
+    app[FLUSH_CONTROLLERS_KEY][session_key] = controller
+    sidecar_server._store_interaction_result(app, session)
+    session.active_interaction = InteractionState(
+        interaction_id="approval-latest",
+        kind="approval",
+        prompt="Latest approval",
+        status="completed",
+    )
+    sidecar_server._store_interaction_result(app, session)
+    sidecar_server._store_card_summary(
+        app,
+        SidecarEvent.from_dict(event_payload("message.completed", 1)),
+        session,
+        "om_card_previous_turn",
+    )
+    sidecar_server._store_card_summary(
+        app,
+        SidecarEvent.from_dict(event_payload("message.completed", 1)),
+        session,
+        "om_card",
+    )
+
+    result = cleanup_runtime_state(app, now=3700.0)
+
+    assert result.session_keys == (session_key,)
+    assert result.reasons == ("terminal_retention_expired",)
+    assert result.controllers_collected == 1
+    for state in (
+        app[SESSIONS_KEY],
+        app[SESSION_ALIASES_KEY],
+        app[MESSAGE_LOCKS_KEY],
+        app[FEISHU_MESSAGE_IDS_KEY],
+        app[MESSAGE_BOT_IDS_KEY],
+        app[SESSION_CARD_CONFIGS_KEY],
+        app[FLUSH_CONTROLLERS_KEY],
+    ):
+        assert session_key not in state
+        assert alias_key not in state
+    assert app[CARD_SUMMARIES_KEY] == {}
+    assert app[CARD_SUMMARY_SESSION_KEYS_KEY] == {}
+    assert app[INTERACTION_RESULTS_KEY] == {}
+    assert app[INTERACTION_RESULT_SESSION_KEYS_KEY] == {}
+    assert app[METRICS_KEY].sessions_collected == 1
+    assert app[METRICS_KEY].zombie_sessions_collected == 0
+    assert app[METRICS_KEY].flush_controllers_collected == 1
+    assert session_key not in str(app[DIAGNOSTICS_KEY]["cleanup_history"])
+    assert app[DIAGNOSTICS_KEY]["cleanup_history"][-1]["session_key_hash"]
+
+    assert cleanup_runtime_state(app, now=9999.0).session_keys == ()
+    assert app[METRICS_KEY].sessions_collected == 1
+    assert app[METRICS_KEY].flush_controllers_collected == 1
+
+
+async def test_cleanup_reassigned_alias_keeps_new_session_routable():
+    app = create_app(FakeFeishuClient())
+    old_key = "om_old"
+    new_key = "om_new"
+    old = CardSession("conversation-1", old_key, "oc_abc")
+    old.status = "completed"
+    old.updated_at = 100.0
+    active = CardSession("conversation-1", new_key, "oc_abc")
+    active.updated_at = 3700.0
+    active.answer_text = "active"
+    app[SESSIONS_KEY][old_key] = old
+    app[SESSIONS_KEY][new_key] = active
+    app[FEISHU_MESSAGE_IDS_KEY][new_key] = "om_active_card"
+    app[MESSAGE_BOT_IDS_KEY][new_key] = "profile:default"
+    app[SESSION_CARD_CONFIGS_KEY][new_key] = {"title": "Card"}
+
+    class ReassignedAliases(dict):
+        def __init__(self):
+            super().__init__({"om_reply": new_key})
+            self._first_items_call = True
+
+        def items(self):
+            if self._first_items_call:
+                self._first_items_call = False
+                return (("om_reply", old_key),)
+            return super().items()
+
+    app[SESSION_ALIASES_KEY] = ReassignedAliases()
+    cleanup_runtime_state(app, now=3700.0)
+
+    assert old_key not in app[SESSIONS_KEY]
+    assert app[SESSION_ALIASES_KEY]["om_reply"] == new_key
+    assert app[FEISHU_MESSAGE_IDS_KEY][new_key] == "om_active_card"
+    assert app[MESSAGE_BOT_IDS_KEY][new_key] == "profile:default"
+    assert app[SESSION_CARD_CONFIGS_KEY][new_key] == {"title": "Card"}
+
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/events",
+            json=event_payload(
+                "answer.delta",
+                1,
+                {"text": "fresh", "reply_to_message_id": "om_reply"},
+                message_id="om_followup",
+            ),
+        )
+        body = await response.json()
+    finally:
+        await test_client.close()
+
+    assert response.status == 200
+    assert body == {"ok": True, "applied": True}
+    assert app[SESSIONS_KEY][new_key] is active
+    assert active.answer_text == "activefresh"
+
+
+async def test_cleanup_runtime_state_keeps_active_interactions_and_inflight_aliases():
+    app = create_app(FakeFeishuClient())
+    interaction_key = "om_interaction"
+    inflight_key = "om_inflight"
+    inflight_alias = "om_inflight_reply"
+    interaction = CardSession("oc_1", interaction_key, "oc_1")
+    interaction.updated_at = 0.0
+    interaction.active_interaction = InteractionState(
+        interaction_id="approval-1",
+        kind="approval",
+        prompt="允许吗？",
+    )
+    inflight = CardSession("oc_1", inflight_key, "oc_1")
+    inflight.status = "failed"
+    inflight.updated_at = 0.0
+    alias_lock = asyncio.Lock()
+    await alias_lock.acquire()
+    app[SESSIONS_KEY].update(
+        {interaction_key: interaction, inflight_key: inflight}
+    )
+    app[SESSION_ALIASES_KEY][inflight_alias] = inflight_key
+    app[MESSAGE_LOCKS_KEY][inflight_alias] = alias_lock
+    sidecar_server._store_interaction_result(app, interaction)
+    inflight.answer_text = "in flight"
+    app[FEISHU_MESSAGE_IDS_KEY][inflight_key] = "om_inflight_card"
+    sidecar_server._store_card_summary(
+        app,
+        SidecarEvent.from_dict(
+            event_payload(
+                "message.failed",
+                1,
+                message_id=inflight_key,
+            )
+        ),
+        inflight,
+        "om_inflight_card",
+    )
+
+    try:
+        result = cleanup_runtime_state(app, now=5000.0)
+    finally:
+        alias_lock.release()
+
+    assert result.session_keys == ()
+    assert set(app[SESSIONS_KEY]) == {interaction_key, inflight_key}
+    assert app[INTERACTION_RESULTS_KEY]["approval-1"]["status"] == "pending"
+    assert app[CARD_SUMMARIES_KEY]["om_inflight_card"]["summary"] == "in flight"
+    assert app[INTERACTION_RESULT_SESSION_KEYS_KEY]["approval-1"] == interaction_key
+    assert app[CARD_SUMMARY_SESSION_KEYS_KEY]["om_inflight_card"] == inflight_key
+    assert app[METRICS_KEY].sessions_collected == 0
+
+
+def test_cleanup_history_is_hashed_and_bounded_to_fifty_entries():
+    app = create_app(FakeFeishuClient())
+    raw_keys = []
+    for index in range(55):
+        session_key = f"private-session-{index}"
+        raw_keys.append(session_key)
+        session = CardSession("oc_1", session_key, "oc_1")
+        session.status = "failed"
+        session.updated_at = 0.0
+        app[SESSIONS_KEY][session_key] = session
+
+    result = cleanup_runtime_state(app, now=3600.0)
+
+    history = app[DIAGNOSTICS_KEY]["cleanup_history"]
+    assert len(result.session_keys) == 55
+    assert len(history) == 50
+    assert app[METRICS_KEY].sessions_collected == 55
+    assert not any(raw_key in str(history) for raw_key in raw_keys)
+
+
+def test_closed_controller_cleanup_requires_same_instance():
+    app = create_app(FakeFeishuClient())
+    session_key = "om_reused"
+    old = FlushController(interval_seconds=0.2, metrics=app[METRICS_KEY])
+    replacement = FlushController(interval_seconds=0.2, metrics=app[METRICS_KEY])
+    old.close()
+    app[FLUSH_CONTROLLERS_KEY][session_key] = replacement
+
+    assert not cleanup_closed_controller(app, session_key, old, now=100.0)
+    assert app[FLUSH_CONTROLLERS_KEY][session_key] is replacement
+    assert app[METRICS_KEY].flush_controllers_collected == 0
+
+
+def test_orphan_message_lock_cleanup_requires_same_instance_and_no_users():
+    app = create_app(FakeFeishuClient())
+    lock_key = "om_failed"
+    old = SimpleNamespace(locked=lambda: False)
+    replacement = SimpleNamespace(locked=lambda: False)
+    app[MESSAGE_LOCKS_KEY][lock_key] = replacement
+
+    assert not cleanup_orphan_message_lock(app, lock_key, old)
+    app[MESSAGE_LOCK_USERS_KEY][lock_key] = 1
+    assert not cleanup_orphan_message_lock(app, lock_key, replacement)
+    assert app[MESSAGE_LOCKS_KEY][lock_key] is replacement
+
+    app[MESSAGE_LOCK_USERS_KEY].pop(lock_key)
+    assert cleanup_orphan_message_lock(app, lock_key, replacement)
+    assert lock_key not in app[MESSAGE_LOCKS_KEY]
+
+
+async def test_terminal_update_removes_its_closed_controller(client):
+    test_client, feishu_client = client
+
+    await test_client.post("/events", json=event_payload("message.started", 0))
+    await test_client.post(
+        "/events",
+        json=event_payload("message.completed", 1, {"answer": "最终答案"}),
+    )
+    await wait_for_card_update(feishu_client, "最终答案")
+    for _ in range(20):
+        if "hermes-message-1" not in test_client.app[FLUSH_CONTROLLERS_KEY]:
+            break
+        await _REAL_ASYNCIO_SLEEP(0)
+
+    assert "hermes-message-1" not in test_client.app[FLUSH_CONTROLLERS_KEY]
+    assert test_client.app[METRICS_KEY].flush_controllers_collected == 1
+
+
+async def test_terminal_task_exception_still_removes_closed_controller_once(caplog):
+    app = create_app(FakeFeishuClient())
+    session_key = "om_terminal_error"
+    controller = FlushController(interval_seconds=0.2, metrics=app[METRICS_KEY])
+    controller.close()
+    app[FLUSH_CONTROLLERS_KEY][session_key] = controller
+
+    async def fail_update():
+        raise RuntimeError("terminal update failed")
+
+    task = asyncio.create_task(fail_update())
+    with pytest.raises(RuntimeError, match="terminal update failed"):
+        await task
+
+    sidecar_server._post_terminal_cleanup(app, session_key, controller, task)
+    sidecar_server._post_terminal_cleanup(app, session_key, controller, task)
+
+    assert session_key not in app[FLUSH_CONTROLLERS_KEY]
+    assert app[METRICS_KEY].flush_controllers_collected == 1
+    assert "terminal card update task failed" in caplog.text
+
+
+async def test_terminal_task_cancel_preserves_replacement_controller():
+    app = create_app(FakeFeishuClient())
+    session_key = "om_terminal_reused"
+    old = FlushController(interval_seconds=0.2, metrics=app[METRICS_KEY])
+    replacement = FlushController(interval_seconds=0.2, metrics=app[METRICS_KEY])
+    old.close()
+    app[FLUSH_CONTROLLERS_KEY][session_key] = replacement
+
+    task = asyncio.create_task(asyncio.sleep(60))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    sidecar_server._post_terminal_cleanup(app, session_key, old, task)
+
+    assert app[FLUSH_CONTROLLERS_KEY][session_key] is replacement
+    assert app[METRICS_KEY].flush_controllers_collected == 0
+
+
+async def test_runtime_cleanup_starts_one_sixty_second_task_and_cancels_it(monkeypatch):
+    delays = []
+    second_sleep_started = asyncio.Event()
+
+    async def fake_cleanup_sleep(delay):
+        delays.append(delay)
+        if len(delays) == 1:
+            return
+        second_sleep_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(sidecar_server, "_cleanup_sleep", fake_cleanup_sleep)
+    app = create_app(FakeFeishuClient())
+    zombie = CardSession("oc_1", "om_zombie", "oc_1")
+    zombie.updated_at = 0.0
+    app[SESSIONS_KEY]["om_zombie"] = zombie
+    test_client = TestClient(TestServer(app))
+
+    await test_client.start_server()
+    task = app[CLEANUP_TASK_KEY]
+    await asyncio.wait_for(second_sleep_started.wait(), timeout=1.0)
+    try:
+        assert delays == [
+            RUNTIME_CLEANUP_INTERVAL_SECONDS,
+            RUNTIME_CLEANUP_INTERVAL_SECONDS,
+        ]
+        assert RUNTIME_CLEANUP_INTERVAL_SECONDS == 60.0
+        assert "om_zombie" not in app[SESSIONS_KEY]
+        assert app[METRICS_KEY].zombie_sessions_collected == 1
+        assert not task.done()
+    finally:
+        await test_client.close()
+
+    assert task.cancelled()
 
 
 async def test_hfc_help_command_sends_read_only_diagnostic_card(client):
@@ -234,11 +905,11 @@ async def test_hfc_command_request_returns_before_slow_feishu_send():
     post_task = asyncio.create_task(
         test_client.post(
             "/commands",
-            json={
+            json=signed_operations_command({
                 "command": "status",
                 "chat_id": "oc_secret_chat",
                 "message_id": "om_secret_message",
-            },
+            }),
         )
     )
     try:
@@ -290,12 +961,12 @@ async def test_hfc_status_group_unbound_shows_binding_hint_and_slash_guidance():
     try:
         response = await test_client.post(
             "/commands",
-            json={
+            json=signed_operations_command({
                 "command": "status",
                 "chat_id": "oc_group",
                 "message_id": "om_group_status",
                 "data": {"chat_type": "group"},
-            },
+            }),
         )
     finally:
         await test_client.close()
@@ -340,6 +1011,2616 @@ async def test_hfc_monitor_command_reports_safe_metrics(client):
     assert "active_sessions: 0" in content
     assert "oc_monitor_secret" not in content
     assert "om_monitor_secret" not in content
+
+
+async def test_hfc_doctor_sends_group_owned_operations_card(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    detection = SimpleNamespace(root=Path("/private/hermes"))
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (report, detection),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_group",
+                "message_id": "om_doctor",
+                "chat_type": "group",
+                "operator": "ou_initiator",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        card = feishu_client.sent[0][1]
+        repair = operations_button(card, "安全修复")
+        rejected = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(repair, operator="ou_other"),
+        )
+        body = await rejected.json()
+        accepted = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(repair, operator="ou_initiator"),
+        )
+        confirm = operations_button((await accepted.json())["card"], "确认修复")
+        rejected_confirm = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(confirm, operator="ou_other"),
+        )
+        rejected_confirm_body = await rejected_confirm.json()
+    finally:
+        await test_client.close()
+
+    assert response.status == 200
+    assert rejected.status == 200
+    assert body["ok"] is False
+    assert rejected_confirm_body["ok"] is False
+    assert operations_button(rejected_confirm_body["card"], "确认修复")
+    assert "ou_initiator" not in str(card)
+    assert "oc_group" not in str(card)
+    assert operations_button(body["card"], "安全修复")
+
+
+async def test_hfc_doctor_acknowledges_before_slow_diagnosis_and_binds_operation(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    detection = SimpleNamespace(root=Path("/private/hermes"))
+
+    def slow_report(*args, **kwargs):
+        time.sleep(1.0)
+        return report, detection
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", slow_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        started = time.monotonic()
+        response = await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_slow_doctor",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        elapsed = time.monotonic() - started
+        body = await response.json()
+        operation_id = body["operation_id"]
+        store = app[sidecar_server.OPERATIONS_STORE_KEY]
+        record = store._records[operation_id]
+
+        assert elapsed < 0.8
+        assert record.state == "preparing"
+        assert operation_id in store._transport_secrets
+
+        await _wait_until(lambda: bool(feishu_client.sent), attempts=160)
+    finally:
+        await test_client.close()
+
+    assert response.status == 200
+    assert body["ok"] is True
+    assert body["handled"] is True
+    assert feishu_client.sent[0][0] == "oc_private"
+
+
+async def test_hfc_doctor_reuses_preparing_operation_and_starts_one_diagnosis(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    calls = []
+
+    def build_report(*args, **kwargs):
+        calls.append(True)
+        time.sleep(0.05)
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", build_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        payload = {
+            "command": "doctor",
+            "chat_id": "oc_private",
+            "message_id": "om_duplicate_doctor",
+            "chat_type": "private",
+        }
+        first = await test_client.post(
+            "/commands", json=signed_operations_command(payload)
+        )
+        second = await test_client.post(
+            "/commands", json=signed_operations_command(payload)
+        )
+        first_body = await first.json()
+        second_body = await second.json()
+        await _wait_until(lambda: bool(feishu_client.sent))
+    finally:
+        await test_client.close()
+
+    assert first_body["operation_id"] == second_body["operation_id"]
+    assert calls == [True]
+    assert len(feishu_client.sent) == 1
+
+
+async def test_hfc_doctor_marks_background_failure_without_exception_details(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+
+    def fail_report(*args, **kwargs):
+        raise RuntimeError("private-token-should-not-appear")
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", fail_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_failing_doctor",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        operation_id = (await response.json())["operation_id"]
+        await _wait_until(lambda: bool(feishu_client.sent))
+        record = app[sidecar_server.OPERATIONS_STORE_KEY]._records[operation_id]
+    finally:
+        await test_client.close()
+
+    assert record.state == "failed"
+    assert "private-token-should-not-appear" not in str(feishu_client.sent)
+    assert "诊断暂时不可用" in str(feishu_client.sent[0][1])
+
+
+async def test_hfc_doctor_timeout_marks_failed_and_releases_store_capacity(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    started = threading.Event()
+    release = threading.Event()
+    first_finished = threading.Event()
+    calls = []
+
+    def blocked_report(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            started.set()
+            release.wait(1.0)
+            first_finished.set()
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "OPERATIONS_DIAGNOSTIC_TIMEOUT_SECONDS", 0.02, raising=False)
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", blocked_report)
+    app = create_app(feishu_client)
+    app[sidecar_server.OPERATIONS_STORE_KEY] = OperationStore(
+        secret=b"store", max_records=1
+    )
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        first = await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_timeout_first",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        first_operation_id = (await first.json())["operation_id"]
+        await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=1.0)
+        await _wait_until(lambda: bool(feishu_client.sent), attempts=40)
+        failed = app[sidecar_server.OPERATIONS_STORE_KEY]._records[first_operation_id]
+        second = await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_timeout_second",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        second_operation_id = (await second.json())["operation_id"]
+        await _wait_until(lambda: len(feishu_client.sent) == 2)
+        release.set()
+        await asyncio.wait_for(asyncio.to_thread(first_finished.wait), timeout=1.0)
+        await _wait_until(
+            lambda: not app[sidecar_server.OPERATIONS_DIAGNOSTIC_TASKS_KEY]
+        )
+    finally:
+        release.set()
+        await test_client.close()
+
+    assert failed.state == "failed"
+    assert "诊断暂时不可用" in str(feishu_client.sent[0][1])
+    assert second.status == 200
+    assert len(feishu_client.sent) == 2
+    assert set(app[sidecar_server.OPERATIONS_STORE_KEY]._records) == {
+        second_operation_id
+    }
+
+
+async def test_hfc_doctor_diagnostics_do_not_queue_beyond_executor_workers(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def blocked_report(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == sidecar_server.MAX_CONCURRENT_OPERATION_DIAGNOSTICS:
+            started.set()
+        release.wait(1.0)
+        return operations_report(), SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "OPERATIONS_DIAGNOSTIC_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", blocked_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        executor = app[sidecar_server.OPERATIONS_DIAGNOSTIC_EXECUTOR_KEY]
+        responses = await asyncio.gather(
+            *[
+                test_client.post(
+                    "/commands",
+                    json=signed_operations_command(
+                        {
+                            "command": "doctor",
+                            "chat_id": "oc_private",
+                            "message_id": f"om_bounded_{index}",
+                            "chat_type": "private",
+                        }
+                    ),
+                )
+                for index in range(
+                    sidecar_server.MAX_CONCURRENT_OPERATION_DIAGNOSTICS + 1
+                )
+            ]
+        )
+        await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=1.0)
+        await _wait_until(
+            lambda: len(feishu_client.sent)
+            == sidecar_server.MAX_CONCURRENT_OPERATION_DIAGNOSTICS + 1,
+            attempts=80,
+        )
+    finally:
+        release.set()
+        await test_client.close()
+
+    assert all(response.status == 200 for response in responses)
+    assert executor._max_workers == sidecar_server.MAX_CONCURRENT_OPERATION_DIAGNOSTICS
+    assert len(calls) == sidecar_server.MAX_CONCURRENT_OPERATION_DIAGNOSTICS
+
+
+async def test_hfc_doctor_timeout_includes_waiting_for_diagnostic_slot(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    monkeypatch.setattr(sidecar_server, "OPERATIONS_DIAGNOSTIC_TIMEOUT_SECONDS", 0.02)
+    app = create_app(feishu_client)
+    semaphore = sidecar_server._operations_diagnostic_semaphore(app)
+    for _ in range(sidecar_server.MAX_CONCURRENT_OPERATION_DIAGNOSTICS):
+        await semaphore.acquire()
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_waiting_timeout",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        operation_id = (await response.json())["operation_id"]
+        tasks = app[sidecar_server.OPERATIONS_DIAGNOSTIC_TASKS_KEY]
+        await _wait_until(lambda: bool(tasks), attempts=200)
+        await asyncio.wait_for(asyncio.shield(next(iter(tasks))), timeout=2.0)
+        record = app[sidecar_server.OPERATIONS_STORE_KEY]._records[operation_id]
+    finally:
+        for _ in range(sidecar_server.MAX_CONCURRENT_OPERATION_DIAGNOSTICS):
+            semaphore.release()
+        await test_client.close()
+
+    assert response.status == 200
+    assert record.state == "failed"
+
+
+async def test_recheck_returns_immediately_when_diagnostic_executor_is_busy(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (report, SimpleNamespace(root=Path("/private/hermes"))),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_busy_action",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        recheck = operations_button(feishu_client.sent[0][1], "重新检测")
+        futures = app[sidecar_server.OPERATIONS_DIAGNOSTIC_FUTURES_KEY]
+        futures.update(
+            range(sidecar_server.MAX_CONCURRENT_OPERATION_DIAGNOSTICS)
+        )
+        response = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(recheck, chat_id="oc_private"),
+        )
+        body = await response.json()
+        await wait_for_card_update(feishu_client, "诊断暂时不可用")
+        record = app[sidecar_server.OPERATIONS_STORE_KEY].current_successor(
+            body["operation_id"]
+        )
+    finally:
+        futures.clear()
+        await test_client.close()
+
+    assert response.status == 200
+    assert "正在重新检测" in str(body["card"])
+    assert record is not None
+    assert record.state == "failed"
+    assert operations_button(feishu_client.updated[-1][1], "重新检测")
+
+
+async def test_recheck_callback_returns_preparing_card_before_blocked_report_and_patches_same_card(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    recheck_started = threading.Event()
+    release_recheck = threading.Event()
+    calls = []
+
+    def blocked_report(*args, **kwargs):
+        calls.append(args[3])
+        if args[3] == "fallback_default":
+            recheck_started.set()
+            release_recheck.wait(2.0)
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", blocked_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_fast_recheck",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        recheck = operations_button(feishu_client.sent[0][1], "重新检测")
+        original_id = next(iter(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]))
+        started = time.monotonic()
+        first = await asyncio.wait_for(
+            test_client.post(
+                "/card/actions",
+                json=operations_action_payload(recheck, chat_id="oc_private"),
+            ),
+            timeout=0.5,
+        )
+        elapsed = time.monotonic() - started
+        first_body = await first.json()
+        await asyncio.wait_for(asyncio.to_thread(recheck_started.wait), timeout=1.0)
+        repeated = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(recheck, chat_id="oc_private"),
+        )
+        repeated_body = await repeated.json()
+        release_recheck.set()
+        await wait_for_card_update(feishu_client, "诊断摘要")
+    finally:
+        release_recheck.set()
+        await test_client.close()
+
+    assert elapsed < 0.5
+    assert "正在重新检测" in str(first_body["card"])
+    assert first_body["operation_id"] == repeated_body["operation_id"]
+    assert first_body["operation_id"] != original_id
+    assert calls == ["", "fallback_default"]
+    assert len(feishu_client.sent) == 1
+    assert len(feishu_client.updated) == 3
+    assert "正在重新检测" in str(feishu_client.updated[0][1])
+    assert "诊断摘要" in str(feishu_client.updated[-1][1])
+
+
+async def test_same_fingerprint_slow_recheck_patch_keeps_one_worker_and_links_old_token(
+    monkeypatch,
+):
+    feishu_client = ControlledOperationsUpdateClient()
+    feishu_client.update_failures_remaining = sidecar_server.UPDATE_MAX_ATTEMPTS
+    report = operations_report()
+    calls = []
+    unexpected_second_recheck = asyncio.Event()
+
+    def build_report(*args, **_kwargs):
+        profile_source = args[3]
+        calls.append(profile_source)
+        if profile_source == "fallback_default" and calls.count("fallback_default") > 1:
+            unexpected_second_recheck.set()
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", build_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_slow_recheck",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        recheck = operations_button(feishu_client.sent[0][1], "重新检测")
+        first = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(recheck, chat_id="oc_private"),
+        )
+        first_body = await first.json()
+        preparing_id = first_body["operation_id"]
+        old_preparing_recheck = operations_button(first_body["card"], "重新检测")
+        active_transport_secret = app[
+            sidecar_server.OPERATIONS_STORE_KEY
+        ]._transport_secrets[preparing_id]
+        await asyncio.wait_for(feishu_client.update_started.wait(), timeout=1.0)
+
+        repeated = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                old_preparing_recheck,
+                chat_id="oc_private",
+                transport_secret=active_transport_secret,
+            ),
+        )
+        repeated_body = await repeated.json()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(unexpected_second_recheck.wait(), timeout=0.1)
+
+        feishu_client.release_update.set()
+        await _wait_until(
+            lambda: not app[sidecar_server.OPERATIONS_DIAGNOSTIC_TASKS_KEY]
+        )
+        after_failure = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                old_preparing_recheck,
+                chat_id="oc_private",
+                transport_secret=active_transport_secret,
+            ),
+        )
+        after_failure_body = await after_failure.json()
+    finally:
+        feishu_client.release_update.set()
+        await test_client.close()
+
+    assert first.status == 200
+    assert repeated.status == 200
+    assert after_failure.status == 200
+    assert calls == ["", "fallback_default"]
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+
+    def record_for(operation_id):
+        return store._records.get(operation_id) or store._recheck_predecessors.get(
+            operation_id
+        )
+
+    preparing = record_for(preparing_id)
+    repeated_record = record_for(repeated_body["operation_id"])
+    after_failure_record = record_for(after_failure_body["operation_id"])
+    assert preparing is not None
+    assert repeated_record is not None
+    assert after_failure_record is not None
+    assert repeated_record.transport_lineage_id == preparing.transport_lineage_id
+    assert after_failure_record.transport_lineage_id == preparing.transport_lineage_id
+    assert "诊断摘要" in str(after_failure_body["card"])
+
+
+async def test_snapshot_actions_never_rebuild_a_report(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    calls = []
+
+    def build_report(*args, **kwargs):
+        calls.append(True)
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", build_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_snapshot_actions",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        card = feishu_client.sent[0][1]
+        details = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                operations_button(card, "查看诊断"), chat_id="oc_private"
+            ),
+        )
+        repair = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                operations_button((await details.json())["card"], "安全修复"),
+                chat_id="oc_private",
+            ),
+        )
+        cancelled = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                operations_button((await repair.json())["card"], "取消"),
+                chat_id="oc_private",
+            ),
+        )
+        dismissed = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                operations_button((await cancelled.json())["card"], "暂不处理"),
+                chat_id="oc_private",
+            ),
+        )
+        assert (await dismissed.json())["ok"] is True
+    finally:
+        await test_client.close()
+
+    assert calls == [True]
+
+
+async def test_confirm_repair_returns_executing_card_before_fresh_evidence_and_runs_once(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    fresh_started = threading.Event()
+    release_fresh = threading.Event()
+    executions = []
+    calls = []
+
+    def blocked_report(*args, **kwargs):
+        calls.append(args[3])
+        if args[3] == "fallback_default":
+            fresh_started.set()
+            release_fresh.wait(2.0)
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", blocked_report)
+    monkeypatch.setattr(
+        sidecar_server,
+        "execute_recovery",
+        lambda *args: executions.append(args) or SimpleNamespace(status="repaired"),
+    )
+    monkeypatch.setattr(sidecar_server.shutil, "which", lambda _command: None)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_fast_confirm",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        repair = operations_button(feishu_client.sent[0][1], "安全修复")
+        confirmation = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(repair, chat_id="oc_private"),
+        )
+        confirm = operations_button((await confirmation.json())["card"], "确认修复")
+        started = time.monotonic()
+        first = await asyncio.wait_for(
+            test_client.post(
+                "/card/actions",
+                json=operations_action_payload(confirm, chat_id="oc_private"),
+            ),
+            timeout=0.5,
+        )
+        elapsed = time.monotonic() - started
+        first_body = await first.json()
+        await asyncio.wait_for(asyncio.to_thread(fresh_started.wait), timeout=1.0)
+        repeated = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(confirm, chat_id="oc_private"),
+        )
+        repeated_body = await repeated.json()
+        release_fresh.set()
+        await wait_for_card_update(feishu_client, "安全修复已完成")
+    finally:
+        release_fresh.set()
+        await test_client.close()
+
+    assert elapsed < 0.5
+    assert "正在安全修复" in str(first_body["card"])
+    assert first_body["operation_id"] == repeated_body["operation_id"]
+    assert calls == ["", "fallback_default", "fallback_default"]
+    assert len(executions) == 1
+    assert len(feishu_client.sent) == 1
+    assert len(feishu_client.updated) == 4
+    assert "确认安全修复" in str(feishu_client.updated[0][1])
+    assert any("正在安全修复" in str(card) for _message_id, card in feishu_client.updated)
+    assert "安全修复已完成" in str(feishu_client.updated[-1][1])
+    assert not any(
+        record.state == "executing"
+        for record in app[sidecar_server.OPERATIONS_STORE_KEY]._records.values()
+    )
+
+
+async def test_repair_confirmation_step_returns_from_snapshot_without_diagnosis(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    diagnostic_started = threading.Event()
+    diagnostic_release = threading.Event()
+
+    def blocked_report(*args, **kwargs):
+        if args[3] == "callback":
+            diagnostic_started.set()
+            diagnostic_release.wait(2.0)
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "OPERATIONS_DIAGNOSTIC_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", blocked_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_timeout_action",
+                    "chat_type": "private",
+                }
+            ),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        repair = operations_button(feishu_client.sent[0][1], "安全修复")
+        started = time.monotonic()
+        response = await asyncio.wait_for(
+            test_client.post(
+                "/card/actions",
+                json=operations_action_payload(repair, chat_id="oc_private"),
+            ),
+            timeout=0.5,
+        )
+        elapsed = time.monotonic() - started
+        body = await response.json()
+        await asyncio.sleep(0.05)
+        record = app[sidecar_server.OPERATIONS_STORE_KEY]._records[
+            json.loads(
+                base64.urlsafe_b64decode(
+                    str(repair["token"]).split(".", 1)[0]
+                    + "=" * (-len(str(repair["token"]).split(".", 1)[0]) % 4)
+                )
+            )["operation_id"]
+        ]
+    finally:
+        diagnostic_release.set()
+        await test_client.close()
+
+    assert response.status == 200
+    assert elapsed < 0.5
+    assert not diagnostic_started.is_set()
+    assert "确认安全修复" in str(body["card"])
+    assert record.state == "confirm_repair"
+
+
+async def test_late_repair_worker_cannot_reclaim_delivery_or_inflight_capacity():
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    app = create_app(feishu_client)
+    store = OperationStore(secret=b"store", max_records=2)
+    active = store.create(
+        chat_id="oc_active",
+        profile_id="default",
+        report_fingerprint="active-report",
+        recovery_fingerprint="active-recovery",
+        group=False,
+        transport_secret=b"a" * 32,
+    )
+    active.state = "executing"
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=report.fingerprint,
+        recovery_fingerprint=report.recovery_fingerprint,
+        group=False,
+        transport_secret=b"b" * 32,
+    )
+    operation.report = report
+    operation.state = "executing"
+    app[sidecar_server.OPERATIONS_STORE_KEY] = store
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+
+    await sidecar_server._finish_operations_repair(
+        app,
+        operation,
+        report,
+        state="repaired",
+        result={"message": "已完成安全修复并重新检测。"},
+    )
+    await sidecar_server._finish_operations_repair(
+        app,
+        operation,
+        report,
+        state="repaired",
+        result={"message": "late worker"},
+    )
+
+    assert len(feishu_client.updated) == 1
+    assert len(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]) == 1
+    assert operation.operation_id not in app[sidecar_server.OPERATIONS_DELIVERIES_KEY]
+    assert set(app[sidecar_server.OPERATIONS_STORE_KEY]._records) != {
+        active.operation_id,
+        operation.operation_id,
+    }
+    assert all(
+        record.state != "executing" or record.operation_id == active.operation_id
+        for record in app[sidecar_server.OPERATIONS_STORE_KEY]._records.values()
+    )
+
+
+async def test_delayed_old_confirmation_returns_current_successor_without_delivery_reversal():
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=report.fingerprint,
+        recovery_fingerprint=report.recovery_fingerprint,
+        group=False,
+        transport_secret=b"c" * 32,
+    )
+    operation.report = report
+    operation.state = "executing"
+    old_value = {
+        "hfc_action": "operations.select",
+        "operation_action": "confirm_repair",
+        "token": store.token(operation, "confirm_repair"),
+        "profile_scope": store.scope_fingerprint(operation),
+    }
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+    await sidecar_server._finish_operations_repair(
+        app,
+        operation,
+        report,
+        state="repaired",
+        result={"message": "已完成安全修复并重新检测。", "restart_available": False},
+    )
+    successor_id = next(iter(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]))
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                old_value,
+                chat_id="oc_private",
+                transport_secret=b"c" * 32,
+            ),
+        )
+        body = await response.json()
+    finally:
+        await test_client.close()
+
+    assert body["ok"] is True, body
+    assert body["operation_id"] == successor_id, body
+    assert set(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]) == {successor_id}
+    assert "安全修复已完成" in str(body["card"])
+
+
+async def test_operations_patch_failure_is_recorded_on_the_completed_card():
+    feishu_client = FakeFeishuClient()
+    feishu_client.update_failures_remaining = sidecar_server.UPDATE_MAX_ATTEMPTS
+    report = operations_report()
+    app = create_app(feishu_client)
+    operation = app[sidecar_server.OPERATIONS_STORE_KEY].create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=report.fingerprint,
+        recovery_fingerprint=report.recovery_fingerprint,
+        group=False,
+        transport_secret=b"p" * 32,
+    )
+    operation.report = report
+    operation.state = "failed"
+    operation.result = {"message": "诊断暂时不可用，请稍后重新检测。"}
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+
+    updated = await sidecar_server._publish_operations_card(app, report, operation)
+
+    assert updated is False
+    assert operation.result["delivery_error"] == "card update unavailable"
+    assert app[DIAGNOSTICS_KEY]["last_update_error"] == "bot_id= RuntimeError"
+    assert feishu_client.updated == []
+
+
+async def test_stale_operations_publisher_republishes_the_current_delivery_owner():
+    feishu_client = ControlledOperationsUpdateClient()
+    old_report = operations_report(report_marker="old-owner")
+    current_report = operations_report(report_marker="current-owner")
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    old_operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=old_report.fingerprint,
+        recovery_fingerprint=old_report.recovery_fingerprint,
+        group=False,
+        transport_secret=b"o" * 32,
+    )
+    old_operation.report = old_report
+    old_operation.state = "failed"
+    old_operation.result = {"message": "old publisher"}
+    sidecar_server._store_operation_delivery(
+        app,
+        old_operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+
+    old_publisher = asyncio.create_task(
+        sidecar_server._publish_operations_card(app, old_report, old_operation)
+    )
+    await asyncio.wait_for(feishu_client.update_started.wait(), timeout=1.0)
+    current_operation = sidecar_server._successor_operation(
+        app,
+        old_operation,
+        current_report,
+        state="failed",
+        result={"message": "current publisher"},
+    )
+    current_publisher = asyncio.create_task(
+        sidecar_server._publish_operations_card(
+            app, current_report, current_operation
+        )
+    )
+    feishu_client.release_update.set()
+    await asyncio.gather(old_publisher, current_publisher)
+
+    assert "current publisher" in str(feishu_client.updated[-1][1])
+    assert len(feishu_client.updated) == 3
+    assert set(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]) == {
+        current_operation.operation_id
+    }
+    assert app[sidecar_server.OPERATIONS_PUBLISH_LOCKS_KEY] == {}
+
+
+async def test_mutation_cleanup_snapshots_three_futures_and_waits_for_running_workers():
+    app = create_app(FakeFeishuClient())
+    started = threading.Event()
+    release = threading.Event()
+    running = [0]
+
+    def blocked_mutation():
+        running[0] += 1
+        if running[0] == 2:
+            started.set()
+        release.wait(2.0)
+
+    tasks = [
+        asyncio.create_task(sidecar_server._run_operations_mutation(app, blocked_mutation))
+        for _ in range(3)
+    ]
+    for task in tasks:
+        sidecar_server._track_operations_task(app, task)
+    await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=1.0)
+    cleanup = asyncio.create_task(sidecar_server._stop_operations_diagnostics(app))
+    await asyncio.sleep(0.02)
+    assert cleanup.done() is False
+    release.set()
+    await cleanup
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert running[0] == 2
+    assert app[sidecar_server.OPERATIONS_MUTATION_FUTURES_KEY] == set()
+    with pytest.raises(RuntimeError):
+        app[sidecar_server.OPERATIONS_MUTATION_EXECUTOR_KEY].submit(lambda: None)
+
+
+@pytest.mark.parametrize("state", ("preparing", "executing", "restarting"))
+async def test_inflight_recheck_returns_current_card_after_all_patch_attempts_fail(state):
+    feishu_client = FakeFeishuClient()
+    feishu_client.update_failures_remaining = sidecar_server.UPDATE_MAX_ATTEMPTS
+    report = operations_report()
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=report.fingerprint,
+        recovery_fingerprint=report.recovery_fingerprint,
+        group=False,
+        transport_secret=b"p" * 32,
+    )
+    operation.report = report
+    operation.state = state
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+    assert await sidecar_server._publish_operations_card(app, report, operation) is False
+    card = sidecar_server._render_operations_for_app(app, report, operation)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                operations_button(card, "重新检测"),
+                chat_id="oc_private",
+                transport_secret=b"p" * 32,
+            ),
+        )
+        body = await response.json()
+    finally:
+        await test_client.close()
+
+    assert body["ok"] is True
+    assert body["operation_id"] == operation.operation_id
+    assert operation.state == state
+    assert set(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]) == {operation.operation_id}
+    assert "正在" in str(body["card"])
+
+
+async def test_repair_timeout_renders_failed_diagnostic_successor(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    diagnostic_started = threading.Event()
+    diagnostic_release = threading.Event()
+
+    def blocked_report(*args, **kwargs):
+        if args[3] == "fallback_default":
+            diagnostic_started.set()
+            diagnostic_release.wait(0.5)
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "OPERATIONS_DIAGNOSTIC_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", blocked_report)
+    monkeypatch.setattr(
+        sidecar_server,
+        "execute_recovery",
+        lambda *args, **kwargs: SimpleNamespace(status="repaired"),
+    )
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=report.fingerprint,
+        recovery_fingerprint=report.recovery_fingerprint,
+        group=False,
+        transport_secret=b"s" * 32,
+    )
+    operation.report = report
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        repair = operations_button(
+            sidecar_server._render_operations_for_app(app, report, operation),
+            "安全修复",
+        )
+        confirmation = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                repair, chat_id="oc_private", transport_secret=b"s" * 32
+            ),
+        )
+        confirm_repair = operations_button((await confirmation.json())["card"], "确认修复")
+        response = await asyncio.wait_for(
+            test_client.post(
+                "/card/actions",
+                json=operations_action_payload(
+                    confirm_repair,
+                    chat_id="oc_private",
+                    transport_secret=b"s" * 32,
+                ),
+            ),
+            timeout=0.5,
+        )
+        body = await response.json()
+        await asyncio.wait_for(asyncio.to_thread(diagnostic_started.wait), timeout=1.0)
+        await wait_for_card_update(feishu_client, "诊断暂时不可用")
+        successor = next(
+            record
+            for record in app[sidecar_server.OPERATIONS_STORE_KEY]._records.values()
+            if record.state == "failed"
+        )
+        diagnostic_release.set()
+    finally:
+        diagnostic_release.set()
+        await test_client.close()
+
+    assert response.status == 200
+    assert "正在安全修复" in str(body["card"])
+    assert successor.state == "failed"
+    assert operations_button(feishu_client.updated[-1][1], "重新检测")
+
+
+async def test_restart_timeout_updates_recheckable_failure_without_restarting(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    diagnostic_started = threading.Event()
+    diagnostic_release = threading.Event()
+
+    def blocked_report(*args, **kwargs):
+        diagnostic_started.set()
+        diagnostic_release.wait(2.0)
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "OPERATIONS_DIAGNOSTIC_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", blocked_report)
+    restart_calls = []
+    monkeypatch.setattr(
+        sidecar_server.subprocess,
+        "run",
+        lambda *args, **kwargs: restart_calls.append((args, kwargs))
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=report.fingerprint,
+        recovery_fingerprint=report.recovery_fingerprint,
+        group=False,
+        transport_secret=b"s" * 32,
+    )
+    operation.state = "restarting"
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+    try:
+        await sidecar_server._run_operations_restart(app, operation)
+        await asyncio.wait_for(asyncio.to_thread(diagnostic_started.wait), timeout=1.0)
+        successor = next(
+            record
+            for record in store._records.values()
+            if record.operation_id != operation.operation_id
+        )
+    finally:
+        diagnostic_release.set()
+        await sidecar_server._stop_operations_diagnostics(app)
+
+    assert successor.state == "restart_failed"
+    assert restart_calls == []
+    assert "重启前的诊断暂时不可用" in str(successor.result)
+    assert len(feishu_client.updated) == 1
+    assert operations_button(feishu_client.updated[0][1], "重新检测")
+
+
+async def test_cleanup_cancels_scheduled_restart_before_diagnostic_executor_shutdown(
+    monkeypatch,
+    caplog,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    restart_calls = []
+    diagnostic_started = threading.Event()
+    diagnostic_release = threading.Event()
+
+    def blocked_report(*args, **kwargs):
+        diagnostic_started.set()
+        diagnostic_release.wait(2.0)
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "RESTART_CALLBACK_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr(sidecar_server, "_build_operations_report_sync", blocked_report)
+    monkeypatch.setattr(
+        sidecar_server.subprocess,
+        "run",
+        lambda *args, **kwargs: restart_calls.append((args, kwargs))
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=report.fingerprint,
+        recovery_fingerprint=report.recovery_fingerprint,
+        group=False,
+        transport_secret=b"s" * 32,
+    )
+    operation.state = "restarting"
+
+    sidecar_server._schedule_operations_restart(app, operation)
+    try:
+        await asyncio.wait_for(asyncio.to_thread(diagnostic_started.wait), timeout=1.0)
+        assert len(app[sidecar_server.OPERATIONS_DIAGNOSTIC_TASKS_KEY]) == 1
+
+        await sidecar_server._stop_operations_diagnostics(app)
+        await _REAL_ASYNCIO_SLEEP(0.05)
+    finally:
+        diagnostic_release.set()
+
+    assert not app[sidecar_server.OPERATIONS_DIAGNOSTIC_TASKS_KEY]
+    assert restart_calls == []
+    assert "cannot schedule new futures after shutdown" not in caplog.text
+
+
+async def test_hfc_doctor_shutdown_cancels_tracked_diagnosis(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    started = asyncio.Event()
+
+    async def blocked_report(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(sidecar_server, "_build_operations_report", blocked_report)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    await test_client.post(
+        "/commands",
+        json=signed_operations_command(
+            {
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_shutdown_doctor",
+                "chat_type": "private",
+            }
+        ),
+    )
+    await started.wait()
+    tasks = app[sidecar_server.OPERATIONS_DIAGNOSTIC_TASKS_KEY]
+    assert len(tasks) == 1
+
+    await test_client.close()
+
+    assert not tasks
+
+
+async def test_http_operations_reject_forged_operator_without_valid_adapter_proof(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (
+            report,
+            SimpleNamespace(root=Path("/private/hermes")),
+        ),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_group",
+                "message_id": "om_doctor",
+                "chat_type": "group",
+                "operator": "ou_owner",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        repair = operations_button(feishu_client.sent[0][1], "安全修复")
+        forged = operations_action_payload(repair, operator="ou_owner")
+        forged["adapter_transport_proof"]["signature"] = "0" * 64
+
+        response = await test_client.post("/card/actions", json=forged)
+        body = await response.json()
+    finally:
+        await test_client.close()
+
+    assert response.status == 403
+    assert body == {"ok": False, "error": "operation rejected"}
+
+
+async def test_doctor_rejects_caller_chosen_secret_and_forged_operator(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (
+            report,
+            SimpleNamespace(root=Path("/private/hermes")),
+        ),
+    )
+    app = create_app(
+        feishu_client,
+        operations_transport_root_secret=b"r" * 32,
+    )
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/commands",
+            json={
+                "command": "doctor",
+                "chat_id": "oc_victim",
+                "message_id": "om_forged",
+                "profile_id": "work",
+                "chat_type": "group",
+                "operator": "ou_victim",
+                "adapter_transport_secret": "attacker-chosen-secret",
+            },
+        )
+        body = await response.json()
+    finally:
+        await test_client.close()
+
+    assert response.status == 403
+    assert body == {"ok": False, "error": "command authentication rejected"}
+    assert feishu_client.sent == []
+
+
+async def test_hfc_doctor_returns_overload_without_evicting_inflight(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (
+            report,
+            SimpleNamespace(root=Path("/private/hermes")),
+        ),
+    )
+    app = create_app(feishu_client)
+    store = OperationStore(secret=b"store", max_records=1)
+    active = store.create(
+        chat_id="oc_active",
+        profile_id="default",
+        report_fingerprint="active-report",
+        recovery_fingerprint="active-recovery",
+        group=False,
+        transport_secret=TRANSPORT_SECRET.encode("utf-8"),
+    )
+    active.state = "executing"
+    app[sidecar_server.OPERATIONS_STORE_KEY] = store
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_new",
+                "message_id": "om_new",
+                "chat_type": "private",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        body = await response.json()
+    finally:
+        await test_client.close()
+
+    assert response.status == 503
+    assert body == {"ok": False, "error": "operations overloaded"}
+    assert store.complete(
+        active.operation_id,
+        expected_state="executing",
+        state="repaired",
+        result={},
+    ).state == "repaired"
+    assert feishu_client.sent == []
+
+
+async def test_group_operations_first_claim_missing_identity_and_read_only_matrix(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    detection = SimpleNamespace(root=Path("/private/hermes"))
+    calls = []
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (report, detection),
+    )
+    monkeypatch.setattr(
+        sidecar_server,
+        "execute_recovery",
+        lambda *args: calls.append(args) or SimpleNamespace(status="repaired"),
+    )
+    monkeypatch.setattr(sidecar_server.shutil, "which", lambda command: None)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_group",
+                "message_id": "om_doctor",
+                "chat_type": "group",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        card = feishu_client.sent[0][1]
+
+        details = operations_button(card, "查看诊断")
+        read_only = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(details, operator="ou_reader"),
+        )
+        assert (await read_only.json())["ok"] is True
+
+        repair = operations_button(card, "安全修复")
+        missing_identity = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(repair, operator=""),
+        )
+        assert (await missing_identity.json())["ok"] is False
+
+        claimed = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(repair, operator="ou_claimant"),
+        )
+        confirm = operations_button((await claimed.json())["card"], "确认修复")
+        changed_operator = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(confirm, operator="ou_other"),
+        )
+        assert (await changed_operator.json())["ok"] is False
+
+        completed = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(confirm, operator="ou_claimant"),
+        )
+        completed_body = await completed.json()
+    finally:
+        await test_client.close()
+
+    assert completed_body["ok"] is True
+    assert len(calls) == 1
+    assert calls[0][1] == "recovery-a"
+
+
+async def test_concurrent_recheck_returns_one_successor_and_moves_delivery_once(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (
+            report,
+            SimpleNamespace(root=Path("/private/hermes")),
+        ),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_doctor",
+                "chat_type": "private",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        recheck = operations_button(feishu_client.sent[0][1], "重新检测")
+        original_id = next(iter(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]))
+        payload = operations_action_payload(
+            recheck,
+            chat_id="oc_private",
+            operator="ou_owner",
+        )
+        responses = await asyncio.gather(
+            *[
+                test_client.post("/card/actions", json=payload)
+                for _ in range(8)
+            ]
+        )
+        bodies = [await response.json() for response in responses]
+    finally:
+        await test_client.close()
+
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    current = store.current_successor(original_id)
+    deliveries = app[sidecar_server.OPERATIONS_DELIVERIES_KEY]
+    assert current is not None
+    assert all(
+        store.current_successor(body["operation_id"]) is current for body in bodies
+    )
+    assert original_id not in deliveries
+    assert set(deliveries) == {current.operation_id}
+    assert all(body["ok"] is True for body in bodies)
+
+
+async def test_changed_recheck_creates_one_fresh_successor_and_moves_delivery_once(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    reports = [
+        operations_report(report_marker="report-a", recovery_fingerprint="recovery-a"),
+        operations_report(report_marker="report-b", recovery_fingerprint="recovery-b"),
+    ]
+    detection = SimpleNamespace(root=Path("/private/hermes"))
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (reports.pop(0) if reports else operations_report(
+            report_marker="report-b", recovery_fingerprint="recovery-b"
+        ), detection),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_doctor",
+                "chat_type": "private",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        recheck = operations_button(feishu_client.sent[0][1], "重新检测")
+        original_id = next(iter(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]))
+        payload = operations_action_payload(
+            recheck, chat_id="oc_private", operator="ou_owner"
+        )
+        first = await test_client.post("/card/actions", json=payload)
+        second = await test_client.post("/card/actions", json=payload)
+        first_body = await first.json()
+        second_body = await second.json()
+    finally:
+        await test_client.close()
+
+    assert first_body["ok"] is True
+    assert second_body["ok"] is True
+    assert first_body["operation_id"] != original_id
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    successor = store.current_successor(first_body["operation_id"])
+    assert successor is not None
+    assert store.current_successor(second_body["operation_id"]) is successor
+    assert successor.recovery_fingerprint == "recovery-b"
+    assert original_id not in app[sidecar_server.OPERATIONS_DELIVERIES_KEY]
+    assert set(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]) == {
+        successor.operation_id
+    }
+
+
+async def test_full_capacity_repeated_recheck_returns_same_successor_and_moves_delivery_once(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (
+            report,
+            SimpleNamespace(root=Path("/private/hermes")),
+        ),
+    )
+    app = create_app(feishu_client)
+    store = OperationStore(secret=b"store", max_records=2)
+    active = store.create(
+        chat_id="oc_active",
+        profile_id="default",
+        report_fingerprint="active-report",
+        recovery_fingerprint="active-recovery",
+        group=False,
+        transport_secret=TRANSPORT_SECRET.encode("utf-8"),
+    )
+    active.state = "executing"
+    app[sidecar_server.OPERATIONS_STORE_KEY] = store
+    transfer_calls = []
+    original_transfer = sidecar_server._transfer_operation_delivery
+
+    def track_delivery_transfer(*args):
+        transfer_calls.append(args[1:])
+        return original_transfer(*args)
+
+    monkeypatch.setattr(
+        sidecar_server, "_transfer_operation_delivery", track_delivery_transfer
+    )
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_doctor",
+                "chat_type": "private",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        recheck = operations_button(feishu_client.sent[0][1], "重新检测")
+        original_id = next(iter(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]))
+        payload = operations_action_payload(
+            recheck,
+            chat_id="oc_private",
+            operator="ou_owner",
+        )
+        first_response = await test_client.post("/card/actions", json=payload)
+        first_body = await first_response.json()
+        repeated_response = await test_client.post("/card/actions", json=payload)
+        repeated_body = await repeated_response.json()
+    finally:
+        await test_client.close()
+
+    assert first_body["ok"] is True
+    assert repeated_body["ok"] is True
+    current = store.current_successor(first_body["operation_id"])
+    assert current is not None
+    assert store.current_successor(repeated_body["operation_id"]) is current
+    assert "正在重新检测" in str(first_body["card"])
+    assert any(
+        marker in str(repeated_body["card"])
+        for marker in ("正在重新检测", "诊断摘要")
+    )
+    assert transfer_calls == [
+        (original_id, first_body["operation_id"]),
+        (first_body["operation_id"], current.operation_id),
+    ]
+    assert original_id not in app[sidecar_server.OPERATIONS_DELIVERIES_KEY]
+    assert set(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]) == {
+        current.operation_id
+    }
+
+
+async def test_private_repair_is_exactly_once_under_concurrent_confirmation(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    detection = SimpleNamespace(root=Path("/private/hermes"))
+    calls = []
+
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (report, detection),
+    )
+
+    def fake_execute(current_detection, expected_fingerprint=None):
+        calls.append((current_detection, expected_fingerprint))
+        return SimpleNamespace(status="repaired", message="Verified recovery completed.")
+
+    monkeypatch.setattr(sidecar_server, "execute_recovery", fake_execute)
+    monkeypatch.setattr(sidecar_server.shutil, "which", lambda command: None)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_doctor",
+                "chat_type": "private",
+                "operator": "ou_first",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        repair = operations_button(feishu_client.sent[0][1], "安全修复")
+        first = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                repair, chat_id="oc_private", operator="ou_first"
+            ),
+        )
+        confirm = operations_button((await first.json())["card"], "确认修复")
+        responses = await asyncio.gather(
+            *[
+                test_client.post(
+                    "/card/actions",
+                    json=operations_action_payload(
+                        confirm, chat_id="oc_private", operator=f"ou_{index}"
+                    ),
+                )
+                for index in range(8)
+            ]
+        )
+        bodies = [await response.json() for response in responses]
+        await wait_for_card_update(feishu_client, "安全修复已完成")
+    finally:
+        await test_client.close()
+
+    assert len(calls) == 1
+    assert calls[0][1] == "recovery-a"
+    assert app[METRICS_KEY].recovery_attempts == 1
+    assert app[METRICS_KEY].recovery_successes == 1
+    assert all(response.status == 200 for response in responses)
+    assert all("正在安全修复" in str(body["card"]) for body in bodies)
+    assert "安全修复已完成" in str(feishu_client.updated[-1][1])
+
+
+async def test_changed_recovery_fingerprint_refuses_confirm_without_execution(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    current = [operations_report(recovery_fingerprint="recovery-a")]
+    detection = SimpleNamespace(root=Path("/private/hermes"))
+    calls = []
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (current[0], detection),
+    )
+    monkeypatch.setattr(
+        sidecar_server,
+        "execute_recovery",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_group",
+                "message_id": "om_doctor",
+                "chat_type": "group",
+                "operator": "ou_owner",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        repair = operations_button(feishu_client.sent[0][1], "安全修复")
+        first = await test_client.post(
+            "/card/actions", json=operations_action_payload(repair)
+        )
+        confirm = operations_button((await first.json())["card"], "确认修复")
+        current[0] = operations_report(
+            report_marker="report-b",
+            recovery_fingerprint="recovery-b",
+        )
+        rejected = await test_client.post(
+            "/card/actions", json=operations_action_payload(confirm)
+        )
+        body = await rejected.json()
+        await wait_for_card_update(feishu_client, "诊断状态已变化")
+    finally:
+        await test_client.close()
+
+    assert rejected.status == 200
+    assert body["ok"] is True
+    assert "正在安全修复" in str(body["card"])
+    assert operations_button(feishu_client.updated[-1][1], "重新检测")
+    assert calls == []
+
+
+async def test_repair_refuses_changed_report_fingerprint_before_mutation(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    claimed = operations_report(report_marker="report-a", recovery_fingerprint="recovery-a")
+    fresh = operations_report(recovery_fingerprint="recovery-a", executable=False)
+    assert fresh.fingerprint != claimed.fingerprint
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=claimed.fingerprint,
+        recovery_fingerprint=claimed.recovery_fingerprint,
+        group=False,
+        transport_secret=b"r" * 32,
+    )
+    operation.report = claimed
+    operation.state = "executing"
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+    calls = []
+
+    async def fresh_report(*_args, **_kwargs):
+        return fresh, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_bounded_operations_report", fresh_report)
+    monkeypatch.setattr(
+        sidecar_server,
+        "execute_recovery",
+        lambda *args: calls.append(args) or SimpleNamespace(status="repaired"),
+    )
+
+    await sidecar_server._run_operations_repair(app, operation)
+
+    successor = next(iter(store._records.values()))
+    assert calls == []
+    assert successor.state == "failed"
+    assert "诊断状态已变化" in str(successor.result)
+
+
+async def test_successful_repair_builds_successor_from_post_mutation_report(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    claimed = operations_report(recovery_fingerprint="recovery-a")
+    repaired = operations_report(recovery_fingerprint="recovery-clean", executable=False)
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=claimed.fingerprint,
+        recovery_fingerprint=claimed.recovery_fingerprint,
+        group=False,
+        transport_secret=b"r" * 32,
+    )
+    operation.report = claimed
+    operation.state = "executing"
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+    calls = []
+
+    async def reports(_app, *, profile_id, profile_source, **_kwargs):
+        calls.append(profile_source)
+        report = claimed if len(calls) == 1 else repaired
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_bounded_operations_report", reports)
+    monkeypatch.setattr(
+        sidecar_server,
+        "execute_recovery",
+        lambda *args: SimpleNamespace(status="repaired"),
+    )
+    monkeypatch.setattr(sidecar_server.shutil, "which", lambda _command: "/usr/bin/hermes")
+
+    await sidecar_server._run_operations_repair(app, operation)
+
+    successor = next(iter(store._records.values()))
+    assert calls == ["fallback_default", "fallback_default"]
+    assert successor.report is repaired
+    assert successor.report_fingerprint == repaired.fingerprint
+    assert successor.recovery_fingerprint == repaired.recovery_fingerprint
+    assert successor.result["restart_available"] is True
+
+
+@pytest.mark.parametrize("profile_source", ["fallback_default", "sanitized_locals", "sanitized_hermes_home"])
+async def test_background_operations_reuse_snapshot_profile_source_for_fingerprint(monkeypatch, profile_source):
+    feishu_client = FakeFeishuClient()
+    claimed = operations_report(profile_source=profile_source)
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private", profile_id="default",
+        report_fingerprint=claimed.fingerprint,
+        recovery_fingerprint=claimed.recovery_fingerprint,
+        group=False, transport_secret=b"r" * 32,
+    )
+    operation.report = claimed
+    operation.state = "executing"
+    sidecar_server._store_operation_delivery(
+        app, operation.operation_id, {"message_id": "feishu-message", "bot_id": None}
+    )
+    sources = []
+    executed = []
+
+    async def reports(_app, *, profile_source, **_kwargs):
+        sources.append(profile_source)
+        return claimed, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_bounded_operations_report", reports)
+    monkeypatch.setattr(
+        sidecar_server, "execute_recovery",
+        lambda *args: executed.append(args) or SimpleNamespace(status="repaired"),
+    )
+    monkeypatch.setattr(sidecar_server.shutil, "which", lambda _command: None)
+
+    await sidecar_server._run_operations_repair(app, operation)
+
+    recheck = store.create(
+        chat_id="oc_private", profile_id="default",
+        report_fingerprint=claimed.fingerprint,
+        recovery_fingerprint=claimed.recovery_fingerprint,
+        group=False, transport_secret=b"s" * 32,
+    )
+    recheck.report = claimed
+    recheck.state = "preparing"
+    sidecar_server._store_operation_delivery(
+        app, recheck.operation_id, {"message_id": "recheck-message", "bot_id": None}
+    )
+    await sidecar_server._run_operations_recheck(app, recheck)
+
+    restart = store.create(
+        chat_id="oc_private", profile_id="default",
+        report_fingerprint=claimed.fingerprint,
+        recovery_fingerprint=claimed.recovery_fingerprint,
+        group=False, transport_secret=b"t" * 32,
+    )
+    restart.report = claimed
+    restart.state = "restarting"
+    sidecar_server._store_operation_delivery(
+        app, restart.operation_id, {"message_id": "restart-message", "bot_id": None}
+    )
+    await sidecar_server._run_operations_restart(app, restart)
+
+    assert sources == [profile_source] * 4
+    assert len(executed) == 1
+    assert next(iter(store._records.values())).state == "repaired"
+
+
+async def test_repair_rejects_actual_profile_source_change(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    claimed = operations_report(profile_source="fallback_default")
+    changed = operations_report(profile_source="env")
+    assert changed.fingerprint != claimed.fingerprint
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private", profile_id="default",
+        report_fingerprint=claimed.fingerprint,
+        recovery_fingerprint=claimed.recovery_fingerprint,
+        group=False, transport_secret=b"u" * 32,
+    )
+    operation.report = claimed
+    operation.state = "executing"
+    sidecar_server._store_operation_delivery(
+        app, operation.operation_id, {"message_id": "source-message", "bot_id": None}
+    )
+    executed = []
+
+    async def reports(*_args, **_kwargs):
+        return changed, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_bounded_operations_report", reports)
+    monkeypatch.setattr(sidecar_server, "execute_recovery", lambda *args: executed.append(args))
+
+    await sidecar_server._run_operations_repair(app, operation)
+
+    assert executed == []
+    assert next(iter(store._records.values())).state == "failed"
+
+
+async def test_successful_repair_without_post_diagnosis_keeps_recheckable_fallback(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    claimed = operations_report(recovery_fingerprint="recovery-a")
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=claimed.fingerprint,
+        recovery_fingerprint=claimed.recovery_fingerprint,
+        group=False,
+        transport_secret=b"r" * 32,
+    )
+    operation.report = claimed
+    operation.state = "executing"
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+    calls = []
+
+    async def reports(_app, *, profile_id, profile_source, **_kwargs):
+        calls.append(profile_source)
+        if len(calls) > 1:
+            raise asyncio.TimeoutError
+        return claimed, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_bounded_operations_report", reports)
+    monkeypatch.setattr(
+        sidecar_server,
+        "execute_recovery",
+        lambda *args: SimpleNamespace(status="repaired"),
+    )
+    monkeypatch.setattr(sidecar_server.shutil, "which", lambda _command: "/usr/bin/hermes")
+
+    await sidecar_server._run_operations_repair(app, operation)
+
+    successor = next(iter(store._records.values()))
+    assert calls == ["fallback_default", "fallback_default"]
+    assert successor.state == "repaired"
+    assert successor.report.status == "error"
+    assert successor.result["restart_available"] is False
+    assert "重新检测暂时不可用" in str(successor.result)
+    assert operations_button(feishu_client.updated[-1][1], "重新检测")
+    assert "重启 Gateway" not in str(feishu_client.updated[-1][1])
+
+
+async def test_repair_rejects_synthetic_post_repair_failure_report(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    claimed = operations_report(recovery_fingerprint="recovery-a")
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=claimed.fingerprint,
+        recovery_fingerprint=claimed.recovery_fingerprint,
+        group=False,
+        transport_secret=b"r" * 32,
+    )
+    operation.report = claimed
+    operation.state = "executing"
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+    calls = []
+
+    def swallowed_build(*args):
+        profile_source = args[3]
+        calls.append(profile_source)
+        report = (
+            sidecar_server._failed_operations_report("default")
+            if len(calls) > 1
+            else claimed
+        )
+        return report, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(
+        sidecar_server, "_build_operations_report_sync", swallowed_build
+    )
+    monkeypatch.setattr(
+        sidecar_server,
+        "execute_recovery",
+        lambda *args: SimpleNamespace(status="repaired"),
+    )
+    monkeypatch.setattr(sidecar_server.shutil, "which", lambda _command: "/usr/bin/hermes")
+
+    await sidecar_server._run_operations_repair(app, operation)
+
+    successor = next(iter(store._records.values()))
+    assert calls == ["fallback_default", "fallback_default"]
+    assert successor.report.status == "error"
+    assert successor.result["restart_available"] is False
+    assert "重新检测暂时不可用" in str(successor.result)
+    assert operations_button(feishu_client.updated[-1][1], "重新检测")
+    assert "重启 Gateway" not in str(feishu_client.updated[-1][1])
+
+
+async def test_restart_refuses_changed_report_fingerprint_before_mutation(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    claimed = operations_report(report_marker="report-a", recovery_fingerprint="recovery-a")
+    fresh = operations_report(recovery_fingerprint="recovery-a", executable=False)
+    assert fresh.fingerprint != claimed.fingerprint
+    app = create_app(feishu_client)
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation = store.create(
+        chat_id="oc_private",
+        profile_id="default",
+        report_fingerprint=claimed.fingerprint,
+        recovery_fingerprint=claimed.recovery_fingerprint,
+        group=False,
+        transport_secret=b"r" * 32,
+    )
+    operation.report = claimed
+    operation.state = "restarting"
+    sidecar_server._store_operation_delivery(
+        app,
+        operation.operation_id,
+        {"message_id": "feishu-message", "bot_id": None},
+    )
+    calls = []
+
+    async def fresh_report(*_args, **_kwargs):
+        return fresh, SimpleNamespace(root=Path("/private/hermes"))
+
+    monkeypatch.setattr(sidecar_server, "_bounded_operations_report", fresh_report)
+    monkeypatch.setattr(sidecar_server.shutil, "which", lambda _command: "/usr/bin/hermes")
+    monkeypatch.setattr(sidecar_server, "RESTART_CALLBACK_GRACE_SECONDS", 0)
+    monkeypatch.setattr(
+        sidecar_server.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs))
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    await sidecar_server._run_operations_restart(app, operation)
+
+    successor = next(iter(store._records.values()))
+    assert calls == []
+    assert successor.state == "restart_failed"
+    assert "诊断状态已变化" in str(successor.result)
+
+
+async def test_http_operations_reject_tampered_and_profile_mismatched_tokens(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (report, SimpleNamespace(root=Path("/private/hermes"))),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_doctor",
+                "profile_id": "default",
+                "chat_type": "private",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        details = operations_button(feishu_client.sent[0][1], "查看诊断")
+        tampered = dict(details)
+        tampered["token"] = details["token"][:-1] + (
+            "0" if details["token"][-1] != "0" else "1"
+        )
+        tampered_response = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(tampered, chat_id="oc_private"),
+        )
+        mismatched_response = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                details,
+                chat_id="oc_private",
+                profile_id="sales",
+                proof_profile_id="default",
+            ),
+        )
+        chat_mismatched_response = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(details, chat_id="oc_other"),
+        )
+        tampered_body = await tampered_response.json()
+        mismatched_body = await mismatched_response.json()
+        chat_mismatched_body = await chat_mismatched_response.json()
+    finally:
+        await test_client.close()
+
+    assert tampered_response.status == 200
+    assert tampered_body == {
+        "ok": False,
+        "error": "operation rejected",
+    }
+    assert mismatched_response.status == 200
+    assert mismatched_body["ok"] is True
+    assert "card" in mismatched_body
+    assert chat_mismatched_body == {
+        "ok": False,
+        "error": "operation rejected",
+    }
+
+
+async def test_http_operations_reject_unsigned_forged_operator(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (report, SimpleNamespace(root=Path("/private/hermes"))),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_group",
+                "message_id": "om_doctor",
+                "chat_type": "group",
+                "operator": "ou_owner",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        repair = operations_button(feishu_client.sent[0][1], "安全修复")
+
+        forged_payload = operations_action_payload(repair, operator="ou_owner")
+        forged_payload.pop("adapter_transport_proof")
+        forged = await test_client.post(
+            "/card/actions",
+            json=forged_payload,
+        )
+        body = await forged.json()
+    finally:
+        await test_client.close()
+
+    assert forged.status == 403
+    assert body == {"ok": False, "error": "operation rejected"}
+
+
+async def test_http_stale_operation_renders_recheck_only_expired_card(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (report, SimpleNamespace(root=Path("/private/hermes"))),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_doctor",
+                "profile_id": "default",
+                "chat_type": "private",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        card = feishu_client.sent[0][1]
+        repair = operations_button(card, "安全修复")
+        store = app[sidecar_server.OPERATIONS_STORE_KEY]
+        _claims, record = store.inspect(
+            repair["token"],
+            callback_chat_id="oc_private",
+            callback_profile_scope=repair["profile_scope"],
+            allow_expired=True,
+        )
+        record.expires_at = 0.0
+
+        stale_response = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(repair, chat_id="oc_private"),
+        )
+        stale_body = await stale_response.json()
+    finally:
+        await test_client.close()
+
+    assert stale_response.status == 200
+    assert stale_body["ok"] is False
+    assert "诊断已过期" in str(stale_body["card"])
+    recheck = operations_button(stale_body["card"], "重新检测")
+    assert recheck["token"] != repair["token"]
+    assert "安全修复" not in str(stale_body["card"])
+    assert "oc_private" not in str(stale_body)
+    assert "profile_id" not in str(stale_body)
+
+
+def test_operation_delivery_index_is_bounded():
+    app = create_app(FakeFeishuClient())
+
+    for index in range(sidecar_server.MAX_OPERATION_DELIVERIES + 5):
+        sidecar_server._store_operation_delivery(
+            app,
+            f"operation-{index}",
+            {"message_id": f"message-{index}"},
+        )
+
+    assert len(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]) == 200
+    assert "operation-0" not in app[sidecar_server.OPERATIONS_DELIVERIES_KEY]
+
+
+async def test_confirmed_restart_returns_callback_before_sanitized_background_result(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    detection = SimpleNamespace(root=Path("/private/hermes"))
+    restart_started = threading.Event()
+    restart_release = threading.Event()
+    restart_calls = []
+    ordering = []
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (report, detection),
+    )
+    monkeypatch.setattr(
+        sidecar_server,
+        "execute_recovery",
+        lambda *args, **kwargs: SimpleNamespace(status="repaired"),
+    )
+    monkeypatch.setattr(
+        sidecar_server.shutil, "which", lambda command: "/usr/local/bin/hermes"
+    )
+
+    def fake_run(*args, **kwargs):
+        ordering.append("restart_started")
+        restart_calls.append((args, kwargs))
+        restart_started.set()
+        restart_release.wait(timeout=0.5)
+        return SimpleNamespace(
+            returncode=1,
+            stdout=(
+                'Authorization: Bearer bearer-secret '
+                '{"password":"json-secret","token":"json-token"} '
+                "open_id=ou_secret chat_id=oc_secret message_id=om_secret "
+                "user_id=user_secret /private/hermes/runtime.log"
+            ),
+            stderr="restart failed secret=plain-secret",
+        )
+
+    monkeypatch.setattr(sidecar_server.subprocess, "run", fake_run)
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command({
+                "command": "doctor",
+                "chat_id": "oc_private",
+                "message_id": "om_doctor",
+                "chat_type": "private",
+                "operator": "ou_first",
+                "adapter_transport_secret": TRANSPORT_SECRET,
+            }),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        repair = operations_button(feishu_client.sent[0][1], "安全修复")
+        repair_token = str(repair["token"])
+        repair_encoded = repair_token.split(".", 1)[0]
+        repair_claims = json.loads(
+            base64.urlsafe_b64decode(
+                repair_encoded + "=" * (-len(repair_encoded) % 4)
+            )
+        )
+        transport_secret = derive_operation_transport_secret(
+            TRANSPORT_ROOT_SECRET,
+            repair_claims["operation_id"],
+        )
+        confirm_card = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                repair,
+                chat_id="oc_private",
+                operator="ou_first",
+                transport_secret=transport_secret,
+            ),
+        )
+        confirm_repair = operations_button(
+            (await confirm_card.json())["card"], "确认修复"
+        )
+        repaired = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                confirm_repair,
+                chat_id="oc_private",
+                operator="ou_second",
+                transport_secret=transport_secret,
+            ),
+        )
+        assert "正在安全修复" in str((await repaired.json())["card"])
+        await wait_for_card_update(feishu_client, "安全修复已完成")
+        restart = operations_button(feishu_client.updated[-1][1], "重启 Gateway")
+        confirm_restart_card = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                restart,
+                chat_id="oc_private",
+                operator="ou_second",
+                transport_secret=transport_secret,
+            ),
+        )
+        confirm_restart = operations_button(
+            (await confirm_restart_card.json())["card"], "确认重启"
+        )
+        callback = await asyncio.wait_for(
+            test_client.post(
+                "/card/actions",
+                json=operations_action_payload(
+                    confirm_restart,
+                    chat_id="oc_private",
+                    operator="ou_third",
+                    transport_secret=transport_secret,
+                ),
+            ),
+            timeout=0.5,
+        )
+        callback_body = await callback.json()
+        ordering.append("client_received_response")
+        assert callback.status == 200
+        assert "正在重启 Gateway" in str(callback_body["card"])
+        await _wait_until(restart_started.is_set, attempts=150)
+
+        restart_release.set()
+        await wait_for_card_update(feishu_client, "修复完成，重启失败")
+    finally:
+        restart_release.set()
+        await test_client.close()
+
+    assert len(restart_calls) == 1
+    assert ordering[:2] == ["client_received_response", "restart_started"]
+    args, kwargs = restart_calls[0]
+    assert args == (["/usr/local/bin/hermes", "gateway", "restart"],)
+    assert kwargs == {
+        "cwd": Path("/private/hermes"),
+        "check": False,
+        "capture_output": True,
+        "text": True,
+        "timeout": 30,
+    }
+    updated = str(feishu_client.updated[-1][1])
+    stored_results = [
+        record.result
+        for record in app[sidecar_server.OPERATIONS_STORE_KEY]._records.values()
+        if record.result
+    ]
+    serialized = str(stored_results)
+    for sensitive in (
+        "bearer-secret",
+        "json-secret",
+        "json-token",
+        "ou_secret",
+        "oc_secret",
+        "om_secret",
+        "user_secret",
+        "plain-secret",
+        "/private/hermes",
+    ):
+        assert sensitive not in serialized
+        assert sensitive not in updated
+
+
+async def test_operations_action_patches_same_card_to_confirmation_state_after_response(
+    monkeypatch,
+):
+    feishu_client = FakeFeishuClient()
+    report = operations_report()
+    monkeypatch.setattr(
+        sidecar_server,
+        "_build_operations_report_sync",
+        lambda *args, **kwargs: (
+            report,
+            SimpleNamespace(root=Path("/private/hermes")),
+        ),
+    )
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/commands",
+            json=signed_operations_command(
+                {
+                    "command": "doctor",
+                    "chat_id": "oc_private",
+                    "message_id": "om_doctor",
+                    "chat_type": "private",
+                    "adapter_transport_secret": TRANSPORT_SECRET,
+                }
+            ),
+        )
+        await _wait_until(lambda: bool(feishu_client.sent))
+        repair = operations_button(feishu_client.sent[0][1], "安全修复")
+        transport_secret = derive_operation_transport_secret(
+            TRANSPORT_ROOT_SECRET,
+            json.loads(
+                base64.urlsafe_b64decode(
+                    str(repair["token"]).split(".", 1)[0]
+                    + "=" * (-len(str(repair["token"]).split(".", 1)[0]) % 4)
+                )
+            )["operation_id"],
+        )
+
+        response = await test_client.post(
+            "/card/actions",
+            json=operations_action_payload(
+                repair,
+                chat_id="oc_private",
+                transport_secret=transport_secret,
+            ),
+        )
+        body = await response.json()
+        await wait_for_card_update(feishu_client, "确认安全修复")
+    finally:
+        await test_client.close()
+
+    assert response.status == 200
+    assert "确认安全修复" in str(body["card"])
+    assert len(feishu_client.sent) == 1
+    assert feishu_client.updated[0][0] == "feishu-message-1"
+
+
+async def test_operations_transition_starts_follow_up_while_card_patch_is_blocked(
+    monkeypatch,
+):
+    app = create_app(FakeFeishuClient())
+    report = operations_report()
+    store = app[sidecar_server.OPERATIONS_STORE_KEY]
+    operation, _created = store.prepare(
+        chat_id="oc_private",
+        profile_id="default",
+        group=False,
+        initiator_open_id="ou_owner",
+        operation_id="operation-transition",
+        transport_secret=b"transition-secret-value",
+        idempotency_key="transition-test",
+    )
+    patch_started = asyncio.Event()
+    release_patch = asyncio.Event()
+    follow_up_started = asyncio.Event()
+
+    async def blocked_publish(*_args):
+        patch_started.set()
+        await release_patch.wait()
+        return True
+
+    monkeypatch.setattr(sidecar_server, "_publish_operations_card", blocked_publish)
+
+    def schedule_follow_up():
+        follow_up_started.set()
+
+    sidecar_server._schedule_operations_transition(
+        app, report, operation, schedule_follow_up
+    )
+    await asyncio.wait_for(patch_started.wait(), timeout=0.5)
+    await asyncio.wait_for(follow_up_started.wait(), timeout=0.5)
+    release_patch.set()
+    await _wait_until(
+        lambda: not app[sidecar_server.OPERATIONS_DIAGNOSTIC_TASKS_KEY]
+    )
+    await sidecar_server._stop_operations_diagnostics(app)
+
+
+async def test_operations_response_always_schedules_same_card_publish(monkeypatch):
+    app = create_app(FakeFeishuClient())
+    report = operations_report()
+    operation, _created = app[sidecar_server.OPERATIONS_STORE_KEY].prepare(
+        chat_id="oc_private",
+        profile_id="default",
+        group=False,
+        initiator_open_id="ou_owner",
+        operation_id="operation-response",
+        transport_secret=b"response-secret-value",
+        idempotency_key="response-test",
+    )
+    scheduled = []
+
+    async def successful_write_eof(self, data=b""):
+        return None
+
+    def capture_schedule(captured_app, captured_report, captured_operation, follow_up=None):
+        scheduled.append(
+            (captured_app, captured_report, captured_operation, follow_up)
+        )
+
+    monkeypatch.setattr(sidecar_server.web.Response, "write_eof", successful_write_eof)
+    monkeypatch.setattr(
+        sidecar_server, "_schedule_operations_transition", capture_schedule
+    )
+
+    response = sidecar_server._operations_response(app, report, operation)
+    await response.write_eof()
+
+    assert scheduled == [(app, report, operation, None)]
+    await sidecar_server._stop_operations_diagnostics(app)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Authorization: Bearer secret.jwt.value",
+        '{"token":"secret","open_id":"ou_private"}',
+        "token=secret-value",
+        "oc_private ou_private profile=finance",
+        "failed (/Users/bailey/Private Folder/runtime.log)",
+        "gateway restarted; token=secret",
+    ],
+)
+def test_restart_output_sanitization_is_fail_closed_for_unknown_output(output):
+    assert sidecar_server._restart_output_status(output) == "suppressed"
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("", "empty"),
+        ("gateway restart completed", "reported_success"),
+        ("restart successful", "reported_success"),
+    ],
+)
+def test_restart_output_sanitization_retains_only_explicit_safe_statuses(
+    output, expected
+):
+    assert sidecar_server._restart_output_status(output) == expected
 
 
 async def test_health_reports_profile_diagnostics_for_profile_events():
@@ -623,6 +3904,42 @@ async def test_card_config_string_booleans_control_timeline_rendering(
     )
     assert timeline["expanded"] is expected_expanded
     assert thought_text in str(timeline)
+
+
+async def test_card_config_custom_status_markers_reach_renderer():
+    feishu_client = FakeFeishuClient()
+    app = create_app(
+        feishu_client,
+        card_config={
+            "status": {
+                "active_markers": ["queued"],
+                "future_markers": ["resume later"],
+            }
+        },
+    )
+    server = TestServer(app)
+    test_client = TestClient(server)
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/events",
+            json=event_payload(
+                "message.completed",
+                1,
+                {"answer": "Queued now; resume later."},
+            ),
+        )
+    finally:
+        await test_client.close()
+
+    assert response.status == 200
+    card = feishu_client.sent[0][1]
+    assert card["header"]["template"] == "blue"
+    assert "subtitle" not in card["header"]
+    assert card["config"]["summary"]["content"] == "生成中"
+    session = next(iter(app[SESSIONS_KEY].values()))
+    assert session.display_status == ""
+    assert session.display_status_source == "inferred"
 
 
 async def test_message_started_sends_card_as_thread_reply(client):
@@ -1837,6 +5154,131 @@ async def test_send_failure_returns_json_error_and_allows_started_retry(client):
     assert retried.status == 200
     assert await retried.json() == {"ok": True, "applied": True}
     assert len(feishu_client.sent) == 1
+
+
+@pytest.mark.parametrize("failure_kind", ["send", "route"])
+@pytest.mark.parametrize("replacement", [False, True])
+async def test_repeated_failed_messages_do_not_retain_runtime_state(
+    failure_kind, replacement
+):
+    if failure_kind == "send":
+        boundary = FakeFeishuClient()
+        boundary.fail_send = True
+        app = create_app(boundary)
+    else:
+        boundary = FakeFeishuClientFactory()
+
+        def fail_route(event):
+            raise RuntimeError("route unavailable")
+
+        app = create_app(boundary, bot_router=fail_route)
+
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        for index in range(12):
+            session_key = f"om_failed_{index}"
+            reply_alias = f"om_reply_{index}"
+            parent_alias = f"om_parent_{index}"
+            if replacement:
+                old_session = CardSession("oc_abc", session_key, "oc_abc")
+                old_session.status = "completed"
+                old_session.answer_text = f"old answer {index}"
+                old_session.active_interaction = InteractionState(
+                    interaction_id=f"approval-{index}",
+                    kind="approval",
+                    prompt="Old approval",
+                    status="completed",
+                )
+                app[SESSIONS_KEY][session_key] = old_session
+                app[FEISHU_MESSAGE_IDS_KEY][session_key] = f"om_card_{index}"
+                app[MESSAGE_BOT_IDS_KEY][session_key] = "default"
+                app[SESSION_CARD_CONFIGS_KEY][session_key] = {"title": "Old"}
+                app[SESSION_ALIASES_KEY][f"om_old_alias_{index}"] = session_key
+                sidecar_server._store_interaction_result(app, old_session)
+                sidecar_server._store_card_summary(
+                    app,
+                    SidecarEvent.from_dict(
+                        event_payload(
+                            "message.completed",
+                            1,
+                            {"answer": old_session.answer_text},
+                            message_id=session_key,
+                        )
+                    ),
+                    old_session,
+                    f"om_card_{index}",
+                )
+
+            response = await test_client.post(
+                "/events",
+                json=event_payload(
+                    "message.started",
+                    0,
+                    {
+                        "reply_to_message_id": reply_alias,
+                        "parent_message_id": parent_alias,
+                    },
+                    message_id=session_key,
+                    thread_id=f"omt_topic_{index}",
+                ),
+            )
+            assert response.status == 502
+
+        assert app[SESSIONS_KEY] == {}
+        assert app[SESSION_ALIASES_KEY] == {}
+        assert app[MESSAGE_LOCKS_KEY] == {}
+        assert app[MESSAGE_LOCK_USERS_KEY] == {}
+        assert app[FEISHU_MESSAGE_IDS_KEY] == {}
+        assert app[MESSAGE_BOT_IDS_KEY] == {}
+        assert app[SESSION_CARD_CONFIGS_KEY] == {}
+        assert app[FLUSH_CONTROLLERS_KEY] == {}
+        assert app[CARD_SUMMARIES_KEY] == {}
+        assert app[CARD_SUMMARY_SESSION_KEYS_KEY] == {}
+        assert app[INTERACTION_RESULTS_KEY] == {}
+        assert app[INTERACTION_RESULT_SESSION_KEYS_KEY] == {}
+    finally:
+        await test_client.close()
+
+
+def test_failed_session_cleanup_preserves_reassigned_aliases_and_owners():
+    app = create_app(FakeFeishuClient())
+    failed_key = "om_failed"
+    active_key = "om_active"
+    active_session = CardSession("oc_abc", active_key, "oc_abc")
+    app[SESSIONS_KEY][active_key] = active_session
+    app[SESSION_ALIASES_KEY]["om_reply"] = active_key
+    app[CARD_SUMMARIES_KEY]["om_card"] = {"summary": "active"}
+    app[CARD_SUMMARY_SESSION_KEYS_KEY]["om_card"] = active_key
+    app[INTERACTION_RESULTS_KEY]["approval-active"] = {"status": "pending"}
+    app[INTERACTION_RESULT_SESSION_KEYS_KEY]["approval-active"] = active_key
+
+    sidecar_server._cleanup_failed_session_state(app, failed_key)
+
+    assert app[SESSION_ALIASES_KEY] == {"om_reply": active_key}
+    assert app[CARD_SUMMARIES_KEY] == {"om_card": {"summary": "active"}}
+    assert app[CARD_SUMMARY_SESSION_KEYS_KEY] == {"om_card": active_key}
+    assert app[INTERACTION_RESULTS_KEY] == {
+        "approval-active": {"status": "pending"}
+    }
+    assert app[INTERACTION_RESULT_SESSION_KEYS_KEY] == {
+        "approval-active": active_key
+    }
+
+    app[SESSIONS_KEY][failed_key] = CardSession("oc_abc", failed_key, "oc_abc")
+    app[SESSION_ALIASES_KEY]["om_failed_reply"] = failed_key
+    app[CARD_SUMMARIES_KEY]["om_failed_card"] = {"summary": "current"}
+    app[CARD_SUMMARY_SESSION_KEYS_KEY]["om_failed_card"] = failed_key
+    app[INTERACTION_RESULTS_KEY]["approval-current"] = {"status": "pending"}
+    app[INTERACTION_RESULT_SESSION_KEYS_KEY]["approval-current"] = failed_key
+
+    sidecar_server._cleanup_failed_session_state(app, failed_key)
+
+    assert app[SESSION_ALIASES_KEY]["om_failed_reply"] == failed_key
+    assert app[CARD_SUMMARIES_KEY]["om_failed_card"] == {"summary": "current"}
+    assert app[CARD_SUMMARY_SESSION_KEYS_KEY]["om_failed_card"] == failed_key
+    assert app[INTERACTION_RESULTS_KEY]["approval-current"] == {"status": "pending"}
+    assert app[INTERACTION_RESULT_SESSION_KEYS_KEY]["approval-current"] == failed_key
 
 
 async def test_started_routes_card_to_bound_bot_client():

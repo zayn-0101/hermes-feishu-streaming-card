@@ -122,10 +122,12 @@ def test_stop_rejects_matching_token_with_wrong_pid(tmp_path):
 
     start = run_cli("start", "--config", str(config), env=env)
     sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    original_pidfile = None
     try:
         assert start.returncode == 0, start.stderr
         health = read_health(port)
         assert "process_token" not in health
+        original_pidfile = pidfile_path(tmp_path).read_bytes()
         pidfile_path(tmp_path).write_text(
             json.dumps({"pid": sleeper.pid, "token": "not-the-sidecar-token"}) + "\n",
             encoding="utf-8",
@@ -138,6 +140,8 @@ def test_stop_rejects_matching_token_with_wrong_pid(tmp_path):
         assert sleeper.poll() is None
         assert read_health(port)["status"] == "healthy"
     finally:
+        if original_pidfile is not None:
+            pidfile_path(tmp_path).write_bytes(original_pidfile)
         sleeper.terminate()
         sleeper.wait(timeout=5)
         run_cli("stop", "--config", str(config), env=env)

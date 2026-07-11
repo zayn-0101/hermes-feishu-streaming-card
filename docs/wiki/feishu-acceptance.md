@@ -10,6 +10,33 @@
 - 飞书 bot 已在目标会话可用。
 - 不在仓库、issue 或日志中暴露 App Secret、tenant token、真实 chat id。
 
+## V3.9.0 运维卡（部分通过）
+
+以下项目必须在真实飞书完成后才可标记通过；当前自动化证据不替代这些 smoke。
+
+- 私聊：`/hfc doctor` 打开运维卡，执行重新检测、两步安全修复、重启确认；确认普通流式卡 footer/layout 快照不变。
+- 群聊（group）：发起者能够完成 repair/restart；第二位操作者确认时被拒绝；再次由发起者确认后完成，并检查没有泄漏 chat id、token 或 transport secret。
+- topic：在话题内打开运维卡后，普通 topic 流仍更新原卡，运维卡不改写普通 footer/layout。
+- cron：cron 投递和普通定时完成卡不被运维操作阻断。
+- profile route mismatch：以 main/child profile 或错误 `HERMES_FEISHU_CARD_PROFILE_ID` / endpoint 配置复现 mismatch，确认 `status`/`doctor` 仅显示脱敏 route chain，并修正后恢复。
+
+2026-07-11 已通过的私聊基线：
+
+- `/hfc doctor` 只生成一张运维卡，没有灰色原生未知命令。
+- 中文诊断摘要与详情可见，footer 保持不变。
+- 连续两次重新检测均快速返回，后台 successor 按钮仍可点击，最终 PATCH 同一张卡片。
+- 本轮回调可靠性复测中，“查看诊断”和连续两次“重新检测”均在 156–201 ms 内 ACK；没有新增“目标回调服务超时未响应”，过渡态与终态继续 PATCH 原卡。
+- 临时 Hermes sandbox 中两步安全修复成功；卡片实际重启 Gateway，先显示进行态，随后同卡显示完成态。
+- 普通流式卡从生成中到完成态保持一张卡，完成 footer/layout 不变，没有灰色重复答案。
+- 本轮 sidecar 发送与更新均成功，Gateway 日志没有新的 operations forward timeout。
+- no-agent 一次性 cron 的结果正文进入普通完成卡；sidecar 的 event receive/apply/card-send 指标均成功且没有 native fallback。
+- Hermes 上游 `cron run` 会在成功的一次性任务自动删除后再次读取 `last_status`，因此本次终端显示 `Ran now: failed`。这属于上游 CLI 状态误报；以飞书卡片、sidecar metrics 和保存的 cron 输出三方一致判定 cron 卡片验收通过。
+- 临时设置错误 `HERMES_FEISHU_CARD_PROFILE_ID` 后，`doctor --explain` 显示 `profile_unknown` 与缺失 route，不暴露 chat id、token 或 secret；移除临时环境后恢复默认 profile，持久配置未变。
+
+仍待真实验收：群聊发起者与换操作者拒绝、topic。existing-container Docker 见 release-readiness 单独门禁。
+
+真实验收状态：**部分通过**。
+
 ## 普通会话
 
 提示词：
@@ -111,4 +138,3 @@ V3.8.9 notice suppress smoke: please run terminal command date, then reply exact
 ```
 
 截图入库前需要遮挡私人头像、姓名、chat id、群名和不适合公开的上下文。
-

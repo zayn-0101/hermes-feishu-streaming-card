@@ -3,11 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import secrets
-from typing import Any, Dict
+import time
+from typing import Any, Dict, Optional
 
 from .card_timeline import CardTimeline
 from .events import SidecarEvent
+from .status import StatusConfig, resolve_display_status
 from .text import StreamingTextNormalizer, normalize_stream_text
+
+
+def _now() -> float:
+    return time.time()
 
 
 @dataclass
@@ -45,7 +51,11 @@ class CardSession:
     conversation_id: str
     message_id: str
     chat_id: str
+    created_at: float = field(default_factory=_now)
+    updated_at: float = field(default_factory=_now)
     status: str = "thinking"
+    display_status: str = ""
+    display_status_source: str = "session"
     last_sequence: int = -1
     thinking_text: str = ""
     answer_text: str = ""
@@ -79,6 +89,12 @@ class CardSession:
             return self.answer_text
         return self.thinking_text
 
+    def refresh_display_status_source(
+        self, config: Optional[StatusConfig] = None
+    ) -> None:
+        resolved = resolve_display_status(self, config or StatusConfig.defaults())
+        self.display_status_source = resolved.source
+
     def apply(self, event: SidecarEvent) -> bool:
         if (
             event.conversation_id != self.conversation_id
@@ -92,6 +108,9 @@ class CardSession:
         if self.status in {"completed", "failed"}:
             return False
         self.last_sequence = max(self.last_sequence, event.sequence)
+
+        self.display_status = event.display_status
+        self.display_status_source = "explicit" if event.display_status else "session"
 
         if event.event == "thinking.delta":
             mode = str(event.data.get("mode") or "delta").strip().lower()
@@ -119,6 +138,8 @@ class CardSession:
         elif event.event == "tool.updated":
             tool_id = event.data.get("tool_id")
             if not isinstance(tool_id, str) or not tool_id:
+                self.updated_at = time.time()
+                self.refresh_display_status_source()
                 return True
             if self.answer_text and self._answer_archive_index is None:
                 self._answer_archive_index = self.timeline.entry_count
@@ -169,6 +190,8 @@ class CardSession:
                 self.notice_level = level
                 self.answer_text = content or title
                 self.status = "completed"
+                self.updated_at = time.time()
+                self.refresh_display_status_source()
                 return True
             self.timeline.record_notice(notice_id, title, level, content)
         elif event.event == "message.completed":
@@ -208,6 +231,8 @@ class CardSession:
             self.status = "failed"
             error = event.data.get("error")
             self.answer_text = error if isinstance(error, str) else "消息处理失败"
+        self.updated_at = time.time()
+        self.refresh_display_status_source()
         return True
 
     def _archive_current_answer_to_reasoning(self, final_answer: str = "") -> None:

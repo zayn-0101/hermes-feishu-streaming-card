@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextvars import ContextVar
 from dataclasses import dataclass
 from hashlib import sha256
@@ -10,20 +11,35 @@ import logging
 import math
 import os
 from pathlib import Path
+import queue
 import re
+import secrets
 import sys
 from types import SimpleNamespace
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib import parse
 from urllib import request
+
+from .operations import sign_transport_proof
+from .operations_transport import (
+    derive_operation_transport_secret,
+    read_transport_root_secret,
+    sign_command_transport_proof,
+)
+from .status import normalize_display_status
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_EVENT_URL = "http://127.0.0.1:8765/events"
 DEFAULT_TIMEOUT_SECONDS = 0.8
 TERMINAL_TIMEOUT_SECONDS = 10.0
+OPERATIONS_ACTION_TIMEOUT_SECONDS = 10.0
+OPERATIONS_ACTION_FORWARD_ATTEMPTS = 2
+OPERATIONS_ACTION_RETRY_DELAY_SECONDS = 0.1
+OPERATIONS_ACTION_WORKERS = 4
+OPERATIONS_ACTION_QUEUE_LIMIT = 64
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 MEDIA_RE = re.compile(r"MEDIA:([^\s\]]+)")
 LOCAL_FILE_RE = re.compile(
@@ -104,6 +120,64 @@ _HFC_FEISHU_NOTICE_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
     default=None,
 )
 _HFC_COMMAND_RESULT_CARD_COMMANDS = {"new", "reset", "clear", "undo", "stop", "model"}
+_OPERATION_TRANSPORT_SECRETS: dict[str, tuple[bytes, str, float]] = {}
+_OPERATION_TRANSPORT_SECRETS_LOCK = threading.Lock()
+_OPERATION_TRANSPORT_SECRET_TTL_SECONDS = 600.0
+_OPERATION_TRANSPORT_SECRET_LIMIT = 256
+
+
+class _OperationsActionDispatcher:
+    def __init__(self, *, workers: int, max_pending: int):
+        self._workers = workers
+        self._queue: queue.Queue[Callable[[], None]] = queue.Queue(
+            maxsize=max_pending
+        )
+        self._start_lock = threading.Lock()
+        self._started = False
+
+    def submit(self, task: Callable[[], None]) -> bool:
+        self._ensure_started()
+        try:
+            self._queue.put_nowait(task)
+        except queue.Full:
+            return False
+        return True
+
+    def wait(self) -> None:
+        self._queue.join()
+
+    def _ensure_started(self) -> None:
+        if self._started:
+            return
+        with self._start_lock:
+            if self._started:
+                return
+            for index in range(self._workers):
+                threading.Thread(
+                    target=self._run,
+                    name=f"hfc-operations-action-{index + 1}",
+                    daemon=True,
+                ).start()
+            self._started = True
+
+    def _run(self) -> None:
+        while True:
+            task = self._queue.get()
+            try:
+                task()
+            except Exception as exc:
+                _hfc_warn(
+                    "operations.select background worker failed: "
+                    f"{exc.__class__.__name__}"
+                )
+            finally:
+                self._queue.task_done()
+
+
+_OPERATIONS_ACTION_DISPATCHER = _OperationsActionDispatcher(
+    workers=OPERATIONS_ACTION_WORKERS,
+    max_pending=OPERATIONS_ACTION_QUEUE_LIMIT,
+)
 
 
 def reset_runtime_state() -> None:
@@ -116,6 +190,8 @@ def reset_runtime_state() -> None:
         _SEND_LOCKS.clear()
     with _PENDING_DELTAS_LOCK:
         _PENDING_DELTAS.clear()
+    with _OPERATION_TRANSPORT_SECRETS_LOCK:
+        _OPERATION_TRANSPORT_SECRETS.clear()
     _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
     _HFC_FEISHU_NOTICE_CONTEXT.set(None)
 
@@ -555,13 +631,120 @@ def handle_hfc_command_from_hermes_locals(local_vars: dict[str, Any]) -> bool:
             ),
             "profile_id": profile_id,
             "profile_source": profile_source,
+            "chat_type": _command_chat_type(
+                local_vars, source_obj, gateway_event_obj
+            ),
+            "operator": _command_operator(
+                local_vars, source_obj, gateway_event_obj
+            ),
             "created_at": _created_at(local_vars.get("created_at")),
             "platform": "feishu",
         }
+        if command == "doctor":
+            root_secret = read_transport_root_secret()
+            if root_secret is None:
+                return False
+            payload["adapter_command_proof"] = sign_command_transport_proof(
+                root_secret,
+                payload,
+                timestamp=int(time.time()),
+                nonce=secrets.token_urlsafe(18),
+            )
         url = f"{_summary_base_url(config.event_url)}/commands"
-        return _post_json_sync(url, payload, config.timeout_seconds)
+        if command != "doctor":
+            return _post_json_sync(url, payload, config.timeout_seconds)
+        result = _post_json_sync_response(url, payload, config.timeout_seconds)
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            return False
+        operation_id = str(result.get("operation_id") or "").strip()
+        if not operation_id:
+            return False
+        _remember_operation_transport(
+            operation_id,
+            derive_operation_transport_secret(root_secret, operation_id),
+            profile_id,
+        )
+        return True
     except Exception:
         return False
+
+
+def _remember_operation_transport(
+    operation_id: str,
+    secret: str | bytes,
+    profile_id: str | None = None,
+    transport_lineage_id: str = "",
+) -> None:
+    operation_id = str(operation_id or "").strip()
+    secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
+    if not operation_id or not isinstance(secret_bytes, bytes) or len(secret_bytes) < 16:
+        return
+    now = time.time()
+    with _OPERATION_TRANSPORT_SECRETS_LOCK:
+        _prune_operation_transport_secrets_locked(now)
+        existing = _OPERATION_TRANSPORT_SECRETS.get(operation_id)
+        trusted_profile_id = (
+            str(profile_id).strip()
+            if isinstance(profile_id, str) and profile_id.strip()
+            else existing[1] if existing is not None else "default"
+        )
+        context = (
+            secret_bytes,
+            trusted_profile_id,
+            now + _OPERATION_TRANSPORT_SECRET_TTL_SECONDS,
+        )
+        _OPERATION_TRANSPORT_SECRETS[operation_id] = context
+        lineage_id = str(transport_lineage_id or "").strip()
+        if lineage_id:
+            _OPERATION_TRANSPORT_SECRETS[lineage_id] = context
+        while len(_OPERATION_TRANSPORT_SECRETS) > _OPERATION_TRANSPORT_SECRET_LIMIT:
+            _OPERATION_TRANSPORT_SECRETS.pop(
+                next(iter(_OPERATION_TRANSPORT_SECRETS))
+            )
+
+
+def _operation_transport_context(operation_id: str) -> tuple[bytes, str] | None:
+    now = time.time()
+    with _OPERATION_TRANSPORT_SECRETS_LOCK:
+        _prune_operation_transport_secrets_locked(now)
+        item = _OPERATION_TRANSPORT_SECRETS.get(operation_id)
+        return (item[0], item[1]) if item is not None else None
+
+
+def _transport_secret_for_token(token: str) -> bytes | None:
+    operation_id = _operation_id_from_token(token)
+    context = _operation_transport_context(operation_id) if operation_id else None
+    return context[0] if context is not None else None
+
+
+def _operation_id_from_token(token: str) -> str:
+    try:
+        if not isinstance(token, str) or not token or len(token) > 2048:
+            return ""
+        encoded, _signature = token.rsplit(".", 1)
+        padding = "=" * (-len(encoded) % 4)
+        decoded = base64.b64decode(
+            encoded + padding,
+            altchars=b"-_",
+            validate=True,
+        )
+        if len(decoded) > 1024:
+            return ""
+        payload = json.loads(decoded.decode("utf-8"))
+        if not isinstance(payload, dict):
+            return ""
+        operation_id = payload.get("operation_id")
+        return str(operation_id).strip() if isinstance(operation_id, str) else ""
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+
+
+def _prune_operation_transport_secrets_locked(now: float) -> None:
+    for operation_id, (_secret, _profile_id, expires_at) in list(
+        _OPERATION_TRANSPORT_SECRETS.items()
+    ):
+        if expires_at <= now:
+            _OPERATION_TRANSPORT_SECRETS.pop(operation_id, None)
 
 
 def _command_text(local_vars: dict[str, Any]) -> str:
@@ -575,6 +758,43 @@ def _command_text(local_vars: dict[str, Any]) -> str:
     gateway_event_obj = local_vars.get("event")
     text = _first_attr_raw_string(gateway_event_obj, ("text", "content"))
     return text or ""
+
+
+def _command_chat_type(
+    local_vars: dict[str, Any], source_obj: Any, gateway_event_obj: Any
+) -> str:
+    message_obj = local_vars.get("message")
+    return (
+        _first_string(local_vars, ("chat_type",))
+        or _first_attr_string(message_obj, ("chat_type",))
+        or _first_attr_string(source_obj, ("chat_type",))
+        or _first_attr_string(gateway_event_obj, ("chat_type",))
+        or ""
+    )
+
+
+def _command_operator(
+    local_vars: dict[str, Any], source_obj: Any, gateway_event_obj: Any
+) -> str:
+    aliases = ("operator_open_id", "sender_open_id", "open_id")
+    direct = _first_string(local_vars, aliases)
+    if direct:
+        return direct
+    message_obj = local_vars.get("message")
+    for candidate in (
+        local_vars.get("operator"),
+        local_vars.get("sender_id"),
+        getattr(message_obj, "operator", None),
+        getattr(message_obj, "sender_id", None),
+        getattr(source_obj, "operator", None),
+        getattr(source_obj, "sender_id", None),
+        getattr(gateway_event_obj, "operator", None),
+        getattr(gateway_event_obj, "sender_id", None),
+    ):
+        value = _first_attr_string(candidate, ("open_id",))
+        if value:
+            return value
+    return ""
 
 
 def _parse_hfc_command(text: str) -> str | None:
@@ -1099,6 +1319,28 @@ def _hfc_feishu_response_types(adapter: Any) -> tuple[Any, Any]:
 def _hfc_empty_feishu_callback_response(adapter: Any) -> Any:
     response_type, _ = _hfc_feishu_response_types(adapter)
     return response_type() if response_type is not None else None
+
+
+def _hfc_toast_feishu_callback_response(
+    adapter: Any, content: str, *, toast_type: str = "warning"
+) -> Any:
+    response_type, _ = _hfc_feishu_response_types(adapter)
+    if response_type is None:
+        return None
+    response = response_type()
+    module = sys.modules.get(type(adapter).__module__)
+    callback_toast_type = getattr(module, "CallBackToast", None) if module else None
+    if callback_toast_type is None:
+        response_types = getattr(response_type, "_types", {})
+        if isinstance(response_types, dict):
+            callback_toast_type = response_types.get("toast")
+    if callback_toast_type is None:
+        return response
+    toast = callback_toast_type()
+    toast.type = toast_type
+    toast.content = content
+    response.toast = toast
+    return response
 
 
 def _hfc_raw_feishu_callback_response(adapter: Any, card_data: dict[str, Any]) -> Any:
@@ -2149,11 +2391,130 @@ def _hfc_on_feishu_card_action_trigger(self: Any, data: Any) -> Any:
         return _hfc_handle_native_model_action(self, data, action_value)
     if action == "interaction.select":
         return _hfc_handle_interaction_select_action(self, data, action_value)
+    if action == "operations.select":
+        return _hfc_handle_operations_select_action(self, data, action_value)
 
     original = getattr(type(self), "_hfc_original_on_card_action_trigger", None)
     if callable(original):
         return original(self, data)
     return _hfc_empty_feishu_callback_response(self)
+
+
+def _hfc_handle_operations_select_action(
+    adapter: Any,
+    data: Any,
+    action_value: dict[str, Any],
+) -> Any:
+    _hfc_info("inline card action received: operations.select")
+    operation_action = str(action_value.get("operation_action") or "").strip()
+    token = str(action_value.get("token") or "").strip()
+    transport_lineage_id = str(action_value.get("transport_lineage_id") or "").strip()
+    profile_scope = str(action_value.get("profile_scope") or "").strip()
+    chat_id = _hfc_action_chat_id(data)
+    if not operation_action or not token or not chat_id:
+        _hfc_info("operations.select ignored: missing action/token/chat")
+        return _hfc_empty_feishu_callback_response(adapter)
+    if not _hfc_card_operator_allowed(adapter, data, chat_id):
+        _hfc_info("operations.select rejected by Hermes admission")
+        return _hfc_empty_feishu_callback_response(adapter)
+
+    open_id = _hfc_action_open_id(data)
+    operation_id = _operation_id_from_token(token)
+    transport_context = _operation_transport_context(transport_lineage_id or operation_id)
+    if transport_context is None:
+        _hfc_info("operations.select rejected: authentication session expired")
+        return _hfc_empty_feishu_callback_response(adapter)
+    transport_secret, profile_id = transport_context
+    timestamp = int(time.time())
+    forwarded_value = {
+        "hfc_action": "operations.select",
+        "operation_action": operation_action,
+        "token": token,
+    }
+    if profile_scope:
+        forwarded_value["profile_scope"] = profile_scope
+    if transport_lineage_id:
+        forwarded_value["transport_lineage_id"] = transport_lineage_id
+    sidecar_payload = {
+        "adapter_transport_proof": {
+            "timestamp": timestamp,
+            "signature": sign_transport_proof(
+                transport_secret,
+                token=token,
+                action=operation_action,
+                callback_chat_id=chat_id,
+                callback_profile_id=profile_id,
+                callback_profile_scope=profile_scope,
+                operator_open_id=open_id,
+                timestamp=timestamp,
+            ),
+        },
+        "event": {
+            "action": {"value": forwarded_value},
+            "context": {
+                "open_chat_id": chat_id,
+                "profile_id": profile_id,
+            },
+            "operator": {"open_id": open_id},
+        }
+    }
+    try:
+        config = load_runtime_config()
+        url = f"{_summary_base_url(config.event_url)}/card/actions"
+    except Exception as exc:
+        _hfc_warn(
+            "operations.select background forward setup failed: "
+            f"{exc.__class__.__name__}"
+        )
+        return _hfc_toast_feishu_callback_response(
+            adapter, "操作暂不可用，请稍后重试"
+        )
+
+    def forward() -> None:
+        last_error: Exception | None = None
+        for attempt in range(OPERATIONS_ACTION_FORWARD_ATTEMPTS):
+            try:
+                result = _post_json_sync_response(
+                    url,
+                    sidecar_payload,
+                    OPERATIONS_ACTION_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                last_error = exc
+                if attempt + 1 < OPERATIONS_ACTION_FORWARD_ATTEMPTS:
+                    time.sleep(OPERATIONS_ACTION_RETRY_DELAY_SECONDS)
+                    continue
+                break
+            if isinstance(result, dict):
+                successor_id = str(result.get("operation_id") or "").strip()
+                if successor_id:
+                    _remember_operation_transport(
+                        successor_id,
+                        transport_secret,
+                        profile_id,
+                        transport_lineage_id or operation_id,
+                    )
+            return
+        if last_error is not None:
+            _hfc_warn(
+                "operations.select background forward failed: "
+                f"{last_error.__class__.__name__}"
+            )
+
+    try:
+        accepted = _OPERATIONS_ACTION_DISPATCHER.submit(forward)
+    except Exception as exc:
+        _hfc_warn(
+            "operations.select background dispatch failed: "
+            f"{exc.__class__.__name__}"
+        )
+        accepted = False
+    if not accepted:
+        _hfc_warn("operations.select background dispatch unavailable: capacity")
+        return _hfc_toast_feishu_callback_response(
+            adapter, "操作繁忙，请稍后重试"
+        )
+    return _hfc_empty_feishu_callback_response(adapter)
 
 
 def _hfc_handle_interaction_select_action(
@@ -2536,6 +2897,9 @@ async def _hfc_handle_feishu_card_action_event(self: Any, data: Any) -> None:
             )
         else:
             _hfc_info("background model_picker ignored: unresolved")
+        return
+    if action == "operations.select":
+        _hfc_info("background operations.select claimed by HFC")
         return
 
     original = getattr(type(self), "_hfc_original_handle_card_action_event", None)
@@ -3457,6 +3821,9 @@ def _event_data(
         "profile_id": profile_id,
         "profile_source": profile_source,
     }
+    display_status = normalize_display_status(local_vars.get("display_status"))
+    if display_status:
+        data["display_status"] = display_status
     reply_to_message_id = _reply_to_message_id_from_runtime(
         local_vars,
         message_obj,

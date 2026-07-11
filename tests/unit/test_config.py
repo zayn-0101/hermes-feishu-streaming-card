@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from hermes_feishu_card.config import load_config
+from hermes_feishu_card.config import load_config, resolve_operations_hermes_root
 
 
 CONFIG_ENV_VARS = (
@@ -11,6 +11,9 @@ CONFIG_ENV_VARS = (
     "HERMES_FEISHU_CARD_PORT",
     "FEISHU_APP_ID",
     "FEISHU_APP_SECRET",
+    "HERMES_DIR",
+    "HFC_HERMES_DIR",
+    "HERMES_AGENT_ROOT",
 )
 
 
@@ -53,6 +56,46 @@ def test_load_config_missing_file_returns_defaults(tmp_path):
             ],
         },
     }
+
+
+def test_operations_hermes_root_uses_process_hint_without_user_config(
+    monkeypatch, tmp_path
+):
+    hinted = tmp_path / "hermes-agent"
+    monkeypatch.setenv("HFC_HERMES_DIR", str(hinted))
+
+    assert resolve_operations_hermes_root() == hinted
+
+
+def test_operations_hermes_root_prefers_explicit_then_config_env_file(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server: {}\n", encoding="utf-8")
+    dotenv_root = tmp_path / "from-dotenv"
+    explicit_root = tmp_path / "explicit"
+    process_root = tmp_path / "from-process"
+    (tmp_path / ".env").write_text(f"HERMES_DIR={dotenv_root}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_DIR", str(process_root))
+
+    assert resolve_operations_hermes_root(config_path=config_path) == dotenv_root
+    assert (
+        resolve_operations_hermes_root(explicit_root, config_path=config_path)
+        == explicit_root
+    )
+
+
+def test_operations_hermes_root_prefers_selected_env_file_over_config_and_process(
+    monkeypatch, tmp_path
+):
+    config_path = tmp_path / "config.yaml"
+    selected_env = tmp_path / "selected.env"
+    config_path.write_text("server: {}\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("HERMES_DIR=config-root\n", encoding="utf-8")
+    selected_env.write_text("HERMES_DIR=selected-root\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_DIR", "process-root")
+
+    assert resolve_operations_hermes_root(
+        config_path=config_path, env_file=selected_env
+    ) == Path("selected-root")
 
 
 def test_example_config_uses_current_sidecar_schema():

@@ -37,6 +37,7 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 - **Second topic turns keep card rendering**: Since V3.8.16, Feishu/Lark topic groups that reuse the same `message_id` create a fresh card for the second and later messages.
 - **Cron routing intents keep card delivery**: Since V3.8.17, cron `deliver: origin`, `deliver: all`, and `origin,all` resolve to Feishu targets and send cards.
 - **Cron topic threads stay consistent**: Since V3.8.18, cron jobs created from Feishu topic threads preserve `thread_id` and return cards to the originating thread; non-Feishu origin thread ids are ignored.
+- **Bounded operations recovery**: V3.9.0 operations cards provide diagnosis, recheck, two-step safe repair, and restart confirmation; private chats do not compare operators, group confirmation stays with the initiator, and the CLI remains the fallback. Normal streaming-card footer/layout is unchanged.
 - **Long content protection**: Markdown tables and fenced code blocks split on structure boundaries instead of raw character cuts.
 - **Richer tool details**: `tool.updated` can show argument summaries, duration, and failure reason while keeping long details compact.
 - **Multi-bot / multi-profile**: bot registry, chat bindings, profile-aware session keys, titles, and routing diagnostics.
@@ -59,6 +60,18 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 | Long tables/code blocks render as raw Markdown | Markdown-aware table/code splitting with repeated headers and complete fences |
 | Multi-bot, group, and profile routing is hard to inspect | `bindings.chats`, safe `group_rules` diagnostics, profile-aware sessions, and `/health.routing` diagnostics |
 | Hook or sidecar failures are hard to debug | `doctor`, runtime import checks, `/health` metrics, fail-closed installer, restore/uninstall |
+
+## V3.9.0 Operations and Reliability Foundation
+
+V3.9.0 includes card progress-status routing and `.env` allowlist expansion for profile environment support from PR #84 by @Zanetach, and presents diagnosis/recovery through optional operations cards; normal streaming-card footer/layout remains unchanged.
+
+- **Controlled recovery**: operations cards are limited to diagnosis, recheck, two-step safe repair, and Gateway restart confirmation. Private confirmations do not compare operators; group repair/restart must be confirmed by the initiator. When the card is unavailable, expires, or does not apply, use `doctor`, `repair`, `install`, `status`, and `start/stop` CLI commands.
+- **Zero-config transport root**: the sidecar state directory creates a private-permission transport secret automatically. It is not stored in config or environment variables and never appears in cards, `status`, or diagnostics.
+- **Profile routing diagnosis**: setup resolves explicit `--profile-id` / `--event-url` before process environment, selected env file, and defaults. Only `doctor` shows the complete redacted identity/profile/event-endpoint route chain; `status` shows only the runtime `last_route` and per-profile events/profile-source summary; `/health` returns only its current `active_sessions`, `metrics`, `routing`, and `profile_diagnostics` fields.
+- **Safe repair and cleanup**: install/setup automatically repair only known-safe manifest/backup state; `--no-repair` opts out, while unverifiable user edits remain refused. Lifecycle cleanup bounds terminal runtime state and its hashed metrics/history.
+- **Compatibility and acceptance boundary**: Hermes/Docker automated regression covers argument and behavior boundaries. Existing-container Docker and real Feishu private/group repair/restart, topic, cron, and profile-mismatch validation remain pending acceptance, not verified claims.
+
+Full release notes: [docs/release-notes-v3.9.0.md](release-notes-v3.9.0.md).
 
 ## V3.8.18 Cron Topic-Thread Return Patch
 
@@ -360,6 +373,20 @@ The installer installs or upgrades the package, reads or prompts for Feishu cred
 python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --config ~/.hermes/config.yaml --yes
 ```
 
+The local, Docker, and PowerShell installers expose the same settings: `--config`, `--env-file`, `--version`, `--profile-id`, `--event-url`, and `--no-repair`; PowerShell uses `-Config`, `-EnvFile`, `-Version`, `-ProfileId`, `-EventUrl`, and `-NoRepair`. Existing one-line invocations remain valid. Resolution order is always explicit arguments > process environment > selected `.env` > script defaults.
+
+```bash
+bash install.sh \
+  --config ~/.hermes/config.yaml \
+  --env-file ~/.hermes/.env \
+  --version latest \
+  --profile-id child \
+  --event-url http://127.0.0.1:8765/events \
+  --no-repair
+```
+
+`setup` atomically changes only `HERMES_FEISHU_CARD_PROFILE_ID` and `HERMES_FEISHU_CARD_EVENT_URL` in the selected `.env`; comments, ordering, and unknown keys are preserved. The event URL must be an HTTP(S) endpoint ending in `/events`, without credentials, query, or fragment. Loopback, `host.docker.internal`, and single-label Docker Compose service hosts are accepted.
+
 After installation:
 
 ```bash
@@ -397,8 +424,8 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.18
-bash install-docker.sh
+export HFC_VERSION=v3.9.0
+bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
 GitHub Releases also include `hermes-feishu-card-<version>-macos.tar.gz`, `hermes-feishu-card-<version>-linux.tar.gz`, and `hermes-feishu-card-<version>-windows.zip`. Download one, extract it, and run `install.sh` or `install.ps1`. See [README-install.md](../README-install.md) for package details.
@@ -413,6 +440,16 @@ python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --ye
 ```
 
 `setup` generates config, validates Hermes (older Hermes from `v2026.4.23` through `v2026.4.x`, plus Hermes `0.13.0+`, `0.14.0`, `0.15.x`, `0.17.x`, `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` anchors), installs the package into the Hermes Gateway runtime venv Python, installs the hook, starts the sidecar, and checks health — all in one pass. Hermes semantic `VERSION` values may include or omit the `v` prefix, and descriptive values such as `Hermes Agent v0.18.2 (...)` are parsed for the numeric version token. Since V3.8.6, Docker/source-stripped installs without `VERSION` or `.git` metadata can fall back to verified `gateway/run.py` anchors; current versions also fall back to anchors when readable `VERSION` metadata is unparseable.
+
+After a multi-profile setup, use `doctor` to inspect the complete redacted route chain without mutation. `status` summarizes runtime routing/profile events and `/health` reports only its actual routing-health fields. `doctor` never renders App Secret, tokens, or URL credentials:
+
+```bash
+python3 -m hermes_feishu_card.cli doctor \
+  --config ~/.hermes/config.yaml \
+  --hermes-dir ~/.hermes/hermes-agent \
+  --profile-id child \
+  --explain
+```
 
 ## Core Features
 
@@ -569,6 +606,7 @@ Ensure Hermes `config.yaml` has `streaming.enabled: true` and `streaming.transpo
 | `doctor --config ... --hermes-dir ...` | Diagnostics: `version_source`, `version`, `minimum_supported_version`, `run_py_exists`, `hook_strategy`, `compatibility`, anchors, `reason`; supports `--explain` / `--json` |
 | `install --hermes-dir ... --yes` | Install hook into Hermes |
 | `repair --hermes-dir ... --yes` | Repair verifiable hook manifest/backup state without overwriting user edits |
+| `setup --repair ... --yes` / `--no-repair` | Automatically repair known-safe state, or explicitly opt out |
 | `restore --hermes-dir ... --yes` | Restore original Hermes files |
 | `uninstall --hermes-dir ... --yes` | Uninstall and restore |
 | `start --config ...` | Start sidecar |
@@ -613,6 +651,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v3.9.0](release-notes-v3.9.0.md) | Pending release | PR #84 / @Zanetach: card progress-status routing and `.env` allowlist expansion for profile environment support, operations safe repair/restart, and CLI fallback; normal streaming-card footer/layout remains unchanged |
 | [v3.8.18](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.18) | 2026-07 | PR #91: cron cards preserve `thread_id` and return to the originating Feishu topic thread |
 | [v3.8.17](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.17) | 2026-07 | PR #77: cron `deliver=origin/all` routing intents resolve to Feishu targets and send cards |
 | [v3.8.16](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.16) | 2026-07 | issue #89 / PR #88: topic groups that reuse `message_id` send a fresh card for the second and later messages |
@@ -689,6 +728,7 @@ Thanks to these contributors for improving the project:
 - [colinaaa](https://github.com/colinaaa) — [PR #88](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/88) fresh cards for second turns when Feishu topic groups reuse `message_id` (V3.8.16)
 - [colinaaa](https://github.com/colinaaa) — [PR #91](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/91) cron `thread_id` routing back to the originating Feishu topic-group thread (V3.8.18)
 - [zayn-0101](https://github.com/zayn-0101) — [PR #77](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/77) cron `deliver=origin/all` routing-intent card delivery fix (V3.8.17)
+- [Zanetach](https://github.com/Zanetach) — [PR #84](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/84) card progress-status routing and `.env` allowlist expansion for profile environment support (V3.9.0)
 
 ## Security
 

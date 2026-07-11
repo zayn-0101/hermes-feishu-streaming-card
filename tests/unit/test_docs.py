@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -146,7 +147,6 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "install-docker.sh" in readme
     assert "docker-compose.example.yml" in readme
     assert "Docker" in install_doc
-    assert "v3.8.18" in install_doc
     assert "v3.8.5" not in install_doc
     assert "version_source: gateway anchors" in install_doc
     assert "docs/release-notes-v3.8.17.md" in readme
@@ -186,7 +186,6 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "bash install.sh" in install_doc
     assert "install.ps1" in install_doc
     assert "HFC_VERSION" in install_doc
-    assert "v3.8.18" in install_doc
     assert "v3.6.6" in install_doc
 
     assert (ROOT / "install.sh").exists()
@@ -415,13 +414,12 @@ def test_v3817_release_notes_are_linked():
     assert "thinking.delta" in release_text
     assert "feishu-v382-readme-showcase.png" in release_text
     assert "hermes-feishu-card-v3.8.2-macos.tar.gz" in release_text
-    assert 'HFC_VERSION: "${HFC_VERSION:-v3.8.18}"' in compose
 
 
 def test_todo_points_to_v38_public_plan_docs():
     todo = read_doc("TODO.md")
 
-    assert "## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18" in todo
+    assert "## V3.8 / V3.9 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0" in todo
     assert "### V3.8.2：卡片 timeline 阅读体验补丁（已完成）" in todo
     assert "### V3.8.3：独立命令卡片（已完成）" in todo
     assert "### V3.8.4：Feishu WebSocket 命令卡片热修（已完成）" in todo
@@ -976,3 +974,108 @@ def test_docs_describe_release_readiness_boundaries():
     assert "0.18.x" in english_readiness
     assert "v2026.7.1+" in english_readiness
     assert "version_source: gateway anchors" in english_readiness
+
+
+def test_v390_documents_operations_reliability_release_gate():
+    readme = read_doc("README.md")
+    english_readme = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    compose = read_doc("docker-compose.example.yml")
+    changelog = read_doc("CHANGELOG.md")
+    todo = read_doc("TODO.md")
+    guide = read_doc("docs/user-guide.md")
+    english_guide = read_doc("docs/user-guide.en.md")
+    readiness = read_doc("docs/release-readiness.md")
+    english_readiness = read_doc("docs/release-readiness.en.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+    release_notes = read_doc("docs/release-notes-v3.9.0.md")
+
+    unreleased = re.search(r"(?ms)^## Unreleased\n.*?(?=^## V3\.8\.18|\Z)", changelog).group(0)
+    assert "[docs/release-notes-v3.9.0.md](docs/release-notes-v3.9.0.md)" in unreleased
+    assert "operations and reliability foundation" in unreleased
+    assert "PR #84" in unreleased
+    assert "@Zanetach" in unreleased
+    assert "## V3.9.0 —" not in changelog
+    assert "安全修复" in readme
+    assert "profile" in install_doc.lower()
+    assert "group" in acceptance.lower()
+
+    assert 'HFC_VERSION: "${HFC_VERSION:-v3.9.0}"' in compose
+    assert "v3.8.18" not in compose
+    for doc in (readme, english_readme, install_doc):
+        assert "HFC_VERSION=v3.9.0" in doc
+
+    chinese_credit = "卡片 progress-status 路由与 `.env` 白名单扩展的 profile 环境支持"
+    english_credit = "card progress-status routing and `.env` allowlist expansion for profile environment support"
+    for doc in (readme, guide, todo):
+        assert "PR #84" in doc
+        assert "@Zanetach" in doc
+        assert chinese_credit in doc
+    for doc in (english_readme, install_doc, changelog, english_guide, release_notes):
+        assert "PR #84" in doc
+        assert "@Zanetach" in doc
+        assert english_credit in doc
+
+    assert "普通流式卡的 footer/layout 保持不变" in "\n".join((readme, guide))
+    assert "normal streaming-card footer/layout remains unchanged" in "\n".join((english_readme, english_guide))
+
+    assert "仅 `doctor` 显示脱敏的完整 identity/profile/event endpoint route chain" in guide
+    assert "`status` 只显示运行时的 `last_route` 和各 profile 的 events/profile-source 摘要" in guide
+    assert "`/health` 只返回当前 `active_sessions`、`metrics`、`routing` 和 `profile_diagnostics` 等实际字段" in guide
+    assert "Only `doctor` shows the complete redacted identity/profile/event-endpoint route chain" in english_guide
+    assert "`status` shows only the runtime `last_route` and per-profile events/profile-source summary" in english_guide
+    assert "`/health` returns only its current `active_sessions`, `metrics`, `routing`, and `profile_diagnostics` fields" in english_guide
+    v390_docs = "\n".join((
+        changelog,
+        readme,
+        english_readme,
+        install_doc,
+        todo,
+        release_notes,
+        readiness,
+        english_readiness,
+        guide,
+        english_guide,
+        read_doc("docs/wiki/event-flow.md"),
+        acceptance,
+        read_doc("docs/wiki/maintenance-guide.md"),
+    ))
+    assert "status/doctor and /health route-chain" not in v390_docs
+    assert "`status`、`doctor` 和 `/health` 输出脱敏 route chain" not in v390_docs
+    assert "`status`, `doctor`, and `/health` emit redacted route-chain" not in v390_docs
+
+    v390_todo = re.search(r"(?ms)^### V3\.9\.0.*?(?=^### |\Z)", todo).group(0)
+    assert "[x] PR #84 / @Zanetach" in v390_todo
+    assert chinese_credit in v390_todo
+    assert "下次版本候选" not in todo
+    assert "当前不单独发版" not in todo
+
+    assert "4 个" in readiness
+    assert "four" in english_readiness.lower()
+    for asset in (
+        "hermes-feishu-card-v3.9.0-macos.tar.gz",
+        "hermes-feishu-card-v3.9.0-linux.tar.gz",
+        "hermes-feishu-card-v3.9.0-windows.zip",
+        "hermes-feishu-card-v3.9.0-checksums.txt",
+    ):
+        assert asset in release_notes
+    assert "Release candidate" in release_notes
+    assert "Pending release" in release_notes
+    assert "tag has not been created" in release_notes
+    assert "assets have not been created" in release_notes
+    assert "Pending real Feishu acceptance" in release_notes
+    assert not re.search(r"(?im)^released:\s*\d{4}-\d{2}-\d{2}", release_notes)
+    assert "has been released" not in release_notes.lower()
+    assert "待验收" in readiness
+    assert "pending acceptance" in english_readiness.lower()
+    assert "真实 Feishu" in "\\n".join((release_notes, readiness, guide))
+    assert "Docker" in "\\n".join((release_notes, readiness, guide))
+    assert "real Feishu" in "\\n".join((release_notes, english_readiness, english_guide))
+    assert "Docker" in "\\n".join((release_notes, english_readiness, english_guide))
+    assert "1172 passed, 3 skipped" in readiness
+    assert "1172 passed, 3 skipped" in english_readiness
+    assert "已通过（2026-07-11）" in readiness
+    assert "Passed on 2026-07-11" in english_readiness
+    assert "部分通过" in acceptance
+    assert "repair/restart" in readiness
+    assert "Pending acceptance" in english_readiness

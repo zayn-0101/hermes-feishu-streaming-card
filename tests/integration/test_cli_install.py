@@ -4,7 +4,10 @@ import shutil
 import subprocess
 import sys
 from argparse import Namespace
+from hashlib import sha256
 from pathlib import Path
+
+import pytest
 
 from hermes_feishu_card import cli
 from hermes_feishu_card.install import patcher
@@ -229,9 +232,180 @@ def test_setup_creates_config_installs_hook_and_starts_sidecar(tmp_path, monkeyp
     assert started["config"]["feishu"]["app_id"] == "cli_setup_test"
     assert started["config"]["feishu"]["app_secret"] == "setup-secret"
     assert started["config"]["server"]["port"] == 8765
+    assert f"HERMES_DIR={hermes_dir}" in (config_path.parent / ".env").read_text(
+        encoding="utf-8"
+    )
     assert "HERMES_FEISHU_CARD_PATCH_BEGIN" in run_py(hermes_dir).read_text(
         encoding="utf-8"
     )
+
+
+def test_setup_updates_selected_profile_env_and_reports_route_chain(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / "selected.env"
+    config_path.write_text(
+        """server:
+  host: 127.0.0.1
+  port: 8765
+profiles:
+  default:
+    feishu:
+      app_id: default-app
+      app_secret: default-secret
+  child:
+    feishu:
+      app_id: child-app
+      app_secret: child-secret
+    bots:
+      default: child-bot
+      items:
+        child-bot:
+          app_id: child-bot-app
+          app_secret: child-bot-secret
+""",
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        "# preserve me\n"
+        "UNKNOWN_KEY=keep\n"
+        "HERMES_FEISHU_CARD_PROFILE_ID=from-file\n"
+        "HERMES_FEISHU_CARD_EVENT_URL=http://127.0.0.1:9999/events\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_FEISHU_CARD_PROFILE_ID", "from-process")
+    monkeypatch.setenv(
+        "HERMES_FEISHU_CARD_EVENT_URL", "http://127.0.0.1:8888/events"
+    )
+    monkeypatch.setattr(cli, "_run_install", lambda args: 0)
+
+    exit_code = cli.main(
+        [
+            "setup",
+            "--hermes-dir",
+            str(hermes_dir),
+            "--config",
+            str(config_path),
+            "--env-file",
+            str(env_path),
+            "--profile-id",
+            "child",
+            "--event-url",
+            "http://127.0.0.1:8765/events",
+            "--yes",
+            "--skip-start",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    assert env_path.read_text(encoding="utf-8") == (
+        "# preserve me\n"
+        "UNKNOWN_KEY=keep\n"
+        "HERMES_FEISHU_CARD_PROFILE_ID=child\n"
+        "HERMES_FEISHU_CARD_EVENT_URL=http://127.0.0.1:8765/events\n"
+        f"HERMES_DIR={hermes_dir}\n"
+    )
+    assert "Route Chain" in captured.out
+    assert "profile_id: child" in captured.out
+    assert "event_endpoint: http://127.0.0.1:8765/events" in captured.out
+    assert "config_profile: child" in captured.out
+    assert "bot_id: child-bot" in captured.out
+    assert "route_reason: bots.default" in captured.out
+    assert "profile_credentials_missing" not in captured.out
+    assert "child-secret" not in captured.out
+
+
+def test_setup_starts_sidecar_with_selected_env_file(tmp_path, monkeypatch, capsys):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / "selected.env"
+    config_path.write_text(
+        "feishu:\n  app_id: setup-app\n  app_secret: setup-secret\n",
+        encoding="utf-8",
+    )
+    started = {}
+    monkeypatch.setattr(cli, "_run_install", lambda args: 0)
+    monkeypatch.setattr(
+        cli,
+        "start_sidecar",
+        lambda path, config, **kwargs: started.update(path=Path(path), kwargs=kwargs) or "started",
+    )
+    monkeypatch.setattr(
+        cli,
+        "status_sidecar",
+        lambda config: {"running": True, "pid": 123, "health": {"metrics": {}}},
+    )
+
+    exit_code = cli.main(
+        [
+            "setup", "--hermes-dir", str(hermes_dir), "--config", str(config_path),
+            "--env-file", str(env_path), "--yes",
+        ]
+    )
+
+    assert exit_code == 0, capsys.readouterr().err
+    assert started == {"path": config_path, "kwargs": {"env_file": env_path}}
+    assert f"HERMES_DIR={hermes_dir}" in env_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "event_url",
+    [
+        "ftp://127.0.0.1:8765/events",
+        "http://user:secret@127.0.0.1:8765/events",
+        "http://127.0.0.1:8765/events?token=secret",
+        "http://127.0.0.1:8765/events#fragment",
+        "http://example.com:8765/events",
+        "http://192.168.1.20:8765/events",
+        "http://127.0.0.1:8765/health",
+    ],
+)
+def test_setup_rejects_invalid_event_url_without_writing_env(
+    event_url, tmp_path, capsys
+):
+    env_path = tmp_path / ".env"
+
+    exit_code = cli.main(
+        [
+            "setup",
+            "--hermes-dir",
+            str(tmp_path / "hermes"),
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--env-file",
+            str(env_path),
+            "--profile-id",
+            "default",
+            "--event-url",
+            event_url,
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code != 0
+    assert "invalid event URL" in captured.err
+    assert not env_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("event_url", "normalized"),
+    [
+        ("http://localhost:8765/events", "http://localhost:8765/events"),
+        ("http://127.0.0.2:8765/events", "http://127.0.0.2:8765/events"),
+        ("http://[::1]:8765/events", "http://[::1]:8765/events"),
+        (
+            "https://host.docker.internal/events",
+            "https://host.docker.internal/events",
+        ),
+        ("http://hfc-sidecar:8765/api/events", "http://hfc-sidecar:8765/api/events"),
+    ],
+)
+def test_event_url_accepts_supported_sidecar_hosts(event_url, normalized):
+    assert cli._validate_event_url(event_url) == normalized
 
 
 def test_setup_warns_when_hermes_streaming_appears_disabled(
@@ -539,7 +713,7 @@ def test_install_and_restore_latest_layout_patches_scheduler_cron(tmp_path):
     gateway_dir = hermes_dir / "gateway"
     cron_dir = hermes_dir / "cron"
     gateway_dir.mkdir(parents=True)
-    cron_dir.mkdir()
+    cron_dir.mkdir(exist_ok=True)
     (hermes_dir / "VERSION").write_text("v0.13.0\n", encoding="utf-8")
     run_original = '''
 class GatewayRunner:
@@ -588,6 +762,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None):
     assert (gateway_dir / "run.py").read_text(encoding="utf-8") == run_original
     assert (cron_dir / "scheduler.py").read_text(encoding="utf-8") == cron_original
     assert not (cron_dir / "scheduler.py.hermes_feishu_card.bak").exists()
+
+
+def test_repeat_install_ignores_unchanged_optional_cron_evidence(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    cron_dir = hermes_dir / "cron"
+    cron_dir.mkdir(exist_ok=True)
+    (cron_dir / "scheduler.py").write_text("def unrelated():\n    return None\n", encoding="utf-8")
+
+    first = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    second = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
 
 
 def test_restore_accepts_phase_one_placeholder_install(tmp_path):
@@ -739,7 +926,7 @@ def test_reinstall_refuses_to_bless_user_edited_run_py(tmp_path):
     assert run_py(hermes_dir).read_text(encoding="utf-8") == edited
 
 
-def test_reinstall_after_hermes_upgrade_replaces_stale_unpatched_state(tmp_path):
+def test_reinstall_after_hermes_upgrade_refuses_changed_stale_state(tmp_path):
     hermes_dir = copy_hermes(tmp_path)
 
     install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
@@ -756,21 +943,20 @@ def test_reinstall_after_hermes_upgrade_replaces_stale_unpatched_state(tmp_path)
         "        return 'upgraded answer'\n"
     )
     (hermes_dir / "VERSION").write_text("v2026.7.7.2\n", encoding="utf-8")
+    original_backup = backup_path(hermes_dir).read_text(encoding="utf-8")
+    original_manifest = manifest_path(hermes_dir).read_text(encoding="utf-8")
     run_py(hermes_dir).write_text(upgraded, encoding="utf-8")
 
     reinstall = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
 
-    assert reinstall.returncode == 0, reinstall.stderr
-    current = run_py(hermes_dir).read_text(encoding="utf-8")
-    assert "HERMES_FEISHU_CARD_PATCH_BEGIN" in current
-    assert "upgraded answer" in current
-    assert backup_path(hermes_dir).read_text(encoding="utf-8") == upgraded
-    manifest = json.loads(manifest_path(hermes_dir).read_text(encoding="utf-8"))
-    assert manifest["patched_sha256"] == cli.file_sha256(run_py(hermes_dir))
-    assert manifest["backup_sha256"] == cli.file_sha256(backup_path(hermes_dir))
+    assert reinstall.returncode != 0
+    assert "run.py changed since install" in reinstall.stderr
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == upgraded
+    assert backup_path(hermes_dir).read_text(encoding="utf-8") == original_backup
+    assert manifest_path(hermes_dir).read_text(encoding="utf-8") == original_manifest
 
 
-def test_repair_clears_stale_unpatched_state_after_hermes_upgrade(tmp_path):
+def test_repair_refuses_changed_stale_state_after_hermes_upgrade(tmp_path):
     hermes_dir = copy_hermes(tmp_path)
 
     install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
@@ -778,15 +964,17 @@ def test_repair_clears_stale_unpatched_state_after_hermes_upgrade(tmp_path):
     upgraded = patcher.remove_patch(
         run_py(hermes_dir).read_text(encoding="utf-8")
     ) + "\n# upstream Hermes changed this file during upgrade\n"
+    original_backup = backup_path(hermes_dir).read_text(encoding="utf-8")
+    original_manifest = manifest_path(hermes_dir).read_text(encoding="utf-8")
     run_py(hermes_dir).write_text(upgraded, encoding="utf-8")
 
     result = run_cli("repair", "--hermes-dir", str(hermes_dir), "--yes")
 
-    assert result.returncode == 0, result.stderr
-    assert "install state: cleared stale unpatched state" in result.stdout
+    assert result.returncode != 0
+    assert "run.py changed since install" in result.stderr
     assert run_py(hermes_dir).read_text(encoding="utf-8") == upgraded
-    assert not backup_path(hermes_dir).exists()
-    assert not manifest_path(hermes_dir).exists()
+    assert backup_path(hermes_dir).read_text(encoding="utf-8") == original_backup
+    assert manifest_path(hermes_dir).read_text(encoding="utf-8") == original_manifest
 
 
 def test_doctor_json_reports_changed_installed_run_py(tmp_path):
@@ -1038,7 +1226,7 @@ def test_reinstall_without_manifest_refuses_user_edited_run_py(tmp_path):
     assert not manifest_path(hermes_dir).exists()
 
 
-def test_reinstall_without_manifest_refuses_unedited_patched_run_py(tmp_path):
+def test_reinstall_without_manifest_auto_repairs_unedited_patched_run_py(tmp_path):
     hermes_dir = copy_hermes(tmp_path)
 
     install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
@@ -1049,11 +1237,11 @@ def test_reinstall_without_manifest_refuses_unedited_patched_run_py(tmp_path):
 
     reinstall = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
 
-    assert reinstall.returncode != 0
-    assert "install state incomplete" in reinstall.stderr
+    assert reinstall.returncode == 0, reinstall.stderr
+    assert "manifest: rebuilt" in reinstall.stdout
     assert run_py(hermes_dir).read_text(encoding="utf-8") == patched
     assert backup_path(hermes_dir).read_text(encoding="utf-8") == original_backup
-    assert not manifest_path(hermes_dir).exists()
+    assert manifest_path(hermes_dir).exists()
 
 
 def test_reinstall_without_backup_refuses_user_edited_run_py(tmp_path):
@@ -1180,7 +1368,171 @@ def test_setup_repair_rebuilds_missing_manifest_before_install(
     assert manifest_path(hermes_dir).exists()
 
 
-def test_reinstall_without_state_refuses_owned_patch_in_run_py(tmp_path):
+def test_setup_auto_repairs_issue_82_corrupt_completion_marker(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = tmp_path / "generated" / "feishu-card.yaml"
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_setup_auto_repair")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "setup-auto-repair-secret")
+    started = []
+    monkeypatch.setattr(
+        cli,
+        "start_sidecar",
+        lambda *_args: started.append(True) or "started",
+    )
+    monkeypatch.setattr(
+        cli,
+        "status_sidecar",
+        lambda _config: {
+            "running": True,
+            "pid": 12345,
+            "health": {"active_sessions": 0, "metrics": {}},
+            "pid_running": True,
+        },
+    )
+    assert cli.main(["install", "--hermes-dir", str(hermes_dir), "--yes"]) == 0
+    current = run_py(hermes_dir).read_text(encoding="utf-8")
+    corrupt = current.replace("# HERMES_FEISHU_CARD_COMPLETE_PATCH_END\n", "")
+    run_py(hermes_dir).write_text(corrupt, encoding="utf-8")
+    manifest = json.loads(manifest_path(hermes_dir).read_text(encoding="utf-8"))
+    manifest["patched_sha256"] = sha256(corrupt.encode("utf-8")).hexdigest()
+    manifest_path(hermes_dir).write_text(
+        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    exit_code = cli.main(
+        [
+            "setup",
+            "--hermes-dir",
+            str(hermes_dir),
+            "--config",
+            str(config_path),
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    assert "run.py: restored verified backup" in captured.out
+    assert "run.py: reapplied current hook" in captured.out
+    assert "setup ok" in captured.out
+    assert started == [True]
+    assert "HERMES_FEISHU_CARD_COMPLETE_PATCH_END" in run_py(
+        hermes_dir
+    ).read_text(encoding="utf-8")
+
+    doctor_code = cli.main(
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--hermes-dir",
+            str(hermes_dir),
+            "--json",
+        ]
+    )
+    doctor = json.loads(capsys.readouterr().out)
+    assert doctor_code == 0
+    assert doctor["install_state"]["status"] == "installed"
+
+
+def test_install_no_repair_refuses_repairable_corrupt_state(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    assert run_cli("install", "--hermes-dir", str(hermes_dir), "--yes").returncode == 0
+    current = run_py(hermes_dir).read_text(encoding="utf-8")
+    corrupt = current.replace("# HERMES_FEISHU_CARD_COMPLETE_PATCH_END\n", "")
+    run_py(hermes_dir).write_text(corrupt, encoding="utf-8")
+    manifest = json.loads(manifest_path(hermes_dir).read_text(encoding="utf-8"))
+    manifest["patched_sha256"] = sha256(corrupt.encode("utf-8")).hexdigest()
+    manifest_path(hermes_dir).write_text(
+        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    result = run_cli(
+        "install",
+        "--no-repair",
+        "--hermes-dir",
+        str(hermes_dir),
+        "--yes",
+    )
+
+    assert result.returncode != 0
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == corrupt
+    assert not list(run_py(hermes_dir).parent.glob("run.py.hfc-corrupt-*"))
+
+
+def test_setup_no_repair_leaves_repairable_state_untouched(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = tmp_path / "generated" / "feishu-card.yaml"
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_setup_no_repair")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "setup-no-repair-secret")
+    started = []
+    monkeypatch.setattr(
+        cli,
+        "start_sidecar",
+        lambda *_args: started.append(True) or "started",
+    )
+    assert cli.main(["install", "--hermes-dir", str(hermes_dir), "--yes"]) == 0
+    current = run_py(hermes_dir).read_text(encoding="utf-8")
+    corrupt = current.replace("# HERMES_FEISHU_CARD_COMPLETE_PATCH_END\n", "")
+    run_py(hermes_dir).write_text(corrupt, encoding="utf-8")
+    manifest = json.loads(manifest_path(hermes_dir).read_text(encoding="utf-8"))
+    manifest["patched_sha256"] = sha256(corrupt.encode("utf-8")).hexdigest()
+    manifest_path(hermes_dir).write_text(
+        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    exit_code = cli.main(
+        [
+            "setup",
+            "--repair",
+            "--no-repair",
+            "--hermes-dir",
+            str(hermes_dir),
+            "--config",
+            str(config_path),
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code != 0
+    assert started == []
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == corrupt
+    assert "run.py: restored verified backup" not in captured.out
+    assert not list(run_py(hermes_dir).parent.glob("run.py.hfc-corrupt-*"))
+
+
+def test_doctor_does_not_execute_repairable_plan(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    assert run_cli("install", "--hermes-dir", str(hermes_dir), "--yes").returncode == 0
+    current = run_py(hermes_dir).read_text(encoding="utf-8")
+    corrupt = current.replace("# HERMES_FEISHU_CARD_COMPLETE_PATCH_END\n", "")
+    run_py(hermes_dir).write_text(corrupt, encoding="utf-8")
+    manifest = json.loads(manifest_path(hermes_dir).read_text(encoding="utf-8"))
+    manifest["patched_sha256"] = sha256(corrupt.encode("utf-8")).hexdigest()
+    manifest_path(hermes_dir).write_text(
+        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    result = run_cli(
+        "doctor",
+        "--config",
+        "config.yaml.example",
+        "--hermes-dir",
+        str(hermes_dir),
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == corrupt
+    assert not list(run_py(hermes_dir).parent.glob("run.py.hfc-corrupt-*"))
+
+
+def test_reinstall_without_state_auto_repairs_owned_patch_in_run_py(tmp_path):
     hermes_dir = copy_hermes(tmp_path)
 
     install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
@@ -1191,11 +1543,12 @@ def test_reinstall_without_state_refuses_owned_patch_in_run_py(tmp_path):
 
     reinstall = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
 
-    assert reinstall.returncode != 0
-    assert "install state incomplete" in reinstall.stderr
+    assert reinstall.returncode == 0, reinstall.stderr
+    assert "backup: recreated" in reinstall.stdout
+    assert "manifest: rebuilt" in reinstall.stdout
     assert run_py(hermes_dir).read_text(encoding="utf-8") == patched
-    assert not backup_path(hermes_dir).exists()
-    assert not manifest_path(hermes_dir).exists()
+    assert backup_path(hermes_dir).exists()
+    assert manifest_path(hermes_dir).exists()
 
 
 def test_existing_manifest_survives_manifest_rewrite_failure(tmp_path, monkeypatch):

@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from hermes_feishu_card.bots import FeishuClientFactory
 from hermes_feishu_card.feishu_client import FeishuClient
@@ -111,6 +112,7 @@ def test_main_passes_boundary_to_create_app_when_bot_credentials_exist(monkeypat
     assert captured["kwargs"]["process_token"] == "token-1"
     assert captured["kwargs"]["card_config"] == {"title": "Credentialed Card"}
     assert captured["kwargs"]["bot_router"] is not None
+    assert captured["kwargs"]["operations_config_path"] == "config.yaml"
 
 
 def test_main_uses_noop_without_any_credentials(monkeypatch):
@@ -136,6 +138,43 @@ def test_main_uses_noop_without_any_credentials(monkeypatch):
     assert isinstance(captured["feishu_client"], NoopFeishuClient)
     assert captured["kwargs"]["card_config"] == {"title": "Noop Card"}
     assert captured["kwargs"]["bot_router"] is None
+
+
+def test_main_passes_config_scoped_hermes_root_to_operations(monkeypatch, tmp_path):
+    config = {"server": {"host": "127.0.0.1", "port": 0}, "feishu": {}, "card": {}}
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server: {}\n", encoding="utf-8")
+    hermes_root = tmp_path / "custom-hermes"
+    captured = {}
+    monkeypatch.setattr(runner, "load_config", lambda path: config)
+    monkeypatch.setattr(
+        runner, "resolve_operations_hermes_root", lambda **kwargs: hermes_root
+    )
+    monkeypatch.setattr(
+        runner, "create_app", lambda _client, **kwargs: captured.update(kwargs) or object()
+    )
+    monkeypatch.setattr(runner.web, "run_app", lambda *_args, **_kwargs: None)
+
+    assert main(["--config", str(config_path)]) == 0
+    assert captured["operations_hermes_root"] == hermes_root
+
+
+def test_main_passes_selected_env_file_to_operations_root_resolution(monkeypatch, tmp_path):
+    config = {"server": {"host": "127.0.0.1", "port": 0}, "feishu": {}, "card": {}}
+    config_path = tmp_path / "config.yaml"
+    selected_env = tmp_path / "selected.env"
+    hermes_root = tmp_path / "selected-hermes"
+    config_path.write_text("server: {}\n", encoding="utf-8")
+    selected_env.write_text(f"HERMES_DIR={hermes_root}\n", encoding="utf-8")
+    captured = {}
+    monkeypatch.setattr(runner, "load_config", lambda path: config)
+    monkeypatch.setattr(
+        runner, "create_app", lambda _client, **kwargs: captured.update(kwargs) or object()
+    )
+    monkeypatch.setattr(runner.web, "run_app", lambda *_args, **_kwargs: None)
+
+    assert main(["--config", str(config_path), "--env-file", str(selected_env)]) == 0
+    assert captured["operations_hermes_root"] == hermes_root
 
 
 def test_main_switches_auto_interactions_to_text_for_localhost(monkeypatch):

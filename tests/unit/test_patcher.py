@@ -108,6 +108,12 @@ def test_apply_patch_013_plus_inserts_cron_delivery_hook():
     assert patcher.remove_patch(patched) == content
 
 
+def test_apply_cron_patch_is_a_noop_when_optional_anchor_is_absent():
+    content = "def unrelated():\n    return None\n"
+
+    assert patcher.apply_cron_patch(content) == content
+
+
 def test_apply_patch_inserts_slash_confirm_card_hook():
     content = (
         "class GatewayRunner:\n"

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+from ipaddress import ip_address
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 from pathlib import Path
 from typing import Any
@@ -15,11 +18,25 @@ from typing import Any
 import yaml
 
 from hermes_feishu_card.config import load_config
-from hermes_feishu_card.bots import BotRegistry
+from hermes_feishu_card.bots import BotRegistry, RoutingContext
+from hermes_feishu_card.diagnostics import (
+    DiagnosticReport,
+    build_diagnostic_report,
+    build_route_diagnostics,
+    format_diagnostic_text,
+    safe_event_endpoint_for_output,
+)
 from hermes_feishu_card.events import SidecarEvent
 from hermes_feishu_card.feishu_client import FeishuAPIError, FeishuClient, FeishuClientConfig
 from hermes_feishu_card.install.detect import HermesDetection, detect_hermes
+from hermes_feishu_card.install.envfile import read_hfc_env, update_hfc_env
 from hermes_feishu_card.install.manifest import file_sha256
+from hermes_feishu_card.install.recovery import (
+    RecoveryRefused,
+    _first_refusal,
+    execute_recovery,
+    plan_recovery,
+)
 from hermes_feishu_card.install.patcher import (
     apply_patch,
     apply_cron_patch,
@@ -34,6 +51,9 @@ from hermes_feishu_card.session import CardSession
 
 BACKUP_SUFFIX = ".hermes_feishu_card.bak"
 MANIFEST_NAME = ".hermes_feishu_card_manifest"
+DEFAULT_EVENT_URL = "http://127.0.0.1:8765/events"
+PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+COMPOSE_HOST_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,62}$")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,6 +97,7 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--config", required=True)
     doctor.add_argument("--hermes-dir")
     doctor.add_argument("--skip-hermes", action="store_true")
+    doctor.add_argument("--profile-id")
     doctor_output = doctor.add_mutually_exclusive_group()
     doctor_output.add_argument("--json", action="store_true", dest="json_output")
     doctor_output.add_argument("--explain", action="store_true")
@@ -91,6 +112,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=str(Path.home() / ".hermes_feishu_card" / "config.yaml"),
         help="sidecar config path to create or reuse",
     )
+    setup.add_argument("--env-file")
+    setup.add_argument("--profile-id")
+    setup.add_argument("--event-url")
     setup.add_argument(
         "--skip-start",
         action="store_true",
@@ -102,6 +126,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="repair known-safe Hermes hook install state before installing",
     )
     setup.add_argument(
+        "--no-repair",
+        action="store_true",
+        help="do not automatically repair known-safe Hermes hook install state",
+    )
+    setup.add_argument(
         "--yes",
         action="store_true",
         required=True,
@@ -111,6 +140,8 @@ def _build_parser() -> argparse.ArgumentParser:
     for command in ("start", "stop", "status"):
         process_parser = subparsers.add_parser(command)
         process_parser.add_argument("--config", default="config.yaml.example")
+        if command == "start":
+            process_parser.add_argument("--env-file")
 
     smoke = subparsers.add_parser("smoke-feishu-card")
     smoke.add_argument("--config", default="config.yaml.example")
@@ -146,12 +177,23 @@ def _build_parser() -> argparse.ArgumentParser:
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--hermes-dir", required=True)
         command_parser.add_argument("--yes", action="store_true", required=True)
+        if command == "install":
+            command_parser.add_argument("--no-repair", action="store_true")
     return parser
 
 
 def _run_setup(args: argparse.Namespace) -> int:
     config_path = Path(args.config).expanduser()
     try:
+        route_settings = _resolve_route_settings(args, config_path)
+        update_hfc_env(
+            route_settings["env_path"],
+            {
+                "HERMES_FEISHU_CARD_PROFILE_ID": route_settings["profile_id"],
+                "HERMES_FEISHU_CARD_EVENT_URL": route_settings["event_url"],
+                "HERMES_DIR": str(Path(args.hermes_dir).expanduser()),
+            },
+        )
         created = _ensure_setup_config(config_path)
         config = load_config(config_path)
     except Exception as exc:
@@ -159,10 +201,29 @@ def _run_setup(args: argparse.Namespace) -> int:
         return 1
 
     print(f"config: {'created' if created else 'existing'} {config_path}")
-    if not _has_feishu_credentials(config):
+    detection = detect_hermes(args.hermes_dir)
+    diagnostic_args = argparse.Namespace(
+        hermes_dir=args.hermes_dir,
+        skip_hermes=False,
+        _profile_id=route_settings["profile_id"],
+        _profile_source=route_settings["profile_source"],
+        _event_url=route_settings["event_url"],
+    )
+    report = _build_doctor_report(config_path, config, diagnostic_args)
+    if isinstance(report, DiagnosticReport):
+        print(_format_route_chain(report))
+
+    profile_id = route_settings["profile_id"]
+    if not _profile_exists(config, profile_id):
+        print(
+            "error: profile_unknown: selected profile is not present in config",
+            file=sys.stderr,
+        )
+        return 1
+    if not _has_feishu_credentials(config, profile_id):
         print(
             (
-                "error: Feishu credentials are required before setup installs "
+                "error: profile_credentials_missing: Feishu credentials are required before setup installs "
                 "the Hermes hook. Set FEISHU_APP_ID and FEISHU_APP_SECRET, or "
                 f"fill feishu.app_id and feishu.app_secret in {config_path}."
             ),
@@ -170,7 +231,6 @@ def _run_setup(args: argparse.Namespace) -> int:
         )
         return 1
 
-    detection = detect_hermes(args.hermes_dir)
     if not detection.supported:
         print(_format_hermes_detection(detection), file=sys.stderr)
         return 1
@@ -178,7 +238,7 @@ def _run_setup(args: argparse.Namespace) -> int:
     print(_format_hermes_detection(detection))
     _print_hermes_streaming_guidance(Path(args.hermes_dir))
 
-    if args.repair:
+    if args.repair and not args.no_repair:
         repair_code = _run_repair(
             argparse.Namespace(hermes_dir=args.hermes_dir, yes=True)
         )
@@ -186,7 +246,11 @@ def _run_setup(args: argparse.Namespace) -> int:
             return repair_code
 
     install_code = _run_install(
-        argparse.Namespace(hermes_dir=args.hermes_dir, yes=True)
+        argparse.Namespace(
+            hermes_dir=args.hermes_dir,
+            yes=True,
+            no_repair=args.no_repair,
+        )
     )
     if install_code != 0:
         return install_code
@@ -197,7 +261,15 @@ def _run_setup(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        start_result = start_sidecar(config_path, config)
+        default_env_path = config_path.parent / ".env"
+        if route_settings["env_path"] == default_env_path:
+            start_result = start_sidecar(config_path, config)
+        else:
+            start_result = start_sidecar(
+                config_path,
+                config,
+                env_file=route_settings["env_path"],
+            )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -219,8 +291,13 @@ def _run_setup(args: argparse.Namespace) -> int:
     return 0
 
 
-def _has_feishu_credentials(config: dict[str, dict[str, object]]) -> bool:
-    feishu = config.get("feishu", {})
+def _has_feishu_credentials(
+    config: dict[str, Any], profile_id: str = ""
+) -> bool:
+    selected = _profile_config(config, profile_id)
+    feishu = selected.get("feishu", {})
+    if not isinstance(feishu, dict):
+        return False
     app_id = feishu.get("app_id", "")
     app_secret = feishu.get("app_secret", "")
     return bool(str(app_id).strip() and str(app_secret).strip())
@@ -277,12 +354,16 @@ card:
 def _run_doctor(args: argparse.Namespace) -> int:
     config_path = Path(args.config).expanduser()
     try:
+        route_settings = _resolve_route_settings(args, config_path)
+        args._profile_id = route_settings["profile_id"]
+        args._profile_source = route_settings["profile_source"]
+        args._event_url = route_settings["event_url"]
         config = load_config(config_path)
     except Exception as exc:
         if args.json_output:
             print(
                 json.dumps(
-                    _doctor_error_report(config_path, exc),
+                    _doctor_json_output_payload(_doctor_error_report(config_path, exc)),
                     ensure_ascii=False,
                     indent=2,
                     sort_keys=True,
@@ -297,18 +378,28 @@ def _run_doctor(args: argparse.Namespace) -> int:
 
     if args.json_output or args.explain:
         report = _build_doctor_report(config_path, config, args)
+        payload = report.to_dict() if isinstance(report, DiagnosticReport) else report
         if args.json_output:
             print(
                 json.dumps(
-                    report,
+                    _doctor_json_output_payload(payload),
                     ensure_ascii=False,
                     indent=2,
                     sort_keys=True,
                 )
             )
         else:
-            print(_format_doctor_explanation(report))
-        return _doctor_exit_code(report)
+            if isinstance(report, DiagnosticReport):
+                print(
+                    f"{format_diagnostic_text(report, explain=True)}\n\n"
+                    f"{_format_route_chain(report)}"
+                )
+            else:
+                explanation = _format_doctor_explanation(report)
+                if isinstance(report.get("routing"), dict):
+                    explanation = f"{explanation}\n\n{_format_route_chain(report)}"
+                print(explanation)
+        return _doctor_exit_code(payload)
 
     host = config["server"]["host"]
     port = config["server"]["port"]
@@ -330,6 +421,66 @@ def _run_doctor(args: argparse.Namespace) -> int:
         return 0 if detection.supported else 1
     print("hermes: not checked")
     return 0
+
+
+def _doctor_json_output_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    output = _redact_doctor_json_paths(payload)
+    routing = output.get("routing")
+    if not isinstance(routing, dict):
+        return output
+    output_routing = dict(routing)
+    endpoint = output_routing.get("event_endpoint")
+    if isinstance(endpoint, str):
+        output_routing["event_endpoint"] = safe_event_endpoint_for_output(endpoint)
+    output["routing"] = output_routing
+    return output
+
+
+_DOCTOR_JSON_PATH_KEYS = frozenset(
+    {
+        "backup_path",
+        "config_path",
+        "cron_backup_path",
+        "cron_py",
+        "manifest_path",
+        "path",
+        "python",
+        "root",
+        "run_py",
+        "suggested_root",
+    }
+)
+
+
+def _redact_doctor_json_paths(value: Any, key: str = "") -> Any:
+    if key in _DOCTOR_JSON_PATH_KEYS and isinstance(value, str):
+        return "[redacted]"
+    if isinstance(value, dict):
+        return {
+            child_key: _redact_doctor_json_paths(child_value, str(child_key))
+            for child_key, child_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_doctor_json_paths(item) for item in value]
+    if isinstance(value, str):
+        return _redact_absolute_paths_in_text(value)
+    return value
+
+
+_DOCTOR_JSON_ABSOLUTE_PATH_PREFIX_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])(?:"
+    r"/[^\s\"'<>/\\]+/"
+    r"|[A-Za-z]:\\"
+    r"|\\\\[^\s\"'<>/\\]+\\[^\s\"'<>/\\]+"
+    r")"
+)
+
+
+def _redact_absolute_paths_in_text(value: str) -> str:
+    if not _DOCTOR_JSON_ABSOLUTE_PATH_PREFIX_RE.search(value):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"[redacted-path-text:{digest}]"
 
 
 def _doctor_error_report(config_path: Path, exc: Exception) -> dict[str, Any]:
@@ -372,7 +523,7 @@ def _build_doctor_report(
     config_path: Path,
     config: dict[str, Any],
     args: argparse.Namespace,
-) -> dict[str, Any]:
+) -> dict[str, Any] | DiagnosticReport:
     server = config["server"]
     host = str(server["host"])
     port = int(server["port"])
@@ -385,7 +536,9 @@ def _build_doctor_report(
             "loaded": True,
             "server": {"host": host, "port": port},
             "feishu_credentials": (
-                "configured" if _has_feishu_credentials(config) else "missing"
+                "configured"
+                if _has_feishu_credentials(config, getattr(args, "_profile_id", ""))
+                else "missing"
             ),
             "profiles_enabled": _doctor_profile_count(config) > 0,
             "profile_count": _doctor_profile_count(config),
@@ -433,7 +586,7 @@ def _build_doctor_report(
                 "next_step": "Run doctor with --hermes-dir to check hook compatibility.",
             }
         )
-        return _finalize_doctor_report(report)
+        return _finalize_doctor_report(_attach_route_diagnostics(report, config, args))
 
     if not args.hermes_dir:
         recommendations.append(
@@ -444,7 +597,7 @@ def _build_doctor_report(
                 "next_step": "Run doctor with --hermes-dir PATH to check hook compatibility.",
             }
         )
-        return _finalize_doctor_report(report)
+        return _finalize_doctor_report(_attach_route_diagnostics(report, config, args))
 
     detection = detect_hermes(args.hermes_dir)
     report["hermes"] = _doctor_hermes_report(detection)
@@ -526,9 +679,222 @@ def _build_doctor_report(
         )
 
     install_state = _diagnose_install_state(detection)
-    report["install_state"] = install_state
-    _append_install_state_recommendation(recommendations, install_state)
-    return _finalize_doctor_report(report)
+    recovery_plan = plan_recovery(detection)
+    profile_id = str(getattr(args, "_profile_id", "") or "")
+    route = _diagnostic_route(config, profile_id)
+    health: dict[str, object] = {
+        "streaming": streaming,
+        "runtime_import": runtime_import,
+        "install_state": install_state,
+    }
+    if route is not None:
+        health["routing"] = {"last_route": route}
+    return build_diagnostic_report(
+        config_path,
+        config,
+        detection,
+        recovery_plan,
+        health=health,
+        profile_id=profile_id,
+        profile_source=str(getattr(args, "_profile_source", "") or ""),
+        event_url=str(getattr(args, "_event_url", "") or ""),
+    )
+
+
+def _resolve_route_settings(
+    args: argparse.Namespace, config_path: Path
+) -> dict[str, Any]:
+    explicit_env_path = getattr(args, "env_file", None)
+    raw_env_path = explicit_env_path or os.environ.get("HFC_ENV_FILE")
+    env_path = (
+        Path(raw_env_path).expanduser()
+        if raw_env_path
+        else config_path.parent / ".env"
+    )
+    env_values = read_hfc_env(env_path)
+    profile_id, profile_source = _resolve_route_value(
+        getattr(args, "profile_id", None),
+        "HERMES_FEISHU_CARD_PROFILE_ID",
+        env_values,
+        "default",
+        "fallback_default",
+    )
+    event_url, event_source = _resolve_route_value(
+        getattr(args, "event_url", None),
+        "HERMES_FEISHU_CARD_EVENT_URL",
+        env_values,
+        DEFAULT_EVENT_URL,
+        "default",
+    )
+    profile_id = _validate_profile_id(profile_id)
+    event_url = _validate_event_url(event_url)
+    return {
+        "env_path": env_path,
+        "profile_id": profile_id,
+        "profile_source": profile_source,
+        "event_url": event_url,
+        "event_source": event_source,
+    }
+
+
+def _resolve_route_value(
+    explicit: str | None,
+    env_key: str,
+    env_values: dict[str, str],
+    default: str,
+    default_source: str,
+) -> tuple[str, str]:
+    if explicit is not None:
+        return str(explicit), "argument"
+    process_value = os.environ.get(env_key)
+    if process_value is not None and process_value.strip():
+        return process_value, "env"
+    file_value = env_values.get(env_key)
+    if file_value is not None and file_value.strip():
+        return file_value, "env_file"
+    return default, default_source
+
+
+def _validate_profile_id(value: str) -> str:
+    profile_id = str(value).strip()
+    if not PROFILE_ID_PATTERN.fullmatch(profile_id):
+        raise ValueError("invalid profile id; use 1-64 letters, digits, '.', '_', or '-'")
+    return profile_id
+
+
+def _validate_event_url(value: str) -> str:
+    text = str(value).strip()
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid event URL") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.endswith("/events")
+        or not _allowed_event_host(parsed.hostname)
+    ):
+        raise ValueError("invalid event URL")
+    host = parsed.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = f"{host}:{port}" if port is not None else host
+    return urlunsplit((parsed.scheme.lower(), netloc, parsed.path, "", ""))
+
+
+def _allowed_event_host(hostname: str) -> bool:
+    host = hostname.strip().lower()
+    if host in {"localhost", "host.docker.internal"}:
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return bool(COMPOSE_HOST_PATTERN.fullmatch(host))
+
+
+def _profile_exists(config: dict[str, Any], profile_id: str) -> bool:
+    profiles = config.get("profiles")
+    if isinstance(profiles, dict) and profiles:
+        return profile_id in profiles
+    return profile_id == "default"
+
+
+def _profile_config(config: dict[str, Any], profile_id: str) -> dict[str, Any]:
+    profiles = config.get("profiles")
+    if isinstance(profiles, dict) and profiles:
+        profile = profiles.get(profile_id)
+        if not isinstance(profile, dict):
+            return {}
+        selected = dict(config)
+        selected.update(profile)
+        selected["profiles"] = {}
+        return selected
+    return config
+
+
+def _diagnostic_route(
+    config: dict[str, Any], profile_id: str
+) -> dict[str, object] | None:
+    if not _profile_exists(config, profile_id):
+        return None
+    try:
+        registry = BotRegistry.from_config(_profile_config(config, profile_id))
+        route = registry.resolve(RoutingContext(chat_id="", profile_id=profile_id))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {"bot_id": route.bot_id, "reason": route.reason}
+
+
+def _attach_route_diagnostics(
+    report: dict[str, Any], config: dict[str, Any], args: argparse.Namespace
+) -> dict[str, Any]:
+    if getattr(args, "profile_id", None) is None:
+        return report
+    profile_id = str(getattr(args, "_profile_id", "") or "")
+    routing, findings = build_route_diagnostics(
+        config,
+        profile_id=profile_id,
+        profile_source=str(getattr(args, "_profile_source", "") or ""),
+        event_url=str(getattr(args, "_event_url", "") or ""),
+        route=_diagnostic_route(config, profile_id),
+    )
+    report["routing"] = routing
+    recommendations = report.setdefault("recommendations", [])
+    recommendations.extend(
+        {
+            "severity": finding.severity,
+            "code": finding.code,
+            "message": finding.message,
+            "next_step": finding.actions[0] if finding.actions else "",
+        }
+        for finding in findings
+    )
+    return report
+
+
+def _format_route_chain(report: DiagnosticReport | dict[str, Any]) -> str:
+    if isinstance(report, DiagnosticReport):
+        routing = report.routing
+        finding_codes = [finding.code for finding in report.findings]
+    else:
+        routing = report.get("routing", {})
+        recommendations = report.get("recommendations", [])
+        finding_codes = [
+            str(item.get("code") or "")
+            for item in recommendations
+            if isinstance(item, dict)
+        ]
+    profile_id = str(routing.get("profile_id") or "")
+    profile_exists = bool(routing.get("profile_exists"))
+    endpoint = safe_event_endpoint_for_output(
+        str(routing.get("event_endpoint") or "")
+    )
+    lines = [
+        "Route Chain",
+        f"- identity_source: {routing.get('profile_source') or 'unknown'}",
+        f"- profile_id: {profile_id or 'missing'}",
+        f"- event_endpoint: {endpoint or 'missing'}",
+        f"- config_profile: {profile_id if profile_exists else 'missing'}",
+        f"- bot_id: {routing.get('bot_id') or 'missing'}",
+        f"- route_reason: {routing.get('route_reason') or 'missing'}",
+    ]
+    route_codes = {
+        "profile_identity_missing",
+        "profile_unknown",
+        "profile_credentials_missing",
+        "event_endpoint_mismatch",
+        "bot_unknown",
+        "route_fallback",
+    }
+    findings = [code for code in finding_codes if code in route_codes]
+    if findings:
+        lines.append(f"- findings: {', '.join(findings)}")
+    return "\n".join(lines)
 
 
 def _doctor_profile_count(config: dict[str, Any]) -> int:
@@ -1123,7 +1489,10 @@ def _run_start(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        result = start_sidecar(args.config, config)
+        if args.env_file is None:
+            result = start_sidecar(args.config, config)
+        else:
+            result = start_sidecar(args.config, config, env_file=args.env_file)
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1482,6 +1851,23 @@ def _run_install(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    recovery_plan = plan_recovery(detection)
+    if recovery_plan.actions:
+        if not recovery_plan.executable:
+            print(f"error: {_first_refusal(recovery_plan)}", file=sys.stderr)
+            return 1
+        if not getattr(args, "no_repair", False):
+            try:
+                recovery_result = execute_recovery(
+                    detection,
+                    expected_fingerprint=recovery_plan.fingerprint,
+                )
+            except (OSError, UnicodeError, RecoveryRefused) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            for action in recovery_result.actions:
+                print(action)
+
     run_py = detection.run_py
     backup_path = _backup_path(run_py)
     cron_py = detection.cron_py if detection.cron_py_exists else None
@@ -1498,7 +1884,6 @@ def _run_install(args: argparse.Namespace) -> int:
         cron_original = (
             _read_text_preserve_newlines(cron_py) if cron_py is not None else None
         )
-        _clear_stale_unpatched_install_state(run_py, backup_path, manifest_path)
         manifest_existed = manifest_path.exists()
         backup_existed = backup_path.exists()
         cron_backup_existed = bool(cron_backup_path and cron_backup_path.exists())
@@ -1593,197 +1978,40 @@ def _run_uninstall(args: argparse.Namespace) -> int:
 
 
 def _automatic_repair_available(detection: HermesDetection) -> bool:
-    try:
-        return bool(_repair_install_state(detection, dry_run=True))
-    except (OSError, UnicodeError, ValueError):
-        return False
+    plan = plan_recovery(detection)
+    return bool(plan.actions and plan.executable)
 
 
 def _repair_install_state(
     detection: HermesDetection, *, dry_run: bool = False
 ) -> list[str]:
-    run_py = detection.run_py
-    backup_path = _backup_path(run_py)
-    manifest_path = _manifest_path(detection.root)
-    cron_py = detection.cron_py if detection.cron_py_exists else None
-    cron_backup_path = _backup_path(cron_py) if cron_py is not None else None
-
-    try:
-        _validate_existing_install_state(
-            run_py,
-            backup_path,
-            manifest_path,
-            cron_py=cron_py,
-            cron_backup_path=cron_backup_path,
-        )
+    plan = plan_recovery(detection)
+    if not plan.actions:
         return []
-    except ValueError:
-        pass
-
-    current = _read_text_preserve_newlines(run_py)
-    unpatched = _owned_unpatched_text(current, "run.py")
-    has_owned_patch = unpatched != current
-    if not has_owned_patch:
-        actions = ["install state: cleared stale unpatched state"]
-        if dry_run:
-            return actions
-        _clear_install_state(backup_path, manifest_path)
-        return actions
-
-    backup_exists = backup_path.exists()
-    manifest_exists = manifest_path.exists()
-    backup_text = _read_text_preserve_newlines(backup_path) if backup_exists else None
-    if backup_text is not None:
-        _validate_backup_contains_original(backup_text, "repair")
-        if backup_text != unpatched:
-            raise ValueError("run.py changed since install; refusing to repair")
-
-    manifest = _read_manifest_for_repair(manifest_path)
-    if manifest is not None:
-        _validate_repair_manifest_run_py(run_py, manifest)
-        if backup_exists:
-            _validate_repair_manifest_backup(backup_path, manifest)
-
-    actions: list[str] = []
-    should_write_backup = not backup_exists
-    if should_write_backup:
-        actions.append("backup: recreated")
-
-    cron_actions = _repair_cron_state(
-        cron_py,
-        cron_backup_path,
-        manifest,
-        dry_run=dry_run,
-    )
-    should_write_manifest = (
-        not manifest_exists
-        or manifest is None
-        or should_write_backup
-        or bool(cron_actions)
-    )
-    if should_write_manifest:
-        actions.append("manifest: rebuilt")
-
+    if not plan.executable:
+        raise RecoveryRefused(_first_refusal(plan))
     if dry_run:
-        return actions
-
-    if should_write_backup:
-        _atomic_write_text(backup_path, unpatched)
-    for action in cron_actions:
-        if action == "cron backup: recreated" and cron_py is not None and cron_backup_path is not None:
-            cron_current = _read_text_preserve_newlines(cron_py)
-            _atomic_write_text(
-                cron_backup_path,
-                _owned_cron_unpatched_text(cron_current, "cron/scheduler.py"),
-            )
-    if should_write_manifest:
-        _write_manifest(manifest_path, run_py, backup_path, cron_py, cron_backup_path)
-    _validate_existing_install_state(
-        run_py,
-        backup_path,
-        manifest_path,
-        cron_py=cron_py,
-        cron_backup_path=cron_backup_path,
+        return [_repair_action_message(action) for action in plan.actions]
+    return list(
+        execute_recovery(
+            detection,
+            expected_fingerprint=plan.fingerprint,
+        ).actions
     )
-    return actions + cron_actions
 
 
-def _clear_stale_unpatched_install_state(
-    run_py: Path, backup_path: Path, manifest_path: Path
-) -> bool:
-    if not backup_path.exists() and not manifest_path.exists():
-        return False
-    current = _read_text_preserve_newlines(run_py)
-    try:
-        unpatched = _owned_unpatched_text(current, "run.py")
-    except ValueError:
-        return False
-    if unpatched != current:
-        return False
-    _clear_install_state(backup_path, manifest_path)
-    return True
-
-
-def _read_manifest_for_repair(manifest_path: Path) -> dict[str, object] | None:
-    if not manifest_path.exists():
-        return None
-    try:
-        return _read_manifest(manifest_path)
-    except ValueError:
-        return None
-
-
-def _validate_repair_manifest_run_py(
-    run_py: Path, manifest: dict[str, object]
-) -> None:
-    patched_sha256 = manifest.get("patched_sha256")
-    if isinstance(patched_sha256, str) and patched_sha256:
-        if file_sha256(run_py) != patched_sha256:
-            raise ValueError("run.py changed since install; refusing to repair")
-
-
-def _validate_repair_manifest_backup(
-    backup_path: Path, manifest: dict[str, object]
-) -> None:
-    backup_sha256 = manifest.get("backup_sha256")
-    if isinstance(backup_sha256, str) and backup_sha256:
-        if file_sha256(backup_path) != backup_sha256:
-            raise ValueError("backup changed since install; refusing to repair")
-
-
-def _repair_cron_state(
-    cron_py: Path | None,
-    cron_backup_path: Path | None,
-    manifest: dict[str, object] | None,
-    *,
-    dry_run: bool,
-) -> list[str]:
-    if cron_py is None or cron_backup_path is None or not cron_py.exists():
-        return []
-    cron_current = _read_text_preserve_newlines(cron_py)
-    cron_unpatched = _owned_cron_unpatched_text(cron_current, "cron/scheduler.py")
-    has_owned_cron_patch = cron_unpatched != cron_current
-    cron_backup_exists = cron_backup_path.exists()
-    if not has_owned_cron_patch:
-        if cron_backup_exists:
-            raise ValueError(
-                "install state incomplete; cron backup exists without owned patch"
-            )
-        return []
-    if cron_backup_exists:
-        cron_backup_text = _read_text_preserve_newlines(cron_backup_path)
-        if remove_cron_patch(cron_backup_text) != cron_backup_text:
-            raise ValueError("cron backup changed since install; refusing to repair")
-        if cron_backup_text != cron_unpatched:
-            raise ValueError("cron scheduler changed since install; refusing to repair")
-    if manifest is not None:
-        cron_patched_sha256 = manifest.get("cron_patched_sha256")
-        if isinstance(cron_patched_sha256, str) and cron_patched_sha256:
-            if file_sha256(cron_py) != cron_patched_sha256:
-                raise ValueError(
-                    "cron scheduler changed since install; refusing to repair"
-                )
-        cron_backup_sha256 = manifest.get("cron_backup_sha256")
-        if cron_backup_exists and isinstance(cron_backup_sha256, str) and cron_backup_sha256:
-            if file_sha256(cron_backup_path) != cron_backup_sha256:
-                raise ValueError("cron backup changed since install; refusing to repair")
-    if cron_backup_exists:
-        return []
-    return ["cron backup: recreated"]
-
-
-def _owned_unpatched_text(current: str, label: str) -> str:
-    try:
-        return remove_patch(current)
-    except ValueError as exc:
-        raise ValueError(f"{label} has corrupt patch markers; refusing to repair") from exc
-
-
-def _owned_cron_unpatched_text(current: str, label: str) -> str:
-    try:
-        return remove_cron_patch(current)
-    except ValueError as exc:
-        raise ValueError(f"{label} has corrupt patch markers; refusing to repair") from exc
+def _repair_action_message(action: str) -> str:
+    messages = {
+        "restore_verified_backup": "run.py: restored verified backup",
+        "reapply_current_hook": "run.py: reapplied current hook",
+        "rebuild_backup": "backup: recreated",
+        "rebuild_manifest": "manifest: rebuilt",
+        "restore_verified_cron_backup": "cron scheduler: restored verified backup",
+        "reapply_current_cron_hook": "cron scheduler: reapplied current hook",
+        "rebuild_cron_backup": "cron backup: recreated",
+        "clear_stale_install_state": "install state: cleared stale unpatched state",
+    }
+    return messages[action]
 
 
 def _restore(hermes_root: Path) -> None:
