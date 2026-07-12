@@ -44,6 +44,7 @@ from .profile_sources import PROFILE_SOURCE_FALLBACK, PROFILE_SOURCES
 from .render import render_card
 from .session import CardSession
 from .status import StatusConfig
+from .subscription_usage import fetch_codex_subscription_usage
 from .install.detect import HermesDetection, detect_hermes
 from .install.recovery import execute_recovery, plan_recovery
 
@@ -2185,6 +2186,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             latest_session = sessions.get(session_key)
             if latest_session is None:
                 return False
+            await _populate_subscription_usage(request.app, latest_session)
             latest_card = _render_session_card(request, latest_session)
             updated = await _update_card_for_app(
                 request.app,
@@ -2468,15 +2470,11 @@ def _render_session_card(request: web.Request, session: CardSession) -> dict[str
 def _render_session_card_for_app(
     app: web.Application, session: CardSession
 ) -> dict[str, Any]:
+    footer_fields = _footer_fields_for_session(app, session)
     card_config = app[SESSION_CARD_CONFIGS_KEY].get(
         _session_key_for_session(app, session),
         {},
     )
-    footer_fields = card_config.get("footer_fields", app[FOOTER_FIELDS_KEY])
-    if isinstance(footer_fields, list):
-        footer_fields = list(footer_fields)
-    elif footer_fields is not None:
-        footer_fields = app[FOOTER_FIELDS_KEY]
     title = card_config.get("title", app[CARD_TITLE_KEY])
     if not isinstance(title, str):
         title = app[CARD_TITLE_KEY]
@@ -2501,6 +2499,36 @@ def _render_session_card_for_app(
             card_config.get("max_tool_result_chars"), 600
         ),
         status_config=StatusConfig.from_mapping(card_config.get("status")),
+    )
+
+
+def _footer_fields_for_session(
+    app: web.Application, session: CardSession
+) -> list[str] | None:
+    card_config = app[SESSION_CARD_CONFIGS_KEY].get(
+        _session_key_for_session(app, session),
+        {},
+    )
+    footer_fields = card_config.get("footer_fields", app[FOOTER_FIELDS_KEY])
+    if isinstance(footer_fields, list):
+        return list(footer_fields)
+    elif footer_fields is not None:
+        fallback = app[FOOTER_FIELDS_KEY]
+        return list(fallback) if isinstance(fallback, list) else None
+    return None
+
+
+async def _populate_subscription_usage(
+    app: web.Application, session: CardSession
+) -> None:
+    if session.status != "completed" or session.subscription_usage_checked:
+        return
+    footer_fields = _footer_fields_for_session(app, session)
+    if not footer_fields or "subscription_usage" not in footer_fields:
+        return
+    session.subscription_usage_checked = True
+    session.subscription_usage = await fetch_codex_subscription_usage(
+        app[OPERATIONS_HERMES_ROOT_KEY]
     )
 
 

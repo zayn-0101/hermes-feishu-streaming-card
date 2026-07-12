@@ -2,17 +2,25 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 / V3.9 / V3.10 / V4.0 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1
+## V3.8 / V3.9 / V3.10 / V4.0 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
-### V4.0.1：原生媒体正文去重补丁（候选）
+### V4.0.2：旧 owned hook 安全升级热修（候选）
+
+- [x] manifest/current/backup 哈希均可信且 owned markers 可精确还原 backup 时，允许重应用当前 hook。
+- [x] 用户编辑、hash 不符、backup 不符、corrupt markers 和新版 anchors 不支持时继续拒绝修改。
+- [x] 本机真实 V4.0.0 hook 升级演练通过，doctor 恢复为完整一致状态。
+- [x] Issue #107 / @tianqiii：可选 `subscription_usage` footer，复用 Hermes 原生 Codex account usage；失败静默跳过。
+- [ ] `v4.0.2` tag、GitHub Release、四个 assets、公开安装与 #106 回复。
+
+### V4.0.1：原生媒体正文去重补丁（已发布）
 
 - [x] Issue #106：卡片成功后只将媒体指令交给 Hermes 原生通道，不再重复发送回答正文。
 - [x] 卡片正文隐藏 `MEDIA:` 与本地文件路径，附件摘要和原生图片/文件投递继续保留。
 - [x] 卡片失败、非飞书平台和无显式媒体路径时保持原始 fail-open 行为。
 - [x] V4.0.0 completion hook 可直接升级，不误报 corrupt patch markers。
-- [ ] `v4.0.1` tag、GitHub Release、四个 assets、公开安装与 #106 回复。
+- [x] `v4.0.1` tag、GitHub Release、四个 assets 与公开安装通过；升级恢复热修由 V4.0.2 接续发布。
 
 ### V4.0.0：实时双轨 Agent 卡片（已发布）
 

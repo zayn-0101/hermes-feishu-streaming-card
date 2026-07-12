@@ -555,6 +555,7 @@ def _render_footer(
             f"ctx {_format_count(used_context)}/"
             f"{_format_count(max_context)} {context_percent}%"
         ),
+        "subscription_usage": session.subscription_usage,
     }
     selected = []
     fields = DEFAULT_FOOTER_FIELDS if footer_fields is None else footer_fields

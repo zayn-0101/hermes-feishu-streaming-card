@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.2 — 2026-07-12
+
+See also: [docs/release-notes-v4.0.2.md](docs/release-notes-v4.0.2.md)
+
+### Fixed
+- Allowed the installer recovery planner to upgrade a verified older owned hook when the current file and backup both match the install manifest and removing owned markers exactly restores the backup.
+- Kept user edits, hash mismatches, invalid backups, corrupt markers, and unsupported reapplication fail-closed.
+
+### Added
+- Added opt-in `subscription_usage` footer support from issue #107, using Hermes native Codex account usage in the compact `5h 26% · weekly 89%` format and silently omitting unavailable data.
+
+### Included
+- Includes the V4.0.1 fix for duplicate native answer text after `MEDIA:` image/file cards, with credit to @ShakuOvO and @blakejia for reporting and confirming issue #106.
+- Issue #107's requirements, native-interface direction, and display format were contributed by @tianqiii.
+
 ## V4.0.1 — 2026-07-12
 
 See also: [docs/release-notes-v4.0.1.md](docs/release-notes-v4.0.1.md)

@@ -47,7 +47,8 @@ card:
       - when it arrives
       - when ready
   # Footer fields and order. Supported values:
-  # duration, model, input_tokens, output_tokens, context
+  # duration, model, input_tokens, output_tokens, context, subscription_usage
+  # subscription_usage is opt-in and uses Hermes native Codex account usage.
   footer_fields:
     - duration
     - model

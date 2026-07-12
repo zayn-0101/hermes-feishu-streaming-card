@@ -77,6 +77,8 @@ class CardSession:
     model: str = "Unknown"
     context: Dict[str, Any] = field(default_factory=dict)
     duration: float = 0.0
+    subscription_usage: str = ""
+    subscription_usage_checked: bool = False
     attachments: list[dict[str, str]] = field(default_factory=list)
     active_interaction: InteractionState | None = None
     delivery_kind: str = "chat"

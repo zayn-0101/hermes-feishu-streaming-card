@@ -729,6 +729,24 @@ def test_render_completed_card_footer_respects_configured_fields_and_order():
     assert "↓2.2k" not in content
 
 
+def test_render_completed_card_footer_adds_configured_subscription_usage_only():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.answer_text = "最终答案"
+    session.status = "completed"
+    session.duration = 3
+    session.subscription_usage = "5h 26% · weekly 89%"
+
+    configured = render_card(
+        session, footer_fields=["duration", "subscription_usage"]
+    )
+    default = render_card(session, footer_fields=["duration"])
+
+    assert configured["body"]["elements"][-1]["content"] == (
+        "3s · 5h 26% · weekly 89%"
+    )
+    assert default["body"]["elements"][-1]["content"] == "3s"
+
+
 def test_spinner_text_changes_over_time():
     from hermes_feishu_card.render import _spinner_text
     frames = set()

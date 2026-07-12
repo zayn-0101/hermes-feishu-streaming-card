@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_feishu_card.install.detect import detect_hermes
-from hermes_feishu_card.install import recovery
+from hermes_feishu_card.install import patcher, recovery
 from hermes_feishu_card.install.patcher import (
     CRON_PATCH_END,
     apply_cron_patch,
@@ -852,6 +852,36 @@ def test_plan_recovery_allows_manifest_rebuild_for_removable_owned_patch(
     assert plan.executable is True
     assert plan.actions == ("rebuild_manifest",)
     assert any(item.code == "manifest_missing" for item in plan.findings)
+
+
+def test_plan_recovery_upgrades_manifest_verified_legacy_owned_patch(installed_state):
+    detection, _original, patched, manifest_path = installed_state
+    marker = "# HERMES_FEISHU_CARD_COMPLETE_PATCH_BEGIN"
+    marker_index = patched.index(marker)
+    line_start = patched.rfind("\n", 0, marker_index) + 1
+    indent = patched[line_start:marker_index]
+    current_block = "".join(patcher._render_complete_hook_block(indent, "\n"))
+    legacy_block = "".join(patcher._render_v400_complete_hook_block(indent, "\n"))
+    legacy_patched = patched.replace(current_block, legacy_block, 1)
+    assert legacy_patched != patched
+    detection.run_py.write_text(legacy_patched, encoding="utf-8")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["patched_sha256"] = sha256(legacy_patched.encode("utf-8")).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    plan = plan_recovery(detection)
+
+    assert plan.state == "owned_incomplete"
+    assert plan.executable is True
+    assert plan.actions == ("reapply_current_hook",)
+    assert any(item.code == "owned_patch_upgrade" for item in plan.findings)
+
+    result = execute_recovery(detection, expected_fingerprint=plan.fingerprint)
+
+    assert result.actions == ("run.py: reapplied current hook",)
+    assert detection.run_py.read_text(encoding="utf-8") == patched
 
 
 def test_plan_recovery_refuses_when_verified_backup_has_unsupported_anchors(

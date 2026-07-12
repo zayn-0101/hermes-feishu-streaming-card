@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前候选包版本为 `4.0.1`。它修复 `MEDIA:` 图片/文件完成卡之后的原生正文重复消息，并保留 V4.0.0 的实时 Header、公开阶段输出、交互安全与原生媒体投递边界。V3.9.1 已于 2026-07-11 发布，V4.0.0 已于 2026-07-12 发布。
+当前候选包版本为 `4.0.2`。它在 V4.0.1 媒体正文去重修复上，补齐 manifest/backup 均可信时的旧 owned hook 安全升级路径。V3.9.1 已于 2026-07-11 发布，V4.0.0 与 V4.0.1 已于 2026-07-12 发布。
 
 ## 已具备
 
@@ -113,7 +113,16 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - Hermes `extract_media()` 验证：**已通过**，媒体路径保留且原生可见正文为空。
 - 全量自动化：**已通过（`1257 passed, 3 skipped`）**；`git diff --check` 通过。
 - 本地发布包 smoke：**已通过**。sdist/wheel 构建成功，干净 venv 安装后导入版本为 `4.0.1`。
-- 真实飞书媒体 smoke、公开安装和 Release assets：**待 tag 后验证**。
+- `v4.0.1` 公开安装与 Release assets：**已通过**；四个 assets 齐全且 checksum 通过。
+
+## V4.0.2 发布门禁
+
+- recovery/install 回归矩阵：**已通过（`121 passed`）**。
+- 本机真实旧 owned hook 升级：**已通过**。自动执行 `run.py: reapplied current hook`，doctor install state 完整一致，Gateway 与 sidecar 恢复运行。
+- Issue #107 可选配额 footer：**已通过**。server/render/subscription usage 聚焦矩阵 `237 passed`；本机 Hermes 原生接口只读返回并格式化 Session/Weekly 两个窗口。
+- 全量自动化：**已通过（`1266 passed, 3 skipped`）**；`git diff --check` 通过。
+- 本地发布包：**已通过**。sdist/wheel 构建成功，干净 venv 从 `site-packages` 导入版本 `4.0.2`。
+- 公开安装与 Release assets：**待 tag 后验证**。
 
 ## V4.0.0 发布门禁
 

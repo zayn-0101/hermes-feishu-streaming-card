@@ -881,6 +881,62 @@ async def test_terminal_update_removes_its_closed_controller(client):
     assert test_client.app[METRICS_KEY].flush_controllers_collected == 1
 
 
+async def test_terminal_update_fetches_configured_subscription_usage_once(monkeypatch):
+    feishu_client = FakeFeishuClient()
+    calls = []
+
+    async def fake_fetch(hermes_root):
+        calls.append(hermes_root)
+        return "5h 26% · weekly 89%"
+
+    monkeypatch.setattr(sidecar_server, "fetch_codex_subscription_usage", fake_fetch)
+    app = create_app(
+        feishu_client,
+        card_config={
+            "flush_interval_ms": 0,
+            "footer_fields": ["duration", "subscription_usage"],
+        },
+    )
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post("/events", json=event_payload("message.started", 0))
+        await test_client.post(
+            "/events",
+            json=event_payload("message.completed", 1, {"answer": "最终答案"}),
+        )
+        _message_id, card = await wait_for_card_update(
+            feishu_client, "5h 26% · weekly 89%"
+        )
+    finally:
+        await test_client.close()
+
+    assert len(calls) == 1
+    assert "最终答案" in str(card)
+
+
+async def test_terminal_update_does_not_fetch_unconfigured_subscription_usage(
+    client, monkeypatch
+):
+    test_client, feishu_client = client
+
+    async def unexpected_fetch(_hermes_root):
+        raise AssertionError("subscription usage should remain opt-in")
+
+    monkeypatch.setattr(
+        sidecar_server, "fetch_codex_subscription_usage", unexpected_fetch
+    )
+    await test_client.post("/events", json=event_payload("message.started", 0))
+    await test_client.post(
+        "/events",
+        json=event_payload("message.completed", 1, {"answer": "最终答案"}),
+    )
+
+    _message_id, card = await wait_for_card_update(feishu_client, "最终答案")
+
+    assert "weekly" not in str(card)
+
+
 async def test_terminal_task_exception_still_removes_closed_controller_once(caplog):
     app = create_app(FakeFeishuClient())
     session_key = "om_terminal_error"

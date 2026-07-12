@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.0.1`. It fixes duplicate native answer text after completed `MEDIA:` image/file cards while preserving V4.0.0 live Headers, public interim output, interaction security, and native media delivery. V3.9.1 was released on 2026-07-11, and V4.0.0 was released on 2026-07-12.
+Current release candidate: `4.0.2`. It adds a safe verified upgrade path for older owned hooks on top of the V4.0.1 media-text deduplication fix. V3.9.1 was released on 2026-07-11, and V4.0.0 plus V4.0.1 were released on 2026-07-12.
 
 ## Ready
 
@@ -113,7 +113,16 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Hermes `extract_media()` verification: **passed**, preserving the media path with an empty native-visible text body.
 - Full automation: **passed (`1257 passed, 3 skipped`)**; `git diff --check` passed.
 - Local package smoke: **passed**. The sdist and wheel built successfully, and a clean venv imported version `4.0.1`.
-- Real-Feishu media smoke, public installation, and Release assets: **pending post-tag verification**.
+- V4.0.1 public installation and Release assets: **passed**; all four assets were present and checksum-verified.
+
+## V4.0.2 Release Gates
+
+- Recovery/install regression matrix: **passed (`121 passed`)**.
+- Real local upgrade from an older owned hook: **passed**. Recovery emitted `run.py: reapplied current hook`; doctor reported a complete, consistent install state; Gateway and sidecar resumed.
+- Issue #107 opt-in quota footer: **passed**. The server/render/subscription-usage focused matrix reported `237 passed`; a read-only call through the local Hermes native API returned and formatted both Session and Weekly windows.
+- Full automation: **passed (`1266 passed, 3 skipped`)**; `git diff --check` passed.
+- Local package: **passed**. The sdist and wheel built successfully, and a clean venv imported version `4.0.2` from `site-packages`.
+- Public installation and Release assets: **pending post-tag verification**.
 
 ## V4.0.0 Release Gates
 

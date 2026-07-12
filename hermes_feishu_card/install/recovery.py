@@ -826,10 +826,21 @@ def _classify_gateway_evidence(
             apply_patch(source_text, strategy=detection.hook_strategy)
             == evidence.current_text
         )
+    verified_owned_upgrade = bool(
+        not candidate_matches
+        and not reapply_error
+        and manifest_checks.valid
+        and manifest_checks.current_matches
+        and manifest_checks.backup_matches
+        and backup_checks.valid
+        and source_matches
+    )
     if reapply_error == "unsupported_anchors":
         findings.append(_finding("unsupported_anchors", "error"))
     elif reapply_error:
         findings.append(_finding("reapplication_invalid", "error"))
+    elif verified_owned_upgrade:
+        findings.append(_finding("owned_patch_upgrade", "warning"))
     elif not candidate_matches:
         findings.append(_finding("current_patch_mismatch", "error"))
 
@@ -878,7 +889,7 @@ def _classify_gateway_evidence(
         and (not backup_present or backup_checks.valid)
         and source_matches
         and derived_backup_matches
-        and candidate_matches
+        and (candidate_matches or verified_owned_upgrade)
     )
     return _classification(state, executable, actions, findings, parts)
 
@@ -1663,6 +1674,7 @@ def _safe_message(code: str) -> str:
         "manifest_current_hash_invalid": "The manifest current fingerprint is missing or invalid.",
         "manifest_invalid": "The install manifest is invalid.",
         "manifest_missing": "The owned hook manifest is missing.",
+        "owned_patch_upgrade": "A verified older owned hook can be upgraded safely.",
         "manifest_path_mismatch": "Manifest ownership paths do not match the detected install.",
         "marker_error": "Owned hook markers are incomplete or invalid.",
         "owned_marker_damage": "Only owned hook marker lines differ from the verified install.",

@@ -458,7 +458,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.1
+export HFC_VERSION=v4.0.2
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -618,7 +618,7 @@ card:
   footer_fields: [duration, model, input_tokens, output_tokens, context]
 ```
 
-In multi-profile mode, `FEISHU_APP_ID`/`FEISHU_APP_SECRET` env vars are ignored. `footer_fields` accepts: `duration`, `model`, `input_tokens`, `output_tokens`, `context`.
+In multi-profile mode, `FEISHU_APP_ID`/`FEISHU_APP_SECRET` env vars are ignored. `footer_fields` accepts: `duration`, `model`, `input_tokens`, `output_tokens`, `context`, `subscription_usage`. `subscription_usage` is disabled by default; when explicitly included, completed cards use Hermes runtime `fetch_account_usage("openai-codex")` and render remaining quota in the `5h 26% · weekly 89%` style. Older Hermes versions, missing login, network errors, and timeouts silently omit it.
 
 ## Feishu App Setup
 
@@ -771,6 +771,7 @@ Thanks to these contributors for improving the project:
 - [wjiemin49-ux](https://github.com/wjiemin49-ux) — [PR #52](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/52) loopback proxy diagnosis and repair direction (adopted in V3.9.1)
 - [colinaaa](https://github.com/colinaaa) — [Issue #94](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/94) bare `/resume` picker requirements, flow, and security boundary (V3.10.0)
 - [charles5g](https://github.com/charles5g) / jackmim — [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) semantic model-footer color concept (V3.10.0, with mainline HTML escaping)
+- [tianqiii](https://github.com/tianqiii) — [Issue #107](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/107) requirements, Hermes-native API direction, and display format for the Codex subscription-quota footer (V4.0.2)
 
 ## Security
 
