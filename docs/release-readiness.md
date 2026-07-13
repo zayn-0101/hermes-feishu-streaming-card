@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前候选包版本为 `4.0.2`。它在 V4.0.1 媒体正文去重修复上，补齐 manifest/backup 均可信时的旧 owned hook 安全升级路径。V3.9.1 已于 2026-07-11 发布，V4.0.0 与 V4.0.1 已于 2026-07-12 发布。
+当前候选包版本为 `4.0.3`。它修复只升级 runtime 并重启、仍保留 V4.0.0 completion hook 时的 #106 灰色原生正文重复，同时保留原生媒体与 fail-open 边界。V3.9.1 已于 2026-07-11 发布；V4.0.0、V4.0.1 与 V4.0.2 已发布。
 
 ## 已具备
 
@@ -114,6 +114,14 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - 全量自动化：**已通过（`1257 passed, 3 skipped`）**；`git diff --check` 通过。
 - 本地发布包 smoke：**已通过**。sdist/wheel 构建成功，干净 venv 安装后导入版本为 `4.0.1`。
 - `v4.0.1` 公开安装与 Release assets：**已通过**；四个 assets 齐全且 checksum 通过。
+
+## V4.0.3 发布门禁
+
+- stale-hook 媒体正文精确去重、一次性消费、媒体保留与 sidecar fail-open 回归：**已通过**。
+- hook/patcher/install/server 热区矩阵：**已通过（`513 passed`）**。
+- 全量自动化：**已通过（`1269 passed, 3 skipped`）**；`git diff --check` 通过。
+- 本地发布包：**已通过**。sdist/wheel 构建成功，干净 venv 从 `site-packages` 导入版本 `4.0.3`。
+- 公开安装与 Release assets：**待 tag 后验证**。
 
 ## V4.0.2 发布门禁
 

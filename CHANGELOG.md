@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.3 — 2026-07-13
+
+See also: [docs/release-notes-v4.0.3.md](docs/release-notes-v4.0.3.md)
+
+### Fixed
+- Fixed the remaining issue #106 path where upgrading the runtime package and restarting services left a V4.0.0 completion hook that still sent the card answer as native gray text.
+- After a media completion is accepted by the sidecar, the Feishu runtime suppresses exactly one matching native text send for the same chat while native image/file delivery continues.
+
+### Safety
+- Unrelated text, other chats, repeated later messages, sidecar failure, non-media completions, and non-Feishu platforms remain on the original fail-open path.
+
+### Credits
+- Thanks to @blakejia for retesting V4.0.2 and providing the screenshot that exposed the stale-hook upgrade path; the original #106 report and confirmation remain credited to @ShakuOvO and @blakejia.
+
 ## V4.0.2 — 2026-07-12
 
 See also: [docs/release-notes-v4.0.2.md](docs/release-notes-v4.0.2.md)

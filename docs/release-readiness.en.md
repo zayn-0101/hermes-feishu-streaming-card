@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.0.2`. It adds a safe verified upgrade path for older owned hooks on top of the V4.0.1 media-text deduplication fix. V3.9.1 was released on 2026-07-11, and V4.0.0 plus V4.0.1 were released on 2026-07-12.
+Current release candidate: `4.0.3`. It fixes #106 duplicate gray native text when only the runtime is upgraded and restarted while a V4.0.0 completion hook remains, while preserving native media and fail-open boundaries. V3.9.1 was released on 2026-07-11; V4.0.0 through V4.0.2 are released.
 
 ## Ready
 
@@ -114,6 +114,14 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Full automation: **passed (`1257 passed, 3 skipped`)**; `git diff --check` passed.
 - Local package smoke: **passed**. The sdist and wheel built successfully, and a clean venv imported version `4.0.1`.
 - V4.0.1 public installation and Release assets: **passed**; all four assets were present and checksum-verified.
+
+## V4.0.3 Release Gates
+
+- Stale-hook exact media-text deduplication, one-shot consumption, media preservation, and sidecar fail-open regressions: **passed**.
+- Hook/patcher/install/server hot-path matrix: **passed (`513 passed`)**.
+- Full automation: **passed (`1269 passed, 3 skipped`)**; `git diff --check` passed.
+- Local package: **passed**. The sdist and wheel built successfully, and a clean venv imported version `4.0.3` from `site-packages`.
+- Public installation and Release assets: **pending post-tag verification**.
 
 ## V4.0.2 Release Gates
 

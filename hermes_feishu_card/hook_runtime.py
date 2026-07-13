@@ -102,6 +102,12 @@ class _PendingDelta:
     scheduled: bool = False
 
 
+@dataclass(frozen=True)
+class _NativeMediaTextSuppression:
+    chat_id: str
+    content: str
+
+
 _SEQUENCES: dict[str, int] = {}
 _SEQUENCE_LOCK = threading.Lock()
 _ACTIVE_FALLBACK_MESSAGE_IDS: dict[tuple[str, str, str | None], str] = {}
@@ -119,6 +125,12 @@ _HFC_FEISHU_COMMAND_RESULT_CONTEXT: ContextVar[dict[str, str] | None] = ContextV
 )
 _HFC_FEISHU_NOTICE_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
     "hfc_feishu_notice_context",
+    default=None,
+)
+_HFC_NATIVE_MEDIA_TEXT_SUPPRESSION: ContextVar[
+    _NativeMediaTextSuppression | None
+] = ContextVar(
+    "hfc_native_media_text_suppression",
     default=None,
 )
 _HFC_COMMAND_RESULT_CARD_COMMANDS = {"new", "reset", "clear", "undo", "stop", "model"}
@@ -559,7 +571,10 @@ async def emit_from_hermes_locals_async(
             payload,
             _timeout_for_event(config, event_name),
         )
-        return _event_was_applied(result)
+        applied = _event_was_applied(result)
+        if event_name == "message.completed":
+            _register_native_media_text_suppression(payload, applied=applied)
+        return applied
     except Exception:
         return False
 
@@ -571,6 +586,39 @@ def _event_was_applied(result: Any) -> bool:
         return False
     if result.get("applied") is False:
         return False
+    return True
+
+
+def _register_native_media_text_suppression(
+    payload: dict[str, Any], *, applied: bool
+) -> None:
+    _HFC_NATIVE_MEDIA_TEXT_SUPPRESSION.set(None)
+    if not applied:
+        return
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return
+    if str(data.get("native_delivery") or "").strip().lower() != "required":
+        return
+    chat_id = str(payload.get("chat_id") or "").strip()
+    content = str(data.get("answer") or "").strip()
+    if not chat_id or not content:
+        return
+    _HFC_NATIVE_MEDIA_TEXT_SUPPRESSION.set(
+        _NativeMediaTextSuppression(chat_id=chat_id, content=content)
+    )
+
+
+def _should_suppress_matching_native_media_text(chat_id: Any, content: Any) -> bool:
+    pending = _HFC_NATIVE_MEDIA_TEXT_SUPPRESSION.get()
+    if pending is None:
+        return False
+    if str(chat_id or "").strip() != pending.chat_id:
+        return False
+    visible_content = _card_visible_answer(str(content or ""))
+    if visible_content != pending.content:
+        return False
+    _HFC_NATIVE_MEDIA_TEXT_SUPPRESSION.set(None)
     return True
 
 
@@ -2316,6 +2364,8 @@ async def _hfc_send_with_native_command_result_card(
     metadata: dict[str, Any] | None = None,
 ) -> Any:
     original = getattr(type(self), "_hfc_original_send", None)
+    if _should_suppress_matching_native_media_text(chat_id, content):
+        return _send_result(True, message_id="media_text_suppressed")
     context = _hfc_take_feishu_command_result_context(chat_id=chat_id, content=content)
     if context is not None:
         result = await _hfc_send_native_command_result_card(
