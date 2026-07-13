@@ -921,6 +921,104 @@ def test_native_feishu_direct_command_result_context_is_one_shot():
     assert adapter.text_sent == ["ordinary follow-up"]
 
 
+@pytest.mark.asyncio
+async def test_v400_hook_runtime_suppresses_matching_native_media_text_after_card_delivery(
+    monkeypatch,
+):
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def __init__(self):
+            self._client = object()
+            self.text_sent = []
+            self.media_sent = []
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.text_sent.append((chat_id, content))
+            return SimpleNamespace(success=True, message_id="om_native_text")
+
+        async def send_multiple_images(self, chat_id, images, metadata=None):
+            self.media_sent.append((chat_id, images))
+            return SimpleNamespace(success=True, message_id="om_native_image")
+
+    async def applied(_url, _payload, _timeout):
+        return {"ok": True, "applied": True}
+
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+    monkeypatch.setattr(hook_runtime, "_post_json_response", applied)
+    adapter = DummyFeishuAdapter()
+    runner = SimpleNamespace(adapters={"feishu": adapter})
+    hook_runtime.install_feishu_command_card_adapter_methods(runner)
+
+    delivered = await hook_runtime.emit_from_hermes_locals_async(
+        {
+            "source": SourceObject(),
+            "message_id": "om_media_turn",
+            "answer": "已生成图片\nMEDIA:/tmp/result.png",
+        },
+        event_name="message.completed",
+    )
+    unrelated = await adapter.send("oc_source", "另一条正常消息")
+    duplicate = await adapter.send("oc_source", "已生成图片")
+    media = await adapter.send_multiple_images(
+        "oc_source", [("file:///tmp/result.png", "")]
+    )
+    repeated_later = await adapter.send("oc_source", "已生成图片")
+
+    assert delivered is True
+    assert unrelated.message_id == "om_native_text"
+    assert duplicate.success is True
+    assert duplicate.message_id == "media_text_suppressed"
+    assert media.message_id == "om_native_image"
+    assert repeated_later.message_id == "om_native_text"
+    assert adapter.text_sent == [
+        ("oc_source", "另一条正常消息"),
+        ("oc_source", "已生成图片"),
+    ]
+    assert adapter.media_sent == [
+        ("oc_source", [("file:///tmp/result.png", "")])
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v400_hook_runtime_keeps_native_media_text_when_card_delivery_fails(
+    monkeypatch,
+):
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def __init__(self):
+            self._client = object()
+            self.text_sent = []
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.text_sent.append((chat_id, content))
+            return SimpleNamespace(success=True, message_id="om_native_text")
+
+    async def rejected(_url, _payload, _timeout):
+        return {"ok": False, "applied": False}
+
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+    monkeypatch.setattr(hook_runtime, "_post_json_response", rejected)
+    adapter = DummyFeishuAdapter()
+    runner = SimpleNamespace(adapters={"feishu": adapter})
+    hook_runtime.install_feishu_command_card_adapter_methods(runner)
+
+    delivered = await hook_runtime.emit_from_hermes_locals_async(
+        {
+            "source": SourceObject(),
+            "message_id": "om_media_fail_open",
+            "answer": "已生成图片\nMEDIA:/tmp/result.png",
+        },
+        event_name="message.completed",
+    )
+    result = await adapter.send("oc_source", "已生成图片")
+
+    assert delivered is False
+    assert result.message_id == "om_native_text"
+    assert adapter.text_sent == [("oc_source", "已生成图片")]
+
+
 def test_native_feishu_update_command_result_stays_plain_text():
     class DummyFeishuAdapter:
         name = "feishu"
