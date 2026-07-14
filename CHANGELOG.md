@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## Next Release
+
+### Fixed
+- Fixed issue #118 by adding an explicit `--accept-hermes-upgrade` recovery path for a verified Hermes upgrade that replaced unpatched `gateway/run.py` and/or cron source while leaving an older HFC backup and manifest behind.
+- `repair`, `install`, and `setup` can now clear only the verified stale HFC install artifacts, preserve the upgraded Hermes source, and then install a fresh hook and backup from that source.
+
+### Safety
+- The default remains fail-closed when current Hermes source differs from the verified backup. Upgrade recovery requires explicit `--accept-hermes-upgrade --yes`, supported current hook anchors, a valid manifest, and an unchanged matching backup.
+- Missing or corrupt backups, invalid manifests, symlinks, unreadable files, unknown markers, unsupported current source, and remaining owned patches are still refused.
+
+### Credits
+- Thanks to @nasvip for issue #118's upgrade transcript and the exact recovery refusal that exposed the stale-state ambiguity.
+
 ## V4.0.5 — 2026-07-13
 
 See also: [docs/release-notes-v4.0.5.md](docs/release-notes-v4.0.5.md)

@@ -717,6 +717,89 @@ def test_plan_recovery_preserves_verified_stale_unpatched_state_without_cron(
     assert plan.actions == ("clear_stale_install_state",)
 
 
+def test_plan_recovery_accepts_explicit_hermes_gateway_upgrade(installed_state):
+    detection, original, _patched, _manifest_path = installed_state
+    upgraded = original + "\n# upstream Hermes upgraded gateway source\n"
+    detection.run_py.write_text(upgraded, encoding="utf-8")
+
+    default_plan = plan_recovery(detection)
+    accepted_plan = plan_recovery(
+        detection,
+        accept_hermes_upgrade=True,
+    )
+
+    assert default_plan.state == "stale_unpatched"
+    assert default_plan.executable is False
+    assert accepted_plan.state == "stale_unpatched"
+    assert accepted_plan.executable is True
+    assert accepted_plan.actions == (
+        "restore_verified_cron_backup",
+        "clear_stale_install_state",
+    )
+    assert "hermes_upgrade_source_accepted" in {
+        finding.code for finding in accepted_plan.findings
+    }
+
+
+def test_plan_recovery_accepts_explicit_gateway_and_cron_upgrade(installed_state):
+    detection, original, _patched, _manifest_path = installed_state
+    assert detection.cron_py is not None
+    cron_backup = detection.cron_py.with_name(
+        "scheduler.py.hermes_feishu_card.bak"
+    )
+    cron_original = cron_backup.read_text(encoding="utf-8")
+    detection.run_py.write_text(
+        original + "\n# upstream Hermes upgraded gateway source\n",
+        encoding="utf-8",
+    )
+    detection.cron_py.write_text(
+        cron_original + "\n# upstream Hermes upgraded cron source\n",
+        encoding="utf-8",
+    )
+
+    default_plan = plan_recovery(detection)
+    accepted_plan = plan_recovery(
+        detection,
+        accept_hermes_upgrade=True,
+    )
+
+    assert default_plan.state == "stale_unpatched"
+    assert default_plan.executable is False
+    assert accepted_plan.state == "stale_unpatched"
+    assert accepted_plan.executable is True
+    assert accepted_plan.actions == ("clear_stale_install_state",)
+    assert {
+        finding.code for finding in accepted_plan.findings
+    } >= {
+        "hermes_upgrade_source_accepted",
+        "hermes_upgrade_cron_source_accepted",
+    }
+
+
+def test_plan_recovery_upgrade_opt_in_still_refuses_changed_backup(installed_state):
+    detection, original, _patched, _manifest_path = installed_state
+    detection.run_py.write_text(
+        original + "\n# upstream Hermes upgraded gateway source\n",
+        encoding="utf-8",
+    )
+    backup = detection.run_py.with_name("run.py.hermes_feishu_card.bak")
+    backup.write_text(
+        backup.read_text(encoding="utf-8") + "\n# unexpected backup edit\n",
+        encoding="utf-8",
+    )
+
+    plan = plan_recovery(
+        detection,
+        accept_hermes_upgrade=True,
+    )
+
+    assert plan.state == "stale_unpatched"
+    assert plan.executable is False
+    assert "backup_hash_mismatch" in {
+        finding.code for finding in plan.findings
+    }
+
+
 def test_plan_recovery_accepts_verified_optional_cron_noop(installed_state):
     detection, _original, _patched, manifest_path = installed_state
     assert detection.cron_py is not None

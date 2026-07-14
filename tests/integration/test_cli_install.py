@@ -1056,9 +1056,63 @@ def test_repair_refuses_changed_stale_state_after_hermes_upgrade(tmp_path):
 
     assert result.returncode != 0
     assert "run.py changed since install" in result.stderr
+    assert "--accept-hermes-upgrade" in result.stderr
     assert run_py(hermes_dir).read_text(encoding="utf-8") == upgraded
     assert backup_path(hermes_dir).read_text(encoding="utf-8") == original_backup
     assert manifest_path(hermes_dir).read_text(encoding="utf-8") == original_manifest
+
+
+def test_repair_accepts_explicit_changed_state_after_hermes_upgrade(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+    upgraded = patcher.remove_patch(
+        run_py(hermes_dir).read_text(encoding="utf-8")
+    ) + "\n# upstream Hermes changed this file during upgrade\n"
+    run_py(hermes_dir).write_text(upgraded, encoding="utf-8")
+
+    result = run_cli(
+        "repair",
+        "--hermes-dir",
+        str(hermes_dir),
+        "--accept-hermes-upgrade",
+        "--yes",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "install state: cleared stale unpatched state" in result.stdout
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == upgraded
+    assert not backup_path(hermes_dir).exists()
+    assert not manifest_path(hermes_dir).exists()
+
+
+def test_install_accepts_explicit_changed_state_after_hermes_upgrade(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+    upgraded = patcher.remove_patch(
+        run_py(hermes_dir).read_text(encoding="utf-8")
+    ) + "\n# upstream Hermes changed this file during upgrade\n"
+    run_py(hermes_dir).write_text(upgraded, encoding="utf-8")
+
+    result = run_cli(
+        "install",
+        "--hermes-dir",
+        str(hermes_dir),
+        "--accept-hermes-upgrade",
+        "--yes",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "install state: cleared stale unpatched state" in result.stdout
+    assert "install ok" in result.stdout.lower()
+    assert backup_path(hermes_dir).read_text(encoding="utf-8") == upgraded
+    current = run_py(hermes_dir).read_text(encoding="utf-8")
+    assert patcher.remove_patch(current) == upgraded
+    manifest = json.loads(manifest_path(hermes_dir).read_text(encoding="utf-8"))
+    assert manifest["backup_sha256"] == sha256(upgraded.encode("utf-8")).hexdigest()
 
 
 def test_doctor_json_reports_changed_installed_run_py(tmp_path):

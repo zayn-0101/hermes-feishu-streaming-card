@@ -33,7 +33,20 @@ python3 -m hermes_feishu_card.cli repair --hermes-dir ~/.hermes/hermes-agent --y
 python3 -m hermes_feishu_card.cli setup --repair --hermes-dir ~/.hermes/hermes-agent --config ~/.hermes_feishu_card/config.yaml --yes
 ```
 
-`repair` only fixes install-state this project can verify. If backup is missing but the current `run.py` can safely remove this project's owned patch, it recreates the backup. If manifest is missing, malformed, or stale after backup recreation, it rebuilds the manifest. If a Hermes upgrade leaves `run.py` as an upstream file without this project's patch, old backup/manifest files are treated as stale install state and cleared so the hook can be installed again. V3.9.1 also recovers a narrowly defined marker-only state: the manifest patched hash must equal the expected patch rebuilt from the verified backup, and the current file may differ from that expected patch only on this project's owned BEGIN/END marker lines. Non-marker edits, unknown markers, hash mismatches, and symlinks still fail closed.
+`repair` only fixes install-state this project can verify. If backup is missing but the current `run.py` can safely remove this project's owned patch, it recreates the backup. If manifest is missing, malformed, or stale after backup recreation, it rebuilds the manifest. If the current unpatched source is identical to the old backup, it automatically clears the stale backup/manifest. V3.9.1 also recovers a narrowly defined marker-only state: the manifest patched hash must equal the expected patch rebuilt from the verified backup, and the current file may differ from that expected patch only on this project's owned BEGIN/END marker lines.
+
+If an intentional Hermes upgrade replaced the unpatched source so the current `run.py` (or cron source) differs from the verified old backup, recovery refuses to treat it as ordinary stale state by default. After confirming the difference came from an intentional Hermes upgrade, opt in explicitly:
+
+```bash
+# Recover old state and reinstall from the upgraded source in one command
+python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --accept-hermes-upgrade --yes
+
+# Or run the two phases separately
+python3 -m hermes_feishu_card.cli repair --hermes-dir ~/.hermes/hermes-agent --accept-hermes-upgrade --yes
+python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --yes
+```
+
+`setup` also accepts `--accept-hermes-upgrade`. The option never restores the old backup over upgraded Hermes source. It clears only verified stale HFC backup/manifest artifacts, after which installation backs up and patches the current upgraded source. The current source must parse and expose supported hook anchors, the manifest must be valid, and the old backup must be unchanged and match its manifest hash. Missing or corrupt backups, invalid manifests, symlinks, unreadable files, unknown markers, unsupported current source, or remaining owned patches still fail closed.
 
 ## Backup And Manifest
 

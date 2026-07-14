@@ -163,7 +163,7 @@ V3.8.13 fixes a Hermes upgrade path where cards could stop working after upgradi
 
 - **More tolerant version metadata**: `v2026.7.7.2`, `0.18.2`, and descriptive strings such as `Hermes Agent v0.18.2 (...)` are recognized.
 - **Anchors keep compatible installs usable**: when version metadata is fully unparseable, verified `gateway/run.py` anchors can still fall back through `VERSION + gateway anchors` or `git tag + gateway anchors`.
-- **Upgrade leftovers are repairable**: if a Hermes upgrade leaves `run.py` as an unpatched upstream file, `repair` clears stale backup/manifest state so `install` can patch the upgraded Gateway.
+- **Upgrade leftovers are repairable**: when current unpatched source matches the old backup, `repair` automatically clears stale backup/manifest state. If Hermes really replaced the source, recovery still refuses by default; after confirming the upgrade, the user must explicitly pass `--accept-hermes-upgrade --yes`, which never restores the old backup over new source.
 
 Full release notes: [docs/release-notes-v3.8.13.md](release-notes-v3.8.13.md).
 
@@ -636,10 +636,10 @@ Ensure Hermes `config.yaml` has `streaming.enabled: true` and `streaming.transpo
 
 | Command | Description |
 |---------|-------------|
-| `setup --hermes-dir ... --yes` | One-shot install (config, check, hook, sidecar, health) |
+| `setup --hermes-dir ... --yes` | One-shot install (config, check, hook, sidecar, health); add `--accept-hermes-upgrade` only after confirming Hermes replaced source |
 | `doctor --config ... --hermes-dir ...` | Diagnostics: `version_source`, `version`, `minimum_supported_version`, `run_py_exists`, `hook_strategy`, `compatibility`, anchors, `reason`; supports `--explain` / `--json` |
-| `install --hermes-dir ... --yes` | Install hook into Hermes |
-| `repair --hermes-dir ... --yes` | Repair verifiable hook manifest/backup state without overwriting user edits |
+| `install --hermes-dir ... --yes` | Install hook into Hermes; after confirming replaced source, add `--accept-hermes-upgrade` for one-step recovery and reinstall |
+| `repair --hermes-dir ... --yes` | Repair verifiable hook manifest/backup state without overwriting user edits; changed upgrade source requires explicit `--accept-hermes-upgrade` |
 | `setup --repair ... --yes` / `--no-repair` | Automatically repair known-safe state, or explicitly opt out |
 | `restore --hermes-dir ... --yes` | Restore original Hermes files |
 | `uninstall --hermes-dir ... --yes` | Uninstall and restore |
@@ -676,8 +676,8 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 - **Multi-profile route is unclear**: run `status --config ...` and inspect `routing.last_route`, `profile.<id>.events`, and `profile.<id>.last_profile_source`, then verify directly with `smoke-feishu-card --profile-id ...` or `bots test --profile-id ...`.
 - **Gray native text**: after sidecar accepts `message.completed`, Hermes hook suppresses native text; fail-open on sidecar unavailable. V3.3.0 fixes non-Feishu platforms being swallowed.
 - **`doctor` unsupported**: Hermes must have `gateway/run.py` anchors recognized by the current hook. Version metadata may be `VERSION`, a Git tag, descriptive text, or anchor fallback, but unreadable files and incompatible anchors fail closed.
-- **No cards after upgrading Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x**: run `doctor --config ... --hermes-dir ...` to inspect `hook_strategy`, `compatibility`, and anchors, then re-run `install --hermes-dir ... --yes` if needed.
-- **Restore fails**: file modified → `restore`/`uninstall` refuse to overwrite. Run `doctor --explain` to inspect manifest/backup/run.py state; if it reports an automatic repair path, run `repair --hermes-dir ... --yes`, otherwise back up and manually diff.
+- **No cards after upgrading Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x**: run `doctor --config ... --hermes-dir ...` to inspect `hook_strategy`, `compatibility`, and anchors. If the installer reports that current unpatched source differs from the old backup and you have confirmed an intentional Hermes upgrade, run `install --hermes-dir ... --accept-hermes-upgrade --yes`; otherwise do not bypass the default refusal.
+- **Restore fails**: file modified → `restore`/`uninstall` refuse to overwrite. Run `doctor --explain` to inspect manifest/backup/run.py state; if it reports an automatic repair path, run `repair --hermes-dir ... --yes`. Use `repair --hermes-dir ... --accept-hermes-upgrade --yes` only after confirming that a Hermes upgrade replaced source; manually back up and inspect any other difference.
 - **Footer tokens wrong**: abnormal values filtered; if still wrong, inspect Hermes `tokens`/`context` metadata.
 - **Table limit exceeded**: V3.3.0 auto-truncates >5 tables with a notice. Reduce Markdown tables.
 

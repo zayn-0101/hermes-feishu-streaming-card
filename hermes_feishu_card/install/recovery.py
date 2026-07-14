@@ -156,21 +156,40 @@ def _root_lock(root: Path) -> Iterator[None]:
 def execute_recovery(
     detection: HermesDetection,
     expected_fingerprint: Optional[str] = None,
+    *,
+    accept_hermes_upgrade: bool = False,
 ) -> RecoveryResult:
     with _root_lock(detection.root):
-        fresh = plan_recovery(detection)
+        fresh = plan_recovery(
+            detection,
+            accept_hermes_upgrade=accept_hermes_upgrade,
+        )
         if expected_fingerprint and fresh.fingerprint != expected_fingerprint:
             raise RecoveryRefused("recovery evidence changed; rerun diagnosis")
         if not fresh.executable:
             raise RecoveryRefused(_first_refusal(fresh))
-        return _execute_fresh_plan(detection, fresh)
+        return _execute_fresh_plan(
+            detection,
+            fresh,
+            accept_hermes_upgrade=accept_hermes_upgrade,
+        )
 
 
 def _execute_fresh_plan(
-    detection: HermesDetection, plan: RecoveryPlan
+    detection: HermesDetection,
+    plan: RecoveryPlan,
+    *,
+    accept_hermes_upgrade: bool = False,
 ) -> RecoveryResult:
     evidence = _read_evidence(detection)
-    if _plan_from_evidence(detection, evidence).fingerprint != plan.fingerprint:
+    if (
+        _plan_from_evidence(
+            detection,
+            evidence,
+            accept_hermes_upgrade=accept_hermes_upgrade,
+        ).fingerprint
+        != plan.fingerprint
+    ):
         raise RecoveryRefused("recovery evidence changed; rerun diagnosis")
 
     state = _RecoveryState(
@@ -196,7 +215,12 @@ def _execute_fresh_plan(
         state,
         quarantine_sources,
     )
-    _commit_recovery_changes(detection, plan, changes)
+    _commit_recovery_changes(
+        detection,
+        plan,
+        changes,
+        accept_hermes_upgrade=accept_hermes_upgrade,
+    )
     status = "cleared" if state.clear_install_state else "repaired"
     message = (
         "Stale install state cleared."
@@ -442,6 +466,8 @@ def _commit_recovery_changes(
     detection: HermesDetection,
     plan: RecoveryPlan,
     changes: List[Tuple[Path, Optional[str]]],
+    *,
+    accept_hermes_upgrade: bool = False,
 ) -> None:
     ordered_changes = [change for change in changes if change[1] is not None]
     ordered_changes.extend(change for change in changes if change[1] is None)
@@ -458,7 +484,13 @@ def _commit_recovery_changes(
             if contents is not None:
                 staged[target] = _stage_text(target, contents)
 
-        if plan_recovery(detection).fingerprint != plan.fingerprint:
+        if (
+            plan_recovery(
+                detection,
+                accept_hermes_upgrade=accept_hermes_upgrade,
+            ).fingerprint
+            != plan.fingerprint
+        ):
             raise RecoveryRefused("recovery evidence changed; rerun diagnosis")
 
         for target, contents in ordered_changes:
@@ -539,9 +571,16 @@ def _quarantine_sort_key(path: Path) -> Tuple[int, str]:
 
 
 def _plan_from_evidence(
-    detection: HermesDetection, evidence: RecoveryEvidence
+    detection: HermesDetection,
+    evidence: RecoveryEvidence,
+    *,
+    accept_hermes_upgrade: bool = False,
 ) -> RecoveryPlan:
-    classification = _classify_evidence(detection, evidence)
+    classification = _classify_evidence(
+        detection,
+        evidence,
+        accept_hermes_upgrade=accept_hermes_upgrade,
+    )
     return RecoveryPlan(
         root=detection.root,
         state=classification.state,
@@ -682,7 +721,10 @@ def _read_evidence(detection: HermesDetection) -> RecoveryEvidence:
 
 
 def _classify_evidence(
-    detection: HermesDetection, evidence: RecoveryEvidence
+    detection: HermesDetection,
+    evidence: RecoveryEvidence,
+    *,
+    accept_hermes_upgrade: bool = False,
 ) -> RecoveryClassification:
     parts = _fingerprint_parts(detection, evidence)
     read_findings = []
@@ -697,13 +739,25 @@ def _classify_evidence(
     if read_findings:
         return _classification("refused", False, (), read_findings, parts)
 
-    gateway = _classify_gateway_evidence(detection, evidence)
-    cron = _classify_cron_evidence(detection, evidence, gateway.state)
+    gateway = _classify_gateway_evidence(
+        detection,
+        evidence,
+        accept_hermes_upgrade=accept_hermes_upgrade,
+    )
+    cron = _classify_cron_evidence(
+        detection,
+        evidence,
+        gateway.state,
+        accept_hermes_upgrade=accept_hermes_upgrade,
+    )
     return _merge_classifications(gateway, cron, parts)
 
 
 def _classify_gateway_evidence(
-    detection: HermesDetection, evidence: RecoveryEvidence
+    detection: HermesDetection,
+    evidence: RecoveryEvidence,
+    *,
+    accept_hermes_upgrade: bool = False,
 ) -> RecoveryClassification:
     parts = _fingerprint_parts(detection, evidence)
     findings = []
@@ -763,8 +817,6 @@ def _classify_gateway_evidence(
                 backup_checks.valid
                 and evidence.backup_text == evidence.current_text
             )
-            if backup_checks.valid and not source_matches:
-                findings.append(_finding("backup_source_mismatch", "error"))
         else:
             expected_backup = manifest_checks.backup_hash
             source_matches = bool(
@@ -781,7 +833,39 @@ def _classify_gateway_evidence(
         else:
             manifest_safe = manifest_checks.valid
 
-        executable = bool(current_valid and source_matches and manifest_safe)
+        reapply_error = (
+            _validate_reapplication(detection, evidence.current_text)
+            if accept_hermes_upgrade and current_valid
+            else ""
+        )
+        accepted_replacement = bool(
+            accept_hermes_upgrade
+            and current_valid
+            and detection.supported
+            and not reapply_error
+            and backup_present
+            and backup_checks.valid
+            and manifest_checks.valid
+            and manifest_checks.backup_matches
+            and not manifest_invalid
+            and not backup_status_error
+        )
+        if accepted_replacement:
+            findings.append(
+                _finding("hermes_upgrade_source_accepted", "warning")
+            )
+        elif backup_present and backup_checks.valid and not source_matches:
+            findings.append(_finding("backup_source_mismatch", "error"))
+        if reapply_error == "unsupported_anchors":
+            findings.append(_finding("unsupported_anchors", "error"))
+        elif reapply_error:
+            findings.append(_finding("reapplication_invalid", "error"))
+
+        executable = bool(
+            current_valid
+            and (source_matches or accepted_replacement)
+            and manifest_safe
+        )
         return _classification(state, executable, actions, findings, parts)
 
     if marker_corrupt:
@@ -894,8 +978,16 @@ def _classify_gateway_evidence(
     return _classification(state, executable, actions, findings, parts)
 
 
-def plan_recovery(detection: HermesDetection) -> RecoveryPlan:
-    return _plan_from_evidence(detection, _read_evidence(detection))
+def plan_recovery(
+    detection: HermesDetection,
+    *,
+    accept_hermes_upgrade: bool = False,
+) -> RecoveryPlan:
+    return _plan_from_evidence(
+        detection,
+        _read_evidence(detection),
+        accept_hermes_upgrade=accept_hermes_upgrade,
+    )
 
 
 def sanitize_recovery_plan(plan: RecoveryPlan) -> Dict[str, object]:
@@ -935,6 +1027,8 @@ def _classify_cron_evidence(
     detection: HermesDetection,
     evidence: RecoveryEvidence,
     gateway_state: str,
+    *,
+    accept_hermes_upgrade: bool = False,
 ) -> RecoveryClassification:
     parts = _fingerprint_parts(detection, evidence)
     findings = []
@@ -1076,11 +1170,27 @@ def _classify_cron_evidence(
                 and evidence.cron_current_sha256 == manifest_checks.backup_hash
             )
         )
-        if backup_present and backup_checks.valid and not source_matches:
-            findings.append(_finding("cron_backup_source_mismatch", "error"))
         if not source_valid:
             findings.append(_finding("cron_unsupported_anchors", "error"))
         reapply_error = _validate_cron_reapplication(current)
+        accepted_replacement = bool(
+            accept_hermes_upgrade
+            and source_valid
+            and not reapply_error
+            and backup_present
+            and backup_checks.valid
+            and manifest_has_cron
+            and manifest_checks.valid
+            and manifest_checks.backup_matches
+            and not manifest_invalid
+            and not backup_status_error
+        )
+        if accepted_replacement:
+            findings.append(
+                _finding("hermes_upgrade_cron_source_accepted", "warning")
+            )
+        elif backup_present and backup_checks.valid and not source_matches:
+            findings.append(_finding("cron_backup_source_mismatch", "error"))
         optional_unsupported = bool(
             reapply_error == "unsupported_anchors"
             and source_valid
@@ -1101,7 +1211,7 @@ def _classify_cron_evidence(
             findings.append(_finding("cron_reapplication_invalid", "error"))
         executable = bool(
             source_valid
-            and source_matches
+            and (source_matches or accepted_replacement)
             and manifest_has_cron
             and manifest_checks.valid
             and not manifest_invalid
@@ -1674,6 +1784,8 @@ def _safe_message(code: str) -> str:
         "manifest_current_hash_invalid": "The manifest current fingerprint is missing or invalid.",
         "manifest_invalid": "The install manifest is invalid.",
         "manifest_missing": "The owned hook manifest is missing.",
+        "hermes_upgrade_cron_source_accepted": "The current unpatched cron source was explicitly accepted as an intentional Hermes upgrade.",
+        "hermes_upgrade_source_accepted": "The current unpatched Gateway source was explicitly accepted as an intentional Hermes upgrade.",
         "owned_patch_upgrade": "A verified older owned hook can be upgraded safely.",
         "manifest_path_mismatch": "Manifest ownership paths do not match the detected install.",
         "marker_error": "Owned hook markers are incomplete or invalid.",

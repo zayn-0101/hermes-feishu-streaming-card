@@ -35,7 +35,20 @@ python3 -m hermes_feishu_card.cli repair --hermes-dir ~/.hermes/hermes-agent --y
 python3 -m hermes_feishu_card.cli setup --repair --hermes-dir ~/.hermes/hermes-agent --config ~/.hermes_feishu_card/config.yaml --yes
 ```
 
-`repair` 只修复本项目能验证的安装状态文件：backup 缺失但当前 `run.py` 能安全移除本项目 owned patch 时，会重建 backup；manifest 缺失、损坏或因 backup 重建而过期时，会重建 manifest；Hermes 升级后如果 `run.py` 已经是不含本项目补丁的上游文件，旧 backup/manifest 会被识别为 stale state 并清理，随后可重新安装 hook。V3.9.1 还允许恢复严格受限的 marker-only 损坏：manifest 的 patched hash 必须等于从已验证 backup 重建出的预期补丁 hash，并且当前文件与预期补丁只能在本项目 owned BEGIN/END marker 行上不同。任何非 marker 编辑、未知 marker、hash 不一致或 symlink 仍会 fail-closed。
+`repair` 只修复本项目能验证的安装状态文件：backup 缺失但当前 `run.py` 能安全移除本项目 owned patch 时，会重建 backup；manifest 缺失、损坏或因 backup 重建而过期时，会重建 manifest；当前无补丁源码与旧 backup 完全一致时，会自动清理 stale backup/manifest。V3.9.1 还允许恢复严格受限的 marker-only 损坏：manifest 的 patched hash 必须等于从已验证 backup 重建出的预期补丁 hash，并且当前文件与预期补丁只能在本项目 owned BEGIN/END marker 行上不同。
+
+如果 Hermes 确实在升级时替换了无补丁源码，使当前 `run.py`（或 cron source）与已验证的旧 backup 不同，默认恢复会拒绝把它当成普通 stale state。确认差异来自有意的 Hermes 升级后，可显式执行：
+
+```bash
+# 一步恢复旧状态并从升级后的源码重新安装
+python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --accept-hermes-upgrade --yes
+
+# 或分两步执行
+python3 -m hermes_feishu_card.cli repair --hermes-dir ~/.hermes/hermes-agent --accept-hermes-upgrade --yes
+python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --yes
+```
+
+`setup` 同样支持 `--accept-hermes-upgrade`。该开关不会用旧 backup 覆盖升级后的 Hermes 源码，只会清理经过校验的旧 HFC backup/manifest；随后安装器以当前升级后源码创建新 backup 并重新打补丁。它仍要求当前源码可解析且具备受支持的 hook anchors、manifest 有效、旧 backup 未变化并与 manifest hash 一致。backup 缺失或损坏、manifest 无效、symlink、文件不可读、未知 marker、当前源码不受支持，或仍残留本项目 owned patch 时都会继续 fail-closed。
 
 ## 备份与 manifest
 
