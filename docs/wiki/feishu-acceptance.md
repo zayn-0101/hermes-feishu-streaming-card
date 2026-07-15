@@ -10,6 +10,16 @@
 - 飞书 bot 已在目标会话可用。
 - 不在仓库、issue 或日志中暴露 App Secret、tenant token、真实 chat id。
 
+## V4.0.6 Hermes 0.18.x 完成态与 background 通知
+
+- 私聊 completion：发送一个带工具调用的普通任务，确认卡片从运行态进入完成态，`diagnostics.last_terminal_event` 有记录，且没有重复灰色最终回复。
+- 私聊 `/background`：启动一个短后台任务，确认启动确认与 running/final 通知使用卡片；同一任务保持稳定卡片 identity，完成后无额外灰色正文。
+- 测试群聊：@bot 执行普通任务和 `/background`，确认完成态、群聊路由和原生重复抑制与私聊一致。
+- topic/thread：在测试群的话题回复中执行 `/background`，确认 running/final 更新留在原 thread，不外溢到主群。
+- installer：真实 Hermes 0.18.2 runtime 版本、`COMPLETE` / `QUEUED_COMPLETE` marker、`doctor --explain` 均通过；`--accept-hermes-upgrade` 的源码替换路径只在临时 sandbox 验证，不手工编辑真实 `gateway/run.py`。
+
+2026-07-15 发布候选验收结果：runtime/hook 安装、`1315 passed, 3 skipped`、#118 sandbox 与干净 wheel import 通过；私聊 completion、私聊 `/background`、测试群聊 @bot completion、群话题 `/background` 全部通过。background 启动与终态原位更新同一张卡片，终态无“生成中”，没有灰色原生启动/答案；topic 回复留在原 thread，sidecar 发送/更新失败均为 0。
+
 ## V4.0.0 实时双轨卡片
 
 使用刻意准备、适合公开展示的任务文案验证以下状态；截图只保留真实飞书卡片区域，不包含群名、头像、真实 chat/open id、无关会话或桌面内容。

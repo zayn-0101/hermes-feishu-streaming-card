@@ -2,9 +2,19 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 / V3.9 / V3.10 / V4.0 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5
+## V3.8 / V3.9 / V3.10 / V4.0 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
+
+### V4.0.6：Hermes 0.18.x 完成态与升级恢复热修（发布候选）
+
+- [x] Issue #118：新增显式 `--accept-hermes-upgrade` 恢复，默认 fail-closed，并保留升级后的 Hermes 源码。
+- [x] PR #119：background process 与 `/background` 通知进入稳定 `system.notice` 卡片，保留 topic 路由并抑制重复灰色文本。
+- [x] Issue #120 / PR #121：Hermes 0.18.x completion hook 在 `already_sent` 提前返回前执行，queued completion hook 可跨新版多行调用安装。
+- [x] 本机 Hermes 0.18.2 runtime 从旧版升级到 4.0.6，hook marker、runtime import 与 doctor 完整一致。
+- [x] 自动化 gate `1315 passed, 3 skipped`，#118 六条 sandbox 路径、sdist/wheel 与干净 venv import smoke 通过。
+- [x] 2026-07-15 真实飞书：私聊 completion、私聊 `/background`、测试群聊 completion、话题 `/background` 全部通过；无灰色原生启动/答案，background 卡片从启动态原位更新到完成态且不残留“生成中”，sidecar 发送/更新零失败。
+- [ ] `v4.0.6` tag、GitHub Release、四个 assets 与公共安装验证通过。
 
 ### V4.0.5：Gateway runtime 版本同步热修（已发布）
 

@@ -62,6 +62,11 @@ BACKGROUND_TASK_COMPLETED_RE = re.compile(
     r'Prompt: "(?:[\s\S]{60}\.\.\.|[\s\S]{0,60})"\n\n'
     r"[\s\S]*\Z"
 )
+BACKGROUND_TASK_STARTED_RE = re.compile(
+    r'\A🔄 Background task started: "[\s\S]*"\n'
+    r"Task ID: (?P<task_id>bg_\d{6}_[0-9a-f]{6})\n"
+    r"You can keep chatting — results will appear when done\.\Z"
+)
 BACKGROUND_TASK_FAILED_RE = re.compile(
     r"\A❌ Background task "
     r"(?P<task_id>bg_\d{6}_[0-9a-f]{6}) "
@@ -2238,6 +2243,17 @@ def _hfc_classify_background_notice(text: str) -> dict[str, Any] | None:
             "notice_terminal": False,
         }
 
+    task_started = BACKGROUND_TASK_STARTED_RE.fullmatch(text)
+    if task_started is not None:
+        task_id = task_started.group("task_id")
+        return {
+            "title": "后台任务已启动",
+            "level": "info",
+            "notice_kind": "background-task",
+            "notice_id": f"background-task:{task_id}",
+            "notice_terminal": False,
+        }
+
     if BACKGROUND_TASK_COMPLETED_RE.fullmatch(text) is not None:
         return {
             "title": "后台任务已完成",
@@ -2286,6 +2302,11 @@ async def _hfc_send_system_notice_card(
             context = {}
         message_id = str(existing_message_id or context.get("message_id") or "").strip()
         if message_id and not message_id.startswith("notice_"):
+            anchored_scope = (
+                "independent"
+                if notice.get("notice_kind") == "background-task"
+                else "session"
+            )
             payload = _hfc_build_system_notice_payload(
                 chat_id=chat_id,
                 content=str(content or ""),
@@ -2293,7 +2314,7 @@ async def _hfc_send_system_notice_card(
                 metadata=metadata,
                 context=context,
                 notice=notice,
-                notice_scope="session",
+                notice_scope=anchored_scope,
                 message_id=message_id,
             )
             post_result = await _post_json_ordered_response(

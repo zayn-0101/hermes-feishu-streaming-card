@@ -458,7 +458,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.5
+export HFC_VERSION=v4.0.6
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -685,6 +685,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v4.0.6](release-notes-v4.0.6.en.md) | 2026-07-15 | Hermes 0.18.x terminal/queued completion, terminal background notice cards without gray native output, and explicit fail-closed Hermes-upgrade recovery |
 | [v4.0.0](release-notes-v4.0.0.en.md) | 2026-07-12 | Live tool-preview Header, public interim body stream, natural waiting/failed/completed transitions, and compatibility fallback |
 | [v3.10.0](release-notes-v3.10.0.md) | 2026-07-11 | Native bare `/resume` picker and safe semantic model-footer color; layout and Hermes' security path remain unchanged |
 | [v3.9.1](release-notes-v3.9.1.md) | 2026-07-11 | Reliability fixes for completed answers, interrupted terminal cards, model-picker callbacks, and marker-only installer recovery; normal footer/layout unchanged |

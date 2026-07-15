@@ -5,18 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
-## Next Release
+## V4.0.6 — 2026-07-15
+
+See also: [docs/release-notes-v4.0.6.md](docs/release-notes-v4.0.6.md)
 
 ### Fixed
 - Fixed issue #118 by adding an explicit `--accept-hermes-upgrade` recovery path for a verified Hermes upgrade that replaced unpatched `gateway/run.py` and/or cron source while leaving an older HFC backup and manifest behind.
 - `repair`, `install`, and `setup` can now clear only the verified stale HFC install artifacts, preserve the upgraded Hermes source, and then install a fresh hook and backup from that source.
+- Fixed issue #120 / PR #121 on Hermes 0.18.x: streamed turns now emit `message.completed` before the `already_sent` early return, use the same explicit reply anchor as started/delta events, and install the queued-completion hook across the newer multiline delivery block.
+- Merged PR #119 so background-process and `/background` running/final notifications use stable Feishu `system.notice` cards, preserve topic routing, and avoid duplicate native gray output.
+- Release-candidate Feishu E2E exposed and fixed the remaining `/background` start path: Hermes' immediate `Background task started` envelope is now claimed by the card runtime, and the anchored background-task notice uses an independent lifecycle so the same card reaches a terminal state instead of keeping a gray native reply or a `生成中` footer.
 
 ### Safety
 - The default remains fail-closed when current Hermes source differs from the verified backup. Upgrade recovery requires explicit `--accept-hermes-upgrade --yes`, supported current hook anchors, a valid manifest, and an unchanged matching backup.
 - Missing or corrupt backups, invalid manifests, symlinks, unreadable files, unknown markers, unsupported current source, and remaining owned patches are still refused.
+- Completion-hook migration recognizes the previous owned rendering and remains removable/idempotent; older Hermes strategies keep their established insertion path.
+- Concurrent background notices keep separate stable identities, terminal cleanup is bounded, and card failure retains the existing native fail-open path.
+- Malformed or future background-start envelopes remain fail-open; only the exact Hermes task id and envelope shape are claimed.
 
 ### Credits
 - Thanks to @nasvip for issue #118's upgrade transcript and the exact recovery refusal that exposed the stale-state ambiguity.
+- Thanks to @hzy for PR #119's background-notification implementation.
+- Thanks to @lRoccoon for issue #120's production diagnosis and PR #121's Hermes 0.18.x completion-hook fix.
 
 ## V4.0.5 — 2026-07-13
 

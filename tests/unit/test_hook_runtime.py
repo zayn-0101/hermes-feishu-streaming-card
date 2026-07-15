@@ -1174,6 +1174,7 @@ def _install_background_notice_probe(
     *,
     post_result=None,
     post_error=None,
+    event=None,
 ):
     posted = []
 
@@ -1204,7 +1205,10 @@ def _install_background_notice_probe(
 
     adapter = DummyFeishuAdapter()
     runner = SimpleNamespace(adapters={"feishu": adapter})
-    assert hook_runtime.install_feishu_command_card_adapter_methods(runner) is True
+    assert (
+        hook_runtime.install_feishu_command_card_adapter_methods(runner, event=event)
+        is True
+    )
     return adapter, posted
 
 
@@ -1368,6 +1372,68 @@ def test_background_direct_send_uses_system_notice_card(
     assert payload["data"]["content"] == content
 
 
+def test_background_task_started_notice_reuses_anchored_card_without_native_text(
+    monkeypatch,
+):
+    event = SimpleNamespace(
+        source=SimpleNamespace(
+            platform="feishu",
+            chat_id="oc_topic",
+            message_id="om_background_request",
+            thread_id="omt_topic",
+        ),
+        message_id="om_background_request",
+        thread_id="omt_topic",
+    )
+    adapter, posted = _install_background_notice_probe(monkeypatch, event=event)
+    started = (
+        '🔄 Background task started: "Check the release"\n'
+        "Task ID: bg_123456_abcdef\n"
+        "You can keep chatting — results will appear when done."
+    )
+    completed = (
+        '✅ Background task complete\nPrompt: "Check the release"\n\n'
+        "V4.0.6 background private ok"
+    )
+
+    async def run():
+        first = await adapter.send(
+            "oc_topic",
+            started,
+            metadata={"thread_id": "omt_topic"},
+        )
+        second = await adapter.send(
+            "oc_topic",
+            completed,
+            metadata={"thread_id": "omt_topic"},
+        )
+        return first, second
+
+    first, second = asyncio.run(run())
+
+    assert first.success is True
+    assert second.success is True
+    assert adapter.text_sent == []
+    assert len(posted) == 2
+    started_payload = posted[0][1]
+    completed_payload = posted[1][1]
+    assert started_payload["event"] == "system.notice"
+    assert started_payload["message_id"] == "om_background_request"
+    assert completed_payload["message_id"] == "om_background_request"
+    assert started_payload["data"]["content"] == started
+    assert started_payload["data"]["title"] == "后台任务已启动"
+    assert started_payload["data"]["level"] == "info"
+    assert started_payload["data"]["notice_kind"] == "background-task"
+    assert (
+        started_payload["data"]["notice_id"]
+        == "background-task:bg_123456_abcdef"
+    )
+    assert started_payload["data"]["notice_scope"] == "independent"
+    assert started_payload["data"]["notice_terminal"] is False
+    assert completed_payload["data"]["notice_scope"] == "independent"
+    assert completed_payload["data"]["notice_terminal"] is True
+
+
 def test_identical_background_task_results_use_distinct_independent_message_ids(
     monkeypatch,
 ):
@@ -1422,6 +1488,11 @@ def test_background_notice_timeout_suppresses_native_text(monkeypatch):
         "New output:\n42%]",
         "✅ Background task",
         "✅ Background task complete\nordinary text without a Prompt envelope",
+        '🔄 Background task started: "Check the release"\nTask ID: bad-id\n'
+        "You can keep chatting — results will appear when done.",
+        '🔄 Background task started: "Check the release"\n'
+        "Task ID: bg_123456_abcdef\n"
+        "You can keep chatting — results will appear when done. trailing text",
         "❌ Background task failed without an id",
     ],
 )
