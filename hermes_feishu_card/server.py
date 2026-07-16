@@ -1976,6 +1976,18 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             }
         ), None
 
+    if (
+        session is None
+        and event.event == "system.notice"
+        and not _is_independent_notice_event(event)
+    ):
+        # Session-scoped notices are auxiliary timeline entries, not a reason
+        # to create a new primary card. Background callbacks can outlive the
+        # turn that supplied their reply anchor; report applied=False so the
+        # runtime wrapper retries it as an independent card with its own lifecycle.
+        metrics.events_ignored += 1
+        return web.json_response({"ok": True, "applied": False}), None
+
     if event.event == "message.started":
         if session is not None:
             if session.status in {"completed", "failed"}:

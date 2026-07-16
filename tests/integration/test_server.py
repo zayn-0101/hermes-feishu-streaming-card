@@ -4886,6 +4886,95 @@ async def test_independent_system_notice_without_started_sends_notice_card(clien
     assert feishu_client.updated == []
 
 
+async def test_orphaned_self_improvement_notice_does_not_claim_next_turn(client):
+    test_client, feishu_client = client
+    conversation_id = "omt_self_improvement"
+    reply_anchor = "om_topic_root"
+    notice_data = {
+        "reply_to_message_id": reply_anchor,
+        "title": "自我改进",
+        "content": "💾 Self-improvement review: Memory updated",
+        "level": "info",
+        "notice_kind": "self-improvement",
+        "notice_id": "self-improvement:review-1",
+    }
+
+    orphaned = await test_client.post(
+        "/events",
+        json=event_payload(
+            "system.notice",
+            1,
+            {**notice_data, "notice_scope": "session"},
+            conversation_id=conversation_id,
+            message_id=reply_anchor,
+            thread_id=conversation_id,
+        ),
+    )
+
+    assert orphaned.status == 200
+    assert await orphaned.json() == {"ok": True, "applied": False}
+    assert reply_anchor not in test_client.app[SESSIONS_KEY]
+    assert reply_anchor not in test_client.app[SESSION_ALIASES_KEY]
+    assert feishu_client.sent == []
+
+    independent = await test_client.post(
+        "/events",
+        json=event_payload(
+            "system.notice",
+            2,
+            {**notice_data, "notice_scope": "independent"},
+            conversation_id=conversation_id,
+            message_id="notice_self_improvement",
+            thread_id=conversation_id,
+        ),
+    )
+
+    assert independent.status == 200
+    assert await independent.json() == {"ok": True, "applied": True}
+    assert len(feishu_client.sent) == 1
+    assert "生成中" not in str(feishu_client.sent[0][1])
+    assert test_client.app[SESSIONS_KEY]["notice_self_improvement"].status == "completed"
+
+    started = await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.started",
+            0,
+            {"reply_to_message_id": reply_anchor},
+            conversation_id=conversation_id,
+            message_id=reply_anchor,
+            thread_id=conversation_id,
+        ),
+    )
+    assert started.status == 200
+    assert await started.json() == {"ok": True, "applied": True}
+    assert len(feishu_client.sent) == 2
+
+    followup = await test_client.post(
+        "/events",
+        json=event_payload(
+            "answer.delta",
+            1,
+            {
+                "reply_to_message_id": reply_anchor,
+                "text": "后续对话应更新自己的卡片",
+            },
+            conversation_id=conversation_id,
+            message_id="om_followup_delta",
+            thread_id=conversation_id,
+        ),
+    )
+    assert followup.status == 200
+    assert await followup.json() == {"ok": True, "applied": True}
+    updated_message_id, _card = await wait_for_card_update(
+        feishu_client,
+        "后续对话应更新自己的卡片",
+    )
+    assert updated_message_id == "feishu-message-2"
+    assert test_client.app[SESSIONS_KEY]["notice_self_improvement"].status == "completed"
+    assert test_client.app[SESSIONS_KEY][reply_anchor].status == "thinking"
+
+
 async def test_independent_background_process_notice_updates_same_card(client):
     test_client, feishu_client = client
     message_id = "notice_background_process_proc_109e6dc419af"

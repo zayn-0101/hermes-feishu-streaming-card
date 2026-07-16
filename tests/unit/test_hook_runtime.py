@@ -1739,7 +1739,18 @@ def test_gateway_platform_notice_falls_back_for_non_system_notice(monkeypatch):
     ]
 
 
-def test_native_feishu_system_notice_retries_as_independent_card_when_current_session_done(monkeypatch):
+@pytest.mark.parametrize(
+    ("content", "expected_title"),
+    [
+        ("📚 Reading skill hermes-agent", "技能加载"),
+        ("💾 Self-improvement review: Memory updated", "自我改进"),
+    ],
+)
+def test_native_feishu_system_notice_retries_as_independent_card_when_session_missing(
+    monkeypatch,
+    content,
+    expected_title,
+):
     posted = []
 
     async def fake_post_json_ordered_response(url, payload, timeout):
@@ -1778,7 +1789,7 @@ def test_native_feishu_system_notice_retries_as_independent_card_when_current_se
     async def run():
         return await adapter.send(
             "oc_abc",
-            "📚 Reading skill hermes-agent",
+            content,
             reply_to="om_user_weather",
         )
 
@@ -1791,7 +1802,8 @@ def test_native_feishu_system_notice_retries_as_independent_card_when_current_se
     assert posted[0]["data"]["notice_scope"] == "session"
     assert posted[1]["message_id"].startswith("notice_")
     assert posted[1]["data"]["notice_scope"] == "independent"
-    assert posted[1]["data"]["title"] == "技能加载"
+    assert posted[1]["data"]["delivery_kind"] == "notice"
+    assert posted[1]["data"]["title"] == expected_title
     assert result.message_id == posted[1]["message_id"]
 
 
