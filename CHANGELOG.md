@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.7 — 2026-07-16
+
+See also: [docs/release-notes-v4.0.7.md](docs/release-notes-v4.0.7.md)
+
+### Fixed
+- Fixed issue #125 on Linux/systemd: `start` and `setup` now launch the sidecar in a restartable transient user service, keeping it outside the Hermes Gateway cgroup so `systemctl --user restart hermes-gateway` does not kill both processes.
+- A verified sidecar started by the previous detached-process path is migrated into the systemd user unit during upgrade; PID changes caused by systemd restarts remain safely tied to the existing process token and unit identity.
+- `install.sh` now prefers the Python interpreter from the Hermes venv and uses `HFC_PYTHON` as the explicit override, avoiding split installs between Hermes Python and an externally managed system Python.
+- Merged PR #124 so orphaned session-scoped self-improvement notices retry as independent cards instead of claiming the next conversation's primary card.
+
+### Compatibility
+- macOS, Windows, containers without a working systemd user manager, and Linux fallback environments retain the existing detached sidecar process path.
+
+### Credits
+- Thanks to @nasvip for issue #125's systemd cgroup, PID, Python-environment, and health evidence.
+- Thanks to @hzy for PR #124's self-improvement card lifecycle fix and regression coverage.
+
 ## V4.0.6 — 2026-07-15
 
 See also: [docs/release-notes-v4.0.6.md](docs/release-notes-v4.0.6.md)
