@@ -95,6 +95,8 @@ sidecar 仍应创建 session 并发送初始卡片，不能把整条流计入 `e
 
 从 Feishu/Lark 话题线程创建的 cron job 也必须保留 origin 的 `thread_id`。`build_cron_event` 的目标优先级为：scheduler 已解析的 Feishu target、Feishu origin、显式环境 fallback；没有 thread id 时继续按 `chat_id` 投递。
 
+cron scheduler 必须先完成 `BasePlatformAdapter.extract_media(...)` 与 `media_files` 安全过滤，再让 HFC 接管完成卡。卡片成功且 `native_delivery=required` 时，只清空 `cleaned_delivery_content` 并继续 Hermes 原生附件上传；无媒体时才直接结束。这样正文只在卡片出现一次，真实文件仍沿用 Hermes 的平台上传和 topic 路由。
+
 只有 `origin.platform == feishu` 时才读取 origin thread id。Telegram 等非 Feishu origin 的 thread id 不得进入 Feishu 事件，避免跨平台路由数据泄漏。
 
 ## `system.notice`

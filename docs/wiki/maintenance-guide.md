@@ -27,6 +27,7 @@
 - 字段名必须贴合 Hermes 变量：`source`、`event`、`response`、`agent_result`、`event_message_id` 等。
 - Feishu topic 场景必须保留 `source.message_id` 和 `reply_to_message_id`。
 - 已识别 `system.notice` 不能在卡片投递超时后再次退回灰色原生文本。
+- cron completion hook 必须位于 `extract_media` / `media_files` 过滤之后：`native_delivery=required` 时清空原生正文但继续文件上传，不能在媒体提取前提前返回。
 - `/update` 不进入命令卡片，保持 Hermes 后台升级。
 - `_hfc_original_handle_resume_command` 必须保留为唯一恢复执行路径；不要在 HFC 重写 session ownership、continuation 或 `switch_session` 规则。
 - 群聊/topic picker 只有在发起者 `open_id` 可验证时才显示；不可验证时 fail-open。私聊不额外比较操作者。

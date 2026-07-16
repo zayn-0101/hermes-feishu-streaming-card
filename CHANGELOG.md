@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.8 — 2026-07-16
+
+See also: [docs/release-notes-v4.0.8.md](docs/release-notes-v4.0.8.md)
+
+### Fixed
+- Fixed issue #127: cron completion cards no longer return before Hermes extracts and uploads native attachments. The card owns the text and attachment summary while the original `media_files` path continues with an empty `cleaned_delivery_content`, avoiding duplicate native text.
+- Cron events now recognize Hermes `(path, is_voice)` media tuples and report `native_delivery=required`; `/health` records that policy instead of always reporting attachments as `allowed`.
+
+### Compatibility and safety
+- Existing V4.0.7 cron hook blocks are recognized and moved from the function entry to the post-media-extraction anchor while remaining idempotent and exactly removable.
+- Text-only cron jobs still stop after a successful card, sidecar failure remains fail-open, and Hermes versions without the media extraction anchor retain the established fallback hook.
+
+### Credits
+- Thanks to @zyq2552899783-lgtm for reporting issue #127's exact symptom: regular conversations uploaded files correctly while cron delivery showed only the attachment filename.
+
 ## V4.0.7 — 2026-07-16
 
 See also: [docs/release-notes-v4.0.7.md](docs/release-notes-v4.0.7.md)

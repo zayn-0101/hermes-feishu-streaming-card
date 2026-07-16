@@ -1193,9 +1193,9 @@ def test_v400_release_docs_cover_live_runtime_cards():
     assert "tool.updated.detail" in notes_en
     assert "thinking.delta" in notes_en
     assert "运行态 Header" in readme
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.7}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.8}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.7" in doc
+        assert "HFC_VERSION=v4.0.8" in doc
     for event_name in (
         "progress_callback.preview",
         "tool.updated.detail",
@@ -1424,6 +1424,42 @@ def test_v407_release_docs_cover_systemd_lifecycle_and_notice_isolation():
             "hermes-feishu-card-v4.0.7-checksums.txt",
         ):
             assert asset in doc
+
+
+def test_v408_release_docs_cover_issue_127_cron_native_attachments():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.8.md")
+    notes_en = read_doc("docs/release-notes-v4.0.8.en.md")
+    todo = read_doc("TODO.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    event_flow = read_doc("docs/wiki/event-flow.md")
+    maintenance = read_doc("docs/wiki/maintenance-guide.md")
+
+    assert "## V4.0.8 — 2026-07-16" in changelog
+    assert "[docs/release-notes-v4.0.8.md](docs/release-notes-v4.0.8.md)" in changelog
+    assert "V4.0.8" in todo
+    for doc in (readme, readme_en, guide, guide_en):
+        assert "v4.0.8" in doc
+        assert "Issue #127" in doc
+        assert "zyq2552899783-lgtm" in doc
+    for doc in (notes, notes_en):
+        assert "#127" in doc
+        assert "media_files" in doc
+        assert "native_delivery" in doc
+        assert "@zyq2552899783-lgtm" in doc
+        for asset in (
+            "hermes-feishu-card-v4.0.8-macos.tar.gz",
+            "hermes-feishu-card-v4.0.8-linux.tar.gz",
+            "hermes-feishu-card-v4.0.8-windows.zip",
+            "hermes-feishu-card-v4.0.8-checksums.txt",
+        ):
+            assert asset in doc
+    for doc in (event_flow, maintenance):
+        assert "media_files" in doc
+        assert "native_delivery" in doc
 
 
 def test_feishu_cli_playbook_is_linked_and_keeps_cli_optional():

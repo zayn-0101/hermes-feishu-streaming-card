@@ -4761,6 +4761,11 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     ).strip() or ""
 
     profile_id, profile_source = _profile_identity(local_vars, None, None)
+    attachment_source = _first_string(
+        local_vars,
+        ("delivery_content", "content"),
+    ) or content
+    attachments = _extract_attachments(attachment_source, local_vars)
     created_at = time.time()
     job_id = str(job.get("id") or "").strip()
     message_id = "cron_" + sha256(f"{job_id}:{created_at}".encode("utf-8")).hexdigest()[
@@ -4781,7 +4786,11 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
             "delivery_kind": "cron",
             "profile_id": profile_id,
             "profile_source": profile_source,
-            "attachments": _extract_attachments(content, local_vars),
+            "attachments": attachments,
+            "native_delivery": _native_delivery_policy(
+                attachment_source,
+                local_vars,
+            ),
         },
     }
 
@@ -5433,6 +5442,8 @@ def _structured_candidates(
 
 
 def _coerce_attachment(value: Any) -> dict[str, str] | None:
+    if isinstance(value, (tuple, list)) and value:
+        value = value[0]
     if isinstance(value, str):
         name = _attachment_name(value)
         if not name:

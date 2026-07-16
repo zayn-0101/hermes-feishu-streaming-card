@@ -2389,13 +2389,16 @@ def _record_attachment_diagnostics(app: web.Application, event: SidecarEvent) ->
     attachments = data.get("attachments")
     if not isinstance(attachments, list) or not attachments:
         return
+    native_delivery = str(data.get("native_delivery") or "allowed").strip().lower()
+    if native_delivery not in {"allowed", "required"}:
+        native_delivery = "allowed"
     app[DIAGNOSTICS_KEY]["last_attachment_event"] = {
         "message_id_hash": _diagnostic_id_hash(event.message_id),
         "event": event.event,
         "attachment_count": len(
             [item for item in attachments if isinstance(item, dict)]
         ),
-        "native_delivery": "allowed",
+        "native_delivery": native_delivery,
     }
 
 

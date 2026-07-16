@@ -108,6 +108,97 @@ def test_apply_patch_013_plus_inserts_cron_delivery_hook():
     assert patcher.remove_patch(patched) == content
 
 
+def test_cron_hook_keeps_native_media_delivery_after_card_success(monkeypatch):
+    from hermes_feishu_card import hook_runtime
+
+    content = (
+        "class BasePlatformAdapter:\n"
+        "    @staticmethod\n"
+        "    def extract_media(content):\n"
+        "        if 'MEDIA:' in content:\n"
+        "            return [('/tmp/report.pdf', False)], '报告已生成'\n"
+        "        return [], content\n"
+        "\n"
+        "    @staticmethod\n"
+        "    def filter_media_delivery_paths(media_files):\n"
+        "        return media_files\n"
+        "\n"
+        "deliveries = []\n"
+        "\n"
+        "def _resolve_delivery_targets(job):\n"
+        "    return [{'platform': 'feishu', 'chat_id': 'oc_attachment'}]\n"
+        "\n"
+        "def _deliver_result(job: dict, content: str, adapters=None, loop=None):\n"
+        "    targets = _resolve_delivery_targets(job)\n"
+        "    delivery_content = content\n"
+        "    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)\n"
+        "    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)\n"
+        "    deliveries.append((cleaned_delivery_content, media_files))\n"
+        "    return deliveries[-1]\n"
+    )
+    monkeypatch.setattr(hook_runtime, "emit_cron_delivery", lambda local_vars: True)
+
+    patched = patcher.apply_cron_patch(content)
+    namespace = {}
+    exec(patched, namespace)
+
+    result = namespace["_deliver_result"](
+        {"id": "job-attachment", "deliver": "origin"},
+        "报告已生成 MEDIA:/tmp/report.pdf",
+    )
+
+    assert result == ("", [("/tmp/report.pdf", False)])
+    assert patched.index("filter_media_delivery_paths(media_files)") < patched.index(
+        patcher.CRON_PATCH_BEGIN
+    )
+    assert patcher.remove_patch(patched) == content
+
+
+def test_apply_cron_patch_moves_v407_hook_after_media_extraction():
+    legacy_hook = (
+        "    # HERMES_FEISHU_CARD_CRON_PATCH_BEGIN\n"
+        "    try:\n"
+        "        from hermes_feishu_card.hook_runtime import emit_cron_delivery as _hfc_emit_cron\n"
+        "        _hfc_cron_metadata = {\"delivery_kind\": \"cron\"}\n"
+        "        # Pre-resolve targets so build_cron_event can discover feishu chat_id\n"
+        "        _hfc_resolve_targets = locals().get(\"_resolve_delivery_targets\") or globals().get(\"_resolve_delivery_targets\")\n"
+        "        if callable(_hfc_resolve_targets):\n"
+        "            try:\n"
+        "                job[\"_hfc_resolved_targets\"] = _hfc_resolve_targets(job)\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "        if _hfc_emit_cron(locals()):\n"
+        "            return None\n"
+        "    except Exception as _hfc_exc:\n"
+        "        try:\n"
+        "            import sys as _hfc_sys\n"
+        "            print(\"[hermes-feishu-card] hook failed: \" + _hfc_exc.__class__.__name__ + \": \" + str(_hfc_exc), file=_hfc_sys.stderr)\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "    # HERMES_FEISHU_CARD_CRON_PATCH_END\n"
+    )
+    unpatched = (
+        "def _deliver_result(job: dict, content: str, adapters=None, loop=None):\n"
+        "    targets = _resolve_delivery_targets(job)\n"
+        "    delivery_content = content\n"
+        "    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)\n"
+        "    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)\n"
+        "    return cleaned_delivery_content, media_files\n"
+    )
+    v407_patched = unpatched.replace(
+        "    targets = _resolve_delivery_targets(job)\n",
+        legacy_hook + "    targets = _resolve_delivery_targets(job)\n",
+    )
+
+    upgraded = patcher.apply_cron_patch(v407_patched)
+
+    assert upgraded.count(patcher.CRON_PATCH_BEGIN) == 1
+    assert upgraded.index("filter_media_delivery_paths(media_files)") < upgraded.index(
+        patcher.CRON_PATCH_BEGIN
+    )
+    assert patcher.remove_patch(upgraded) == unpatched
+
+
 def test_apply_cron_patch_is_a_noop_when_optional_anchor_is_absent():
     content = "def unrelated():\n    return None\n"
 

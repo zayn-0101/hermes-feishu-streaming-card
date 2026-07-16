@@ -10,6 +10,15 @@
 - 飞书 bot 已在目标会话可用。
 - 不在仓库、issue 或日志中暴露 App Secret、tenant token、真实 chat id。
 
+## V4.0.8 cron 原生附件投递
+
+- 使用 no-agent 一次性 cron，让脚本返回一段安全测试正文和一个 `MEDIA:` 本地文本文件。
+- 验收飞书同时出现一张完成卡和一条独立文件消息；卡片正文不再额外生成灰色原生文本。
+- 从飞书下载文件并与源文件逐字节比较；检查 sidecar 的 cron send 成功且 `cron_fallbacks=0`。
+- 检查真实 Hermes scheduler 的 HFC cron hook 位于 `media_files` 安全过滤之后，`doctor --explain` 显示 runtime/import/install state 完整一致。
+
+2026-07-16 发布候选验收结果：真实 Hermes 0.18.2 从 V4.0.7 旧 hook 通过官方 restore/install 路径迁移到 V4.0.8；一次性 cron 在测试群产生完成卡和独立文件消息，下载文件与源文件字节一致，sidecar send 成功且无 fallback。Hermes 上游 `cron run` 在成功的一次性任务自动删除后仍会显示已知的 `Ran now: failed` 状态误报，不影响三方证据一致的验收结论。感谢 @zyq2552899783-lgtm 报告 Issue #127。
+
 ## V4.0.6 Hermes 0.18.x 完成态与 background 通知
 
 - 私聊 completion：发送一个带工具调用的普通任务，确认卡片从运行态进入完成态，`diagnostics.last_terminal_event` 有记录，且没有重复灰色最终回复。

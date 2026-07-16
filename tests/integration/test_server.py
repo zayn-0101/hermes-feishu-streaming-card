@@ -5719,6 +5719,7 @@ async def test_health_reports_last_attachment_event_for_native_delivery(client):
                 "attachments": [
                     {"kind": "image", "name": "cover.png", "summary": "cover.png"}
                 ],
+                "native_delivery": "required",
             },
         ),
     )
@@ -5728,7 +5729,7 @@ async def test_health_reports_last_attachment_event_for_native_delivery(client):
     diagnostics = (await health.json())["diagnostics"]
     assert diagnostics["last_attachment_event"]["event"] == "message.completed"
     assert diagnostics["last_attachment_event"]["attachment_count"] == 1
-    assert diagnostics["last_attachment_event"]["native_delivery"] == "allowed"
+    assert diagnostics["last_attachment_event"]["native_delivery"] == "required"
     assert diagnostics["last_attachment_event"]["message_id_hash"]
     assert "message_id" not in diagnostics["last_attachment_event"]
 

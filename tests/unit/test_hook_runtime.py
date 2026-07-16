@@ -4179,6 +4179,34 @@ def test_build_cron_event_deliver_all_resolves_via_origin():
     assert payload["chat_id"] == "oc_from_all"
 
 
+def test_build_cron_event_preserves_extracted_media_for_native_delivery():
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-attachment",
+                "deliver": "origin",
+                "origin": {"platform": "feishu", "chat_id": "oc_attachment"},
+            },
+            "content": "报告已生成 MEDIA:/tmp/report.pdf",
+            "delivery_content": (
+                "Cronjob Response: report\n\n"
+                "报告已生成 MEDIA:/tmp/report.pdf"
+            ),
+            "cleaned_delivery_content": (
+                "Cronjob Response: report\n\n报告已生成"
+            ),
+            "media_files": [("/tmp/report.pdf", False)],
+        }
+    )
+
+    assert payload is not None
+    assert payload["data"]["answer"] == "Cronjob Response: report\n\n报告已生成"
+    assert payload["data"]["attachments"] == [
+        {"kind": "file", "name": "report.pdf", "summary": "report.pdf"}
+    ]
+    assert payload["data"]["native_delivery"] == "required"
+
+
 def test_build_cron_event_deliver_origin_all_comma_resolves_via_origin():
     """deliver="origin,all" should resolve through origin."""
     payload = hook_runtime.build_cron_event(
