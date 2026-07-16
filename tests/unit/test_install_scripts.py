@@ -10,6 +10,69 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_install_sh_prefers_hermes_venv_python(tmp_path):
+    hermes_dir = tmp_path / "hermes-agent"
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "FEISHU_APP_ID=cli_venv\nFEISHU_APP_SECRET=venv_secret\n",
+        encoding="utf-8",
+    )
+    runtime_python = hermes_dir / "venv" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_PYTHON_LOG"
+exit 0
+""",
+        encoding="utf-8",
+    )
+    runtime_python.chmod(runtime_python.stat().st_mode | stat.S_IXUSR)
+    system_marker = tmp_path / "system-python-used"
+    system_python = tmp_path / "system-python"
+    system_python.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+touch {system_marker!s}
+exit 0
+""",
+        encoding="utf-8",
+    )
+    system_python.chmod(system_python.stat().st_mode | stat.S_IXUSR)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "FAKE_PYTHON_LOG": str(tmp_path / "python.log"),
+            "HERMES_DIR": str(hermes_dir),
+            "HFC_CONFIG": str(tmp_path / "config.yaml"),
+            "HFC_ENV_FILE": str(env_file),
+            "HFC_NO_PROMPT": "1",
+            "HFC_SKIP_START": "1",
+            "HFC_VERSION": "main",
+            "PYTHON": str(system_python),
+        }
+    )
+    env.pop("HFC_PYTHON", None)
+    env.pop("FEISHU_APP_ID", None)
+    env.pop("FEISHU_APP_SECRET", None)
+
+    result = subprocess.run(
+        ["bash", "install.sh"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "hermes_feishu_card.cli setup" in (tmp_path / "python.log").read_text(
+        encoding="utf-8"
+    )
+    assert not system_marker.exists()
+
+
 def test_install_sh_reads_dotenv_without_sourcing_unknown_keys(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text(

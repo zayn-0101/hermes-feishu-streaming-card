@@ -9,7 +9,7 @@ ENV_FILE="${HFC_ENV_FILE:-}"
 PROFILE_ID="${HERMES_FEISHU_CARD_PROFILE_ID:-}"
 EVENT_URL="${HERMES_FEISHU_CARD_EVENT_URL:-}"
 NO_REPAIR="${HFC_NO_REPAIR:-}"
-PYTHON_BIN="${PYTHON:-python3}"
+PYTHON_BIN="${HFC_PYTHON:-}"
 PIP_USER_FLAG="${HFC_PIP_USER:---user}"
 
 log() {
@@ -161,6 +161,29 @@ prompt_credentials() {
   fi
 }
 
+detect_python() {
+  if [ -n "$PYTHON_BIN" ]; then
+    [ -x "$PYTHON_BIN" ] || fail "HFC_PYTHON is not executable: $PYTHON_BIN"
+    return
+  fi
+  local candidates=(
+    "$HERMES_DIR/venv/bin/python"
+    "$HERMES_DIR/venv/bin/python3"
+    "$HERMES_DIR/.venv/bin/python"
+    "$HERMES_DIR/.venv/bin/python3"
+    "$HERMES_DIR/gateway/.venv/bin/python"
+    "$HERMES_DIR/gateway/venv/bin/python"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [ -x "$candidate" ]; then
+      PYTHON_BIN="$candidate"
+      return
+    fi
+  done
+  PYTHON_BIN="${PYTHON:-python3}"
+}
+
 install_package() {
   have "$PYTHON_BIN" || fail "$PYTHON_BIN was not found. Install Python 3.9+ first."
   export PIP_ROOT_USER_ACTION="${PIP_ROOT_USER_ACTION:-ignore}"
@@ -241,6 +264,7 @@ main() {
   NO_REPAIR="${NO_REPAIR:-0}"
   HERMES_DIR="$(expand_path "$HERMES_DIR")"
   CONFIG_PATH="$(expand_path "$CONFIG_PATH")"
+  detect_python
 
   export HFC_CONFIG="$CONFIG_PATH"
   export HFC_ENV_FILE="$ENV_FILE"

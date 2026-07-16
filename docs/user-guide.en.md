@@ -433,6 +433,7 @@ Common environment variables:
 |---|---|---|
 | `HFC_VERSION` | `latest` | Version to install, such as `v3.8.18`, `v3.6.6`, or `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway directory |
+| `HFC_PYTHON` | Auto-detected Hermes venv first | Explicit Python override for `install.sh` |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar config path |
 | `HFC_ENV_FILE` | `.env` next to `HFC_CONFIG` | Feishu credential file |
 | `HFC_SKIP_START` | `0` | Set to `1` to install the hook without starting sidecar |
@@ -458,7 +459,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.6
+export HFC_VERSION=v4.0.7
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -473,7 +474,7 @@ export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx
 python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --yes
 ```
 
-`setup` generates config, validates Hermes (older Hermes from `v2026.4.23` through `v2026.4.x`, plus Hermes `0.13.0+`, `0.14.0`, `0.15.x`, `0.17.x`, `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` anchors), installs the package into the Hermes Gateway runtime venv Python, installs the hook, starts the sidecar, and checks health — all in one pass. Hermes semantic `VERSION` values may include or omit the `v` prefix, and descriptive values such as `Hermes Agent v0.18.2 (...)` are parsed for the numeric version token. Since V3.8.6, Docker/source-stripped installs without `VERSION` or `.git` metadata can fall back to verified `gateway/run.py` anchors; current versions also fall back to anchors when readable `VERSION` metadata is unparseable.
+`setup` generates config, validates Hermes (older Hermes from `v2026.4.23` through `v2026.4.x`, plus Hermes `0.13.0+`, `0.14.0`, `0.15.x`, `0.17.x`, `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` anchors), installs the package into the Hermes Gateway runtime venv Python, installs the hook, starts the sidecar, and checks health — all in one pass. On Linux with an available systemd user manager, the sidecar runs in an independent restartable transient service instead of sharing the `hermes-gateway` cgroup; macOS, Windows, and environments without that manager keep the detached-process fallback. Hermes semantic `VERSION` values may include or omit the `v` prefix, and descriptive values such as `Hermes Agent v0.18.2 (...)` are parsed for the numeric version token. Since V3.8.6, Docker/source-stripped installs without `VERSION` or `.git` metadata can fall back to verified `gateway/run.py` anchors; current versions also fall back to anchors when readable `VERSION` metadata is unparseable.
 
 After a multi-profile setup, use `doctor` to inspect the complete redacted route chain without mutation. `status` summarizes runtime routing/profile events and `/health` reports only its actual routing-health fields. `doctor` never renders App Secret, tokens, or URL credentials:
 
@@ -643,8 +644,8 @@ Ensure Hermes `config.yaml` has `streaming.enabled: true` and `streaming.transpo
 | `setup --repair ... --yes` / `--no-repair` | Automatically repair known-safe state, or explicitly opt out |
 | `restore --hermes-dir ... --yes` | Restore original Hermes files |
 | `uninstall --hermes-dir ... --yes` | Uninstall and restore |
-| `start --config ...` | Start sidecar |
-| `stop --config ...` | Stop sidecar (validates PID/token against `/health` `process_pid/process_token_hash`) |
+| `start --config ...` | Start sidecar; prefer an independent systemd user service on Linux |
+| `stop --config ...` | Stop sidecar after validating its PID/token and recorded process manager identity |
 | `status --config ...` | Sidecar status, routing, profile diagnostics, and metrics |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | Send a real Feishu smoke card for a specific profile |
 | `bots list|show|add|remove --config ...` | Manage bot registry |
@@ -685,6 +686,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v4.0.7](release-notes-v4.0.7.en.md) | 2026-07-16 | Restartable Linux/systemd user-service lifecycle, Hermes venv Python preference, and PR #124 self-improvement notice isolation |
 | [v4.0.6](release-notes-v4.0.6.en.md) | 2026-07-15 | Hermes 0.18.x terminal/queued completion, terminal background notice cards without gray native output, and explicit fail-closed Hermes-upgrade recovery |
 | [v4.0.0](release-notes-v4.0.0.en.md) | 2026-07-12 | Live tool-preview Header, public interim body stream, natural waiting/failed/completed transitions, and compatibility fallback |
 | [v3.10.0](release-notes-v3.10.0.md) | 2026-07-11 | Native bare `/resume` picker and safe semantic model-footer color; layout and Hermes' security path remain unchanged |

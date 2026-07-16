@@ -133,7 +133,7 @@ For an existing Hermes container:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.6
+export HFC_VERSION=v4.0.7
 bash install-docker.sh
 ```
 
@@ -158,7 +158,7 @@ Defaults:
 | `repair --hermes-dir ... --yes` | Repair verifiable hook manifest/backup state |
 | `setup --repair ... --yes` / `--no-repair` | Automatically repair known-safe state, or explicitly opt out |
 | `restore --hermes-dir ... --yes` | Restore the original Hermes file |
-| `start --config ...` / `status --config ...` / `stop --config ...` | Manage the sidecar process and `/health` checks |
+| `start --config ...` / `status --config ...` / `stop --config ...` | Manage the sidecar process and `/health`; Linux/systemd uses an independent user service |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | Send a real Feishu card smoke test |
 | `bots list|show|add|remove|test` | Manage and test multi-bot routing |
 
@@ -176,6 +176,7 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 
 | Version | Highlights |
 |---|---|
+| [v4.0.7](docs/release-notes-v4.0.7.en.md) | Isolates the Linux/systemd sidecar in a restartable user service, prefers Hermes venv Python during upgrades, and includes PR #124's orphaned self-improvement notice fix |
 | [v4.0.6](docs/release-notes-v4.0.6.en.md) | Fixes Hermes 0.18.x terminal/queued completion hooks and terminal background notice cards without gray native output, with explicit fail-closed recovery after Hermes source upgrades |
 | [v4.0.5](docs/release-notes-v4.0.5.en.md) | Fixes upgrades that left the Gateway venv loading an older plugin; the installer compares runtime versions, synchronizes when needed, and verifies the installed version and path |
 | [v4.0.4](docs/release-notes-v4.0.4.en.md) | Fixes Markdown `MEDIA:` literals, interaction forwarding with an SDK-retained callback, and misleading `5h` labels when Codex exposes one ambiguous limit window |
@@ -200,7 +201,6 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 | [v3.8.7](docs/release-notes-v3.8.7.md) | Newer Hermes streams can create cards even when `message.started` is missing |
 | [v3.8.6](docs/release-notes-v3.8.6.md) | Docker/source-stripped Hermes can fall back from missing `VERSION` to Gateway anchors; Hermes v0.18.0 support |
 | [v3.8.5](docs/release-notes-v3.8.5.md) | Direct command results for `/new`, `/model`, and similar commands stay in cards |
-
 Full history: [CHANGELOG.md](CHANGELOG.md). Longer historical notes remain in the [full user guide](docs/user-guide.en.md#version-history).
 
 ## Architecture At A Glance

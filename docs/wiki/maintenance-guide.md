@@ -75,6 +75,21 @@
 - 自动 repair 只适用于 known-safe state；`--no-repair` 必须保持有效，用户编辑不能被覆盖。
 - 调整 planner/executor 时运行 `tests/unit/test_recovery.py`、`tests/unit/test_operations.py`、`tests/integration/test_server.py`；涉及安装器时再加 `tests/integration/test_cli_install.py`。
 
+### `hermes_feishu_card/process.py` and sidecar lifecycle
+
+职责：
+
+- 在 Linux/systemd user manager 可用时，把 sidecar 放入独立 transient user service，避免与 `hermes-gateway` 共用 cgroup。
+- 在其他平台保留 detached-process fallback。
+- 用 PID、process token 和 manager/unit identity 管理 status、migration 与 stop。
+
+高风险点：
+
+- `start_new_session=True` 不能脱离 systemd cgroup，不能作为 Linux Gateway 重启隔离方案。
+- systemd 可重启 sidecar 并改变 PID；status/stop 必须以 token 和记录的 unit 为稳定身份，不能只比较旧 PID。
+- 升级迁移只能停止 PID/token/health 三者一致的旧进程，未知进程保持 fail-closed。
+- 调整 lifecycle 时运行 `tests/unit/test_process.py`、`tests/integration/test_cli_process.py` 和 `tests/unit/test_install_scripts.py`。
+
 ## 常见改动对应测试
 
 | 改动 | 先跑 | 发布前还要跑 |
