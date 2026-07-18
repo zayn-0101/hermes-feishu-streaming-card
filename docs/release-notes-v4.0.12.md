@@ -50,6 +50,8 @@ card:
 - `hermes-feishu-card-v4.0.12-windows.zip`
 - `hermes-feishu-card-v4.0.12-checksums.txt`
 
+发布后验证：annotated tag `v4.0.12` 指向合并提交 `00a48a7`；release-assets workflow `29632908140` 成功。下载四个公开资产后，Linux、macOS、Windows 包的 SHA-256 校验全部通过；隔离 Python 3.12 环境从公开 tag 安装并从 `site-packages` 导入 `4.0.12`，CLI smoke 通过。Issues #133 和 #136 已附验证边界回复并关闭。
+
 ## Credits
 
 - 感谢 @tianxia3111 提交 Issue #133 的生产压缩空窗与移动端可读性需求。

@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.0.12`. It fixes Issues #133/#136 by keeping context compaction visible, adding PC/mobile mappings for five text-size roles, and making selected-env credentials and Noop degradation verifiable and diagnosable. V3.9.1 was released on 2026-07-11, and V4.0.11 and earlier releases are public.
+Current public release: `4.0.12`. It fixes Issues #133/#136 by keeping context compaction visible, adding PC/mobile mappings for five text-size roles, and making selected-env credentials and Noop degradation verifiable and diagnosable. V3.9.1 was released on 2026-07-11, and V4.0.11 and earlier releases are public.
 
 ## Ready
 
@@ -151,7 +151,7 @@ The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, L
 - A real selected-env subprocess starts as `healthy/live`; a credential-free subprocess starts as `degraded/noop`, returns `not_sent`, and does not increase successes: **passed**.
 - Automatic long-session compaction smoke and final desktop/mobile visual confirmation: **not run by release decision and not claimed as passed**.
 - Final full automation: **passed (`1460 passed, 4 skipped`)**; `git diff --check`, sdist/wheel, and clean Python 3.12 import `4.0.12` also passed.
-- Annotated tag, Release assets/checksums, and public tagged installer: **pending post-tag verification**.
+- Annotated tag `v4.0.12` points to merge commit `00a48a7`; release-assets workflow `29632908140` succeeded, and all four assets/checksums plus the public tagged installer: **passed**.
 
 ## Current Boundaries
 

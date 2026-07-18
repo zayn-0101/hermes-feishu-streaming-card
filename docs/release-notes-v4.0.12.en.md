@@ -50,6 +50,8 @@ card:
 - `hermes-feishu-card-v4.0.12-windows.zip`
 - `hermes-feishu-card-v4.0.12-checksums.txt`
 
+Post-release verification: annotated tag `v4.0.12` points to merge commit `00a48a7`, and release-assets workflow `29632908140` succeeded. After downloading all four public assets, SHA-256 verification passed for the Linux, macOS, and Windows packages. An isolated Python 3.12 environment installed the public tag, imported `4.0.12` from `site-packages`, and passed the CLI smoke. Issues #133 and #136 were closed with the remaining verification boundaries documented.
+
 ## Credits
 
 - Thanks to @tianxia3111 for Issue #133's production compaction gap and mobile-readability request.

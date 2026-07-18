@@ -6,7 +6,7 @@
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
-### V4.0.12：上下文压缩、字号与凭据可观测性（发布候选）
+### V4.0.12：上下文压缩、字号与凭据可观测性（已发布）
 
 - [x] Issue #133：从 Hermes 精确 `Compacting context` callback 生成 `context-compaction` 阶段；已有卡继续更新，无卡时只创建一张 primary card。
 - [x] `card.text_sizes` 支持 `body`、`reasoning`、`tool`、`notice`、`footer`，以及 `default` / `pc` / `mobile` 映射；物理 width/height 明确由客户端控制。
@@ -14,7 +14,7 @@
 - [x] Noop 模式显示 `degraded` / `noop_mode`，发送返回 `not_sent` 并记录 `feishu_noop_attempts`，不再制造假 message id/success。
 - [x] 自动化覆盖压缩 hook/session/render/server、字号 schema/merge/render/device，以及 selected-env/Noop process 集成。
 - [x] 最终全量 gate `1460 passed, 4 skipped`、`git diff --check`、sdist/wheel 与干净 Python 3.12 wheel import `4.0.12` 通过。
-- [ ] 合并发布 PR，创建 annotated tag、GitHub Release，验证四个 assets/checksums 与公共 tagged installer fixture。
+- [x] 合并发布 PR；annotated tag `v4.0.12` 指向 `00a48a7`，Release 四个 assets/checksums 与公共 tagged installer fixture 验证通过。
 
 ### V4.0.11：system.notice 可靠投递（发布候选）
 

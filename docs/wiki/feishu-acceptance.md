@@ -11,7 +11,7 @@
 - 桌面端与移动端分别检查 `body`、`reasoning`、`tool`、`notice`、`footer` 的 scalar 和 `pc`/`mobile` 映射，覆盖长中文、代码块、表格、深色模式与 streaming-to-terminal；不得出现 `hfc_*` 可见文本或跨 bot 字号污染。
 - 卡片物理 width/height 不在验收范围，由 Feishu/Lark 客户端控制。
 
-2026-07-18 发布候选验收边界：已通过官方 setup/patcher 将候选 runtime 装入真实 Hermes，`doctor` 确认 `status_callback` capability 与 install state 一致；真实 Feishu 字号演示卡完成 create + update，五类 alias 均进入 Card JSON。手动 `/compress` 不经过 `_status_callback_sync`，因此不作为自动压缩 callback 证据；按发布决定不再执行自动压缩长会话 smoke，也不宣称桌面/移动端视觉验收完成。Issue #136 的 selected-env live/noop 分支由真实子进程集成测试覆盖；报告者的 Linux/systemd 环境仍邀请发布后复验。
+2026-07-18 发布候选验收边界：已通过官方 setup/patcher 将候选 runtime 装入真实 Hermes，`doctor` 确认 `status_callback` capability 与 install state 一致；真实 Feishu 字号演示卡完成 create + update，五类 alias 均进入 Card JSON。手动 `/compress` 不经过 `_status_callback_sync`，因此不作为自动压缩 callback 证据；按发布决定不再执行自动压缩长会话 smoke，也不宣称桌面/移动端视觉验收完成。Issue #136 的 selected-env live/noop 分支由真实子进程集成测试覆盖；报告者的 Linux/systemd 环境仍邀请发布后复验。发布后进一步确认 annotated tag `v4.0.12` 指向 `00a48a7`，四个 assets/checksums 与公共 tagged installer 均通过；这些发布验证不扩大上述真实客户端验收结论。
 
 ## V4.0.11 system.notice 可靠投递（发布候选验收）
 
