@@ -976,6 +976,131 @@ def test_native_slash_confirm_tracks_send_result_message_id():
     assert adapter._hfc_slash_confirm_state["cf-direct"]["message_id"] == "om_direct_slash_card"
 
 
+@pytest.mark.parametrize(
+    ("text", "raw_command", "expected_command"),
+    [
+        ("/status", "status", "status"),
+        ("/update", "update", "update"),
+        ("/deploy-preview now", "deploy-preview", "deploy-preview"),
+        ("/does-not-exist", "does-not-exist", "does-not-exist"),
+    ],
+)
+def test_all_feishu_slash_commands_create_feedback_context(
+    text,
+    raw_command,
+    expected_command,
+):
+    event = SimpleNamespace(
+        source=SimpleNamespace(
+            platform="feishu",
+            chat_id="oc_abc",
+            thread_id="omt_topic",
+        ),
+        text=text,
+        message_id="om_user_command",
+        get_command=lambda: raw_command,
+    )
+
+    context = hook_runtime._hfc_command_result_context_from_event(event)
+
+    assert context is not None
+    assert context["command"] == expected_command
+    assert context["raw_command"] == raw_command
+    assert context["chat_id"] == "oc_abc"
+    assert context["reply_to_message_id"] == "om_user_command"
+    assert context["thread_id"] == "omt_topic"
+    assert context["card_message_id"] == ""
+    assert context["expires_at"] > time.monotonic()
+
+
+def test_feishu_command_alias_uses_hermes_canonical_name(monkeypatch):
+    commands_module = types.ModuleType("hermes_cli.commands")
+    commands_module.resolve_command = lambda command: (
+        SimpleNamespace(name="compress") if command == "compact" else None
+    )
+    package = types.ModuleType("hermes_cli")
+    package.commands = commands_module
+    monkeypatch.setitem(sys.modules, "hermes_cli", package)
+    monkeypatch.setitem(sys.modules, "hermes_cli.commands", commands_module)
+    event = SimpleNamespace(
+        source=SimpleNamespace(platform="feishu", chat_id="oc_abc"),
+        text="/compact",
+        message_id="om_user_compact",
+        get_command=lambda: "compact",
+    )
+
+    context = hook_runtime._hfc_command_result_context_from_event(event)
+
+    assert context is not None
+    assert context["raw_command"] == "compact"
+    assert context["command"] == "compress"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        SimpleNamespace(
+            source=SimpleNamespace(platform="telegram", chat_id="tg_abc"),
+            text="/status",
+            get_command=lambda: "status",
+        ),
+        SimpleNamespace(
+            source=SimpleNamespace(platform="feishu", chat_id="oc_abc"),
+            text="ordinary chat",
+            get_command=lambda: "",
+        ),
+        SimpleNamespace(
+            source=SimpleNamespace(platform="feishu", chat_id="oc_abc"),
+            text="/",
+            get_command=lambda: "",
+        ),
+    ],
+)
+def test_non_feishu_or_non_command_event_has_no_feedback_context(event):
+    assert hook_runtime._hfc_command_result_context_from_event(event) is None
+
+
+def test_command_feedback_context_rejects_empty_mismatch_and_expired_content():
+    base = {
+        "command": "status",
+        "raw_command": "status",
+        "chat_id": "oc_expected",
+        "reply_to_message_id": "om_user",
+        "thread_id": "",
+        "card_message_id": "",
+        "expires_at": time.monotonic() + 60,
+    }
+
+    hook_runtime._HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(dict(base))
+    assert (
+        hook_runtime._hfc_take_feishu_command_result_context(
+            chat_id="oc_expected",
+            content="   ",
+        )
+        is None
+    )
+
+    hook_runtime._HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(dict(base))
+    assert (
+        hook_runtime._hfc_take_feishu_command_result_context(
+            chat_id="oc_other",
+            content="status output",
+        )
+        is None
+    )
+
+    expired = dict(base)
+    expired["expires_at"] = time.monotonic() - 1
+    hook_runtime._HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(expired)
+    assert (
+        hook_runtime._hfc_take_feishu_command_result_context(
+            chat_id="oc_expected",
+            content="status output",
+        )
+        is None
+    )
+
+
 def test_native_feishu_direct_new_result_is_sent_as_command_card():
     class DummyFeishuAdapter:
         name = "feishu"
@@ -1028,13 +1153,14 @@ def test_native_feishu_direct_new_result_is_sent_as_command_card():
     assert "Session reset" in card["elements"][0]["content"]
 
 
-def test_native_feishu_direct_command_result_context_is_one_shot():
+def test_native_feishu_command_feedback_updates_same_card(monkeypatch):
     class DummyFeishuAdapter:
         name = "feishu"
 
         def __init__(self):
             self._client = object()
             self.sent = []
+            self.updated = []
             self.text_sent = []
 
         async def send(self, chat_id, content, reply_to=None, metadata=None):
@@ -1049,6 +1175,12 @@ def test_native_feishu_direct_command_result_context_is_one_shot():
             )
 
     adapter = DummyFeishuAdapter()
+
+    async def update_card(_adapter, message_id, card):
+        adapter.updated.append((message_id, card))
+        return True
+
+    monkeypatch.setattr(hook_runtime, "_hfc_update_native_command_card", update_card)
     runner = SimpleNamespace(adapters={"feishu": adapter})
     event = SimpleNamespace(
         source=SimpleNamespace(platform="feishu", chat_id="oc_abc"),
@@ -1066,9 +1198,183 @@ def test_native_feishu_direct_command_result_context_is_one_shot():
     first, second = asyncio.run(run())
 
     assert first.message_id == "om_card_1"
-    assert second.message_id == "om_text_1"
+    assert second.message_id == "om_card_1"
     assert len(adapter.sent) == 1
-    assert adapter.text_sent == ["ordinary follow-up"]
+    assert adapter.updated[0][0] == "om_card_1"
+    assert adapter.updated[0][1]["elements"][0]["content"] == "ordinary follow-up"
+    assert adapter.text_sent == []
+
+
+def test_concurrent_command_feedback_creates_one_card(monkeypatch):
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def __init__(self):
+            self._client = object()
+            self.created = []
+            self.updated = []
+            self.text_sent = []
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.text_sent.append(content)
+            return SimpleNamespace(success=True, message_id="om_text")
+
+        async def _feishu_send_with_retry(self, **kwargs):
+            self.created.append(kwargs)
+            await asyncio.sleep(0)
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id="om_command_card"),
+            )
+
+    adapter = DummyFeishuAdapter()
+
+    async def update_card(_adapter, message_id, card):
+        adapter.updated.append((message_id, card))
+        return True
+
+    monkeypatch.setattr(hook_runtime, "_hfc_update_native_command_card", update_card)
+    event = SimpleNamespace(
+        source=SimpleNamespace(platform="feishu", chat_id="oc_abc"),
+        text="/status",
+        message_id="om_user_status",
+        get_command=lambda: "status",
+    )
+    hook_runtime.install_feishu_command_card_adapter_methods(
+        SimpleNamespace(adapters={"feishu": adapter}),
+        event=event,
+    )
+
+    async def run():
+        return await asyncio.gather(
+            adapter.send("oc_abc", "first"),
+            adapter.send("oc_abc", "second"),
+        )
+
+    results = asyncio.run(run())
+
+    assert [result.message_id for result in results] == [
+        "om_command_card",
+        "om_command_card",
+    ]
+    assert len(adapter.created) == 1
+    assert len(adapter.updated) == 1
+    assert adapter.text_sent == []
+
+
+def test_command_feedback_patch_failure_falls_back_to_exact_native_text(monkeypatch):
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def __init__(self):
+            self._client = object()
+            self.text_sent = []
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.text_sent.append((chat_id, content, reply_to, metadata))
+            return SimpleNamespace(success=True, message_id="om_native_fallback")
+
+        async def _feishu_send_with_retry(self, **kwargs):
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id="om_command_card"),
+            )
+
+    async def failed_update(_adapter, _message_id, _card):
+        return False
+
+    monkeypatch.setattr(hook_runtime, "_hfc_update_native_command_card", failed_update)
+    adapter = DummyFeishuAdapter()
+    event = SimpleNamespace(
+        source=SimpleNamespace(platform="feishu", chat_id="oc_abc"),
+        text="/status",
+        message_id="om_user_status",
+        get_command=lambda: "status",
+    )
+    hook_runtime.install_feishu_command_card_adapter_methods(
+        SimpleNamespace(adapters={"feishu": adapter}),
+        event=event,
+    )
+
+    async def run():
+        await adapter.send("oc_abc", "first")
+        return await adapter.send(
+            "oc_abc",
+            "exact second feedback",
+            reply_to="om_user_status",
+            metadata={"thread_id": "omt_topic"},
+        )
+
+    result = asyncio.run(run())
+
+    assert result.message_id == "om_native_fallback"
+    assert adapter.text_sent == [
+        (
+            "oc_abc",
+            "exact second feedback",
+            "om_user_status",
+            {"thread_id": "omt_topic"},
+        )
+    ]
+
+
+def test_command_feedback_create_failure_falls_back_to_exact_native_text():
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def __init__(self):
+            self._client = object()
+            self.text_sent = []
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.text_sent.append((chat_id, content, reply_to, metadata))
+            return SimpleNamespace(success=True, message_id="om_native_fallback")
+
+        async def _feishu_send_with_retry(self, **kwargs):
+            return SimpleNamespace(success=False, error="card create failed")
+
+    adapter = DummyFeishuAdapter()
+    event = SimpleNamespace(
+        source=SimpleNamespace(platform="feishu", chat_id="oc_abc"),
+        text="/usage",
+        message_id="om_user_usage",
+        get_command=lambda: "usage",
+    )
+    hook_runtime.install_feishu_command_card_adapter_methods(
+        SimpleNamespace(adapters={"feishu": adapter}),
+        event=event,
+    )
+
+    result = asyncio.run(
+        adapter.send(
+            "oc_abc",
+            "exact usage feedback",
+            reply_to="om_user_usage",
+            metadata={"thread_id": "omt_topic"},
+        )
+    )
+
+    assert result.message_id == "om_native_fallback"
+    assert adapter.text_sent == [
+        (
+            "oc_abc",
+            "exact usage feedback",
+            "om_user_usage",
+            {"thread_id": "omt_topic"},
+        )
+    ]
+
+
+def test_command_feedback_long_markdown_is_split_without_data_loss():
+    content = ("paragraph\n\n" * 700).strip()
+
+    card = hook_runtime._hfc_command_result_card(
+        title="/commands",
+        content=content,
+    )
+
+    assert len(card["elements"]) > 1
+    assert "".join(element["content"] for element in card["elements"]) == content
 
 
 @pytest.mark.asyncio
@@ -1169,7 +1475,7 @@ async def test_v400_hook_runtime_keeps_native_media_text_when_card_delivery_fail
     assert adapter.text_sent == [("oc_source", "已生成图片")]
 
 
-def test_native_feishu_update_command_result_stays_plain_text():
+def test_native_feishu_update_command_result_uses_card():
     class DummyFeishuAdapter:
         name = "feishu"
 
@@ -1205,9 +1511,12 @@ def test_native_feishu_update_command_result_stays_plain_text():
     result = asyncio.run(run())
 
     assert result.success is True
-    assert result.message_id == "om_plain_update"
-    assert adapter.sent is None
-    assert adapter.text_sent == [("oc_abc", "Update started.", "om_user_update", None)]
+    assert result.message_id == "om_unexpected_card"
+    assert adapter.sent is not None
+    assert adapter.text_sent == []
+    card = json.loads(adapter.sent["payload"])
+    assert card["header"]["title"]["content"] == "/update"
+    assert card["elements"][0]["content"] == "Update started."
 
 
 def test_native_feishu_system_notice_send_posts_sidecar_and_suppresses_text(monkeypatch):
