@@ -12,9 +12,10 @@ import warnings
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from hermes_feishu_card.bots import RouteResult
+from hermes_feishu_card import hook_runtime
 from hermes_feishu_card import flush as flush_module
 from hermes_feishu_card import server as sidecar_server
+from hermes_feishu_card.bots import RouteResult
 from hermes_feishu_card.events import SidecarEvent
 from hermes_feishu_card.event_auth import sign_event_request
 from hermes_feishu_card.feishu_client import FeishuAPIError
@@ -5047,6 +5048,75 @@ async def test_independent_system_notice_without_started_sends_notice_card(clien
     assert "Codex gpt-5.5 caps context at 272K." in str(card)
     assert "生成中" not in str(card)
     assert feishu_client.updated == []
+
+
+async def test_orphaned_heartbeats_update_one_running_notice_card(client):
+    test_client, feishu_client = client
+    texts = (
+        "⏳ Working — 6 min — iteration 10/90, terminal",
+        "⏳ Working — 9 min — iteration 14/90, terminal",
+    )
+    responses = []
+    message_ids = []
+
+    for sequence, text in enumerate(texts, start=1):
+        notice = hook_runtime._hfc_classify_system_notice(text)
+        assert notice is not None
+        message_id = hook_runtime._hfc_independent_notice_message_id(
+            "oc_1", text, notice, anchor="om_user_task"
+        )
+        message_ids.append(message_id)
+        response = await test_client.post(
+            "/events",
+            json=event_payload(
+                "system.notice",
+                sequence,
+                {
+                    **notice,
+                    "content": text,
+                    "notice_scope": "independent",
+                    "delivery_kind": "notice",
+                    "reply_to_message_id": "om_user_task",
+                },
+                message_id=message_id,
+            ),
+        )
+        responses.append(await response.json())
+
+    assert responses == [
+        DELIVERED_RESPONSE,
+        {"ok": True, "applied": True},
+    ]
+    assert message_ids[0] == message_ids[1]
+    assert len(feishu_client.sent) == 1
+    await _wait_until(lambda: len(feishu_client.updated) == 1)
+    session = test_client.app[SESSIONS_KEY][message_ids[0]]
+    assert session.status == "running"
+    assert "subtitle" not in feishu_client.sent[0][1]["header"]
+    updated_card = feishu_client.updated[0][1]
+    assert updated_card["header"]["title"]["content"] == "运行中"
+    assert "subtitle" not in updated_card["header"]
+    assert "Working — 9 min" in str(updated_card)
+
+    completed = await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.completed",
+            3,
+            {
+                "answer": "长任务已完成",
+                "reply_to_message_id": "om_user_task",
+            },
+            message_id="om_user_task",
+        ),
+    )
+
+    assert completed.status == 200
+    assert (await completed.json())["applied"] is True
+    await _wait_until(lambda: len(feishu_client.updated) == 2)
+    assert session.status == "completed"
+    assert session.answer_text == "长任务已完成"
+    assert len(feishu_client.sent) == 1
 
 
 def compaction_notice_data(**overrides):

@@ -2073,6 +2073,40 @@ def test_background_process_notice_classification_and_stable_id():
     assert len(independent_ids) == 1
 
 
+def test_long_running_heartbeat_notice_is_non_terminal():
+    notice = hook_runtime._hfc_classify_system_notice(
+        "⏳ Working — 6 min — iteration 10/90, "
+        "waiting for provider response (streaming)"
+    )
+
+    assert notice == {
+        "title": "运行中",
+        "level": "info",
+        "notice_kind": "heartbeat",
+        "notice_id": "heartbeat",
+        "notice_terminal": False,
+    }
+
+
+def test_long_running_heartbeat_reuses_independent_message_id_per_anchor():
+    first = "⏳ Working — 6 min — iteration 10/90, terminal"
+    second = "⏳ Working — 9 min — iteration 14/90, terminal"
+    first_notice = hook_runtime._hfc_classify_system_notice(first)
+    second_notice = hook_runtime._hfc_classify_system_notice(second)
+
+    assert first_notice is not None
+    assert second_notice is not None
+    first_message_id = hook_runtime._hfc_independent_notice_message_id(
+        "oc_abc", first, first_notice, anchor="om_task_1"
+    )
+    assert first_message_id == hook_runtime._hfc_independent_notice_message_id(
+        "oc_abc", second, second_notice, anchor="om_task_1"
+    )
+    assert first_message_id != hook_runtime._hfc_independent_notice_message_id(
+        "oc_abc", second, second_notice, anchor="om_task_2"
+    )
+
+
 @pytest.mark.parametrize(
     (
         "content",
@@ -2679,6 +2713,86 @@ def test_native_feishu_system_notice_edit_updates_same_card(monkeypatch):
     assert posted[0]["message_id"] == posted[1]["message_id"] == "om_user_task"
     assert posted[0]["data"]["notice_id"] == posted[1]["data"]["notice_id"]
     assert "iteration 2/90" in posted[1]["data"]["content"]
+
+
+def test_heartbeat_after_unknown_delivery_reuses_independent_card(monkeypatch):
+    posted = []
+    responses = [
+        {"ok": True, "applied": False},
+        {
+            "ok": False,
+            "error": "feishu send failed",
+            "delivery": {"outcome": "unknown"},
+        },
+        {"ok": True, "applied": False},
+        {
+            "ok": True,
+            "applied": True,
+            "delivery": {"outcome": "delivered"},
+        },
+    ]
+
+    async def fake_post_json_ordered_response(url, payload, timeout):
+        posted.append(payload)
+        return responses.pop(0)
+
+    monkeypatch.setattr(
+        hook_runtime,
+        "_post_json_ordered_response",
+        fake_post_json_ordered_response,
+    )
+
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def __init__(self):
+            self._client = object()
+            self.text_sent = []
+            self.edited = []
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.text_sent.append((chat_id, content, reply_to, metadata))
+            return SimpleNamespace(success=True, message_id="om_native_warning")
+
+        async def edit_message(self, chat_id, message_id, content, metadata=None):
+            self.edited.append((chat_id, message_id, content, metadata))
+            return SimpleNamespace(success=True, message_id=message_id)
+
+    adapter = DummyFeishuAdapter()
+    runner = SimpleNamespace(adapters={"feishu": adapter})
+    event = SimpleNamespace(
+        source=SimpleNamespace(platform="feishu", chat_id="oc_abc"),
+        text="执行长任务",
+        message_id="om_user_task",
+        get_command=lambda: "",
+    )
+    hook_runtime.install_feishu_command_card_adapter_methods(runner, event=event)
+
+    async def run():
+        sent = await adapter.send(
+            "oc_abc",
+            "⏳ Working — 6 min — iteration 10/90, terminal",
+            reply_to="om_user_task",
+        )
+        edited = await adapter.edit_message(
+            "oc_abc",
+            sent.message_id,
+            "⏳ Working — 9 min — iteration 14/90, terminal",
+        )
+        return sent, edited
+
+    sent, edited = asyncio.run(run())
+
+    assert sent.message_id == "om_native_warning"
+    assert edited.message_id.startswith("notice_")
+    assert len(posted) == 4
+    independent = [
+        payload
+        for payload in posted
+        if payload["data"]["notice_scope"] == "independent"
+    ]
+    assert len(independent) == 2
+    assert independent[0]["message_id"] == independent[1]["message_id"]
 
 
 def test_install_feishu_command_card_methods_repairs_stale_install_marker():

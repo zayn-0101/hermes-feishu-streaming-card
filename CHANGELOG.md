@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.14 — 2026-07-20
+
+See also: [docs/release-notes-v4.0.14.md](docs/release-notes-v4.0.14.md)
+
+### Fixed
+- Fixed Issue #142: orphaned long-running `Working` heartbeats are explicitly non-terminal, so standalone cards remain in the running state instead of combining a “运行中” title with an “已完成” subtitle.
+- Consecutive heartbeat updates now derive one stable independent card identity from the chat and original message anchor rather than changing heartbeat text or a five-minute bucket. Separate user-message anchors remain isolated.
+- A later `message.completed` event still resolves the original reply-anchor alias and completes the same card. The existing `unknown` delivery warning and fail-open rules remain unchanged.
+
+### Tests
+- Added regression coverage for non-terminal heartbeat classification, stable per-anchor identity, orphaned 6/9-minute updates, final completion, and recovery after an unknown delivery outcome.
+- Thanks to @ati121 for reporting the long-task duplicate-card and contradictory-status symptom in Issue #142.
+
 ## V4.0.13 — 2026-07-20
 
 See also: [docs/release-notes-v4.0.13.md](docs/release-notes-v4.0.13.md)

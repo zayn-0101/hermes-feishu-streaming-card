@@ -132,7 +132,7 @@ For an existing Hermes container:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.13
+export HFC_VERSION=v4.0.14
 bash install-docker.sh
 ```
 
@@ -173,6 +173,7 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 ![Feishu topic reply card continuity and reasoning/tool timeline showcase](docs/assets/feishu-topic-card-showcase-v389.png)
 | Version | Highlights |
 |---|---|
+| [v4.0.14](docs/release-notes-v4.0.14.en.md) | Fixes Issue #142 so orphaned long-task heartbeats stay running, update one card per original message anchor, and still complete on the final event |
 | [v4.0.13](docs/release-notes-v4.0.13.en.md) | Routes every non-empty Hermes slash-command feedback message through a standalone command card, updates one card for multi-message feedback, keeps manual `/compress` progress/results in place, and falls back to exact native text on failure |
 | [v4.0.12](docs/release-notes-v4.0.12.en.md) | Issue #133 adds visible context-compaction phases and configurable body/reasoning/tool/notice/footer text sizes; Issue #136 loads selected-env credentials and exposes degraded Noop delivery |
 | [v4.0.11](docs/release-notes-v4.0.11.en.md) | Fixes Issue #135 with stable-UUID bounded initial delivery retries and safe `delivered/not_sent/unknown` notice fallback semantics |

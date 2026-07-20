@@ -2332,6 +2332,7 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, Any] | None:
             "level": "info",
             "notice_kind": "heartbeat",
             "notice_id": "heartbeat",
+            "notice_terminal": False,
         }
     if "caps context" in lowered and "auto-compaction" in lowered:
         return {
@@ -2501,7 +2502,12 @@ async def _hfc_send_system_notice_card(
         independent_message_id = (
             message_id
             if message_id.startswith("notice_")
-            else _hfc_independent_notice_message_id(chat_id, str(content or ""), notice)
+            else _hfc_independent_notice_message_id(
+                chat_id,
+                str(content or ""),
+                notice,
+                anchor=str(context.get("message_id") or "").strip(),
+            )
         )
         payload = _hfc_build_system_notice_payload(
             chat_id=chat_id,
@@ -2563,10 +2569,15 @@ def _hfc_independent_notice_message_id(
     chat_id: str,
     content: str,
     notice: dict[str, Any],
+    *,
+    anchor: str = "",
 ) -> str:
     notice_id = str(notice.get("notice_id") or "").strip()
     if notice.get("notice_kind") == "background-process" and notice_id:
         raw = f"{chat_id}:{notice_id}".encode("utf-8")
+        return "notice_" + sha256(raw).hexdigest()[:16]
+    if notice.get("notice_kind") == "heartbeat" and notice_id:
+        raw = f"{chat_id}:{anchor}:{notice_id}".encode("utf-8")
         return "notice_" + sha256(raw).hexdigest()[:16]
     if notice_id.startswith("background-task-completed:"):
         return "notice_" + secrets.token_hex(8)

@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release: `4.0.13`. It cardifies all non-empty feedback from built-in, alias, plugin/quick, and unknown commands, while keeping manual `/compress` progress and the unchanged terminal result in the same card. V3.9.1 was released on 2026-07-11, and V4.0.12 and earlier releases are also public.
+Current release candidate: `4.0.14`. It fixes Issue #142 so orphaned long-running heartbeats remain non-terminal, update one card per original user-message anchor, and complete when the final event arrives. V3.9.1 was released on 2026-07-11, and V4.0.13 and earlier releases are public.
 
 ## Ready
 
@@ -144,6 +144,13 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Verify macOS, Linux, Windows, and checksums assets after tagging.
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
+
+## V4.0.14 Release Gates
+
+- Non-terminal heartbeat state, same-anchor reuse, different-anchor isolation, orphaned six/nine-minute updates, and final completion: **passed focused automation**.
+- Stable independent-card recovery after an unknown delivery outcome and the existing fail-open branches: **passed regression coverage**.
+- The real-Feishu `v4.0.13` reproduction for Issue #142 is recorded. This candidate does not wait another real six/nine minutes and does not describe the equivalent automated replay as a client visual retest.
+- Final full automation: **passed (`1488 passed, 3 skipped`)**; sdist/wheel, isolated Python 3.12 `site-packages` import of `4.0.14`, and CLI smoke: **passed**; `git diff --check` is rerun before tagging.
 
 ## V4.0.13 Release Gates
 

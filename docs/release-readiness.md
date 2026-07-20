@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布版本为 `4.0.13`。它把 built-in、alias、plugin/quick 和 unknown command 的所有非空文本反馈统一卡片化，并让手动 `/compress` 从运行态到原始终态结果都更新同一卡片。V3.9.1 已于 2026-07-11 发布，V4.0.12 及更早版本也已发布。
+当前发布候选为 `4.0.14`。它修复 Issue #142：orphan 长任务 heartbeat 保持非终态、按原始用户消息锚点更新同一卡，并在最终完成事件到达时正常收束。V3.9.1 已于 2026-07-11 发布，V4.0.13 及更早版本也已发布。
 
 ## 已具备
 
@@ -144,6 +144,13 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - tag 后验证 macOS、Linux、Windows 与 checksums 四个 assets。
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
+
+## V4.0.14 发布门禁
+
+- heartbeat 非终态、同锚点复用、不同锚点隔离、orphan 6/9 分钟更新与最终完成收束：**已通过聚焦自动化**。
+- unknown delivery 后的稳定独立卡恢复与既有 fail-open 分支：**已通过回归测试**。
+- Issue #142 的真实 Feishu `v4.0.13` 复现证据已记录；候选版不重复等待真实 6/9 分钟，不把自动化等价重放写成客户端视觉复验。
+- 最终全量自动化：**已通过（`1488 passed, 3 skipped`）**；sdist/wheel、隔离 Python 3.12 `site-packages` import `4.0.14` 与 CLI smoke：**已通过**；tag 前再执行 `git diff --check`。
 
 ## V4.0.13 发布门禁
 
