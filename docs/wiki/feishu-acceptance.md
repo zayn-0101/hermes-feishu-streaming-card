@@ -2,6 +2,15 @@
 
 自动化测试不能完全证明 Feishu/Lark 客户端体验。涉及卡片 UX、topic、系统提示、命令卡片的版本，发布前需要真实飞书 smoke。
 
+## V4.0.14 长任务 heartbeat 热修
+
+- 对同一个真实用户消息 reply anchor 连续观察或等价重放 6 分钟、9 分钟 `Working` heartbeat：只能创建一张独立卡，后续为同卡更新。
+- heartbeat 卡 Header 保持“运行中”，不能出现“已完成”副标题；最终 `message.completed` 到达后才转为完成态。
+- 同一 chat 的两个不同原始消息锚点必须生成不同 independent card identity，不能互相覆盖。
+- 受控 unknown delivery 后的下一次 heartbeat 仍回到同一独立生命周期；既有通用警告不得重复原始通知正文。
+
+2026-07-20 发布边界：真实 Feishu 已在公开版 `v4.0.13` 复现两张矛盾状态卡并确认根因；候选修复通过等价 6/9 分钟事件重放、最终完成和 unknown delivery 回归。本次不再次等待真实长任务窗口，不把自动化重放写成客户端视觉复验。
+
 ## V4.0.13 全命令反馈卡片
 
 - `/status`、`/usage`、`/commands`、`/reasoning` 与一个 unknown command：每条反馈使用独立命令卡，无灰色原生文本；`/commands` 长 Markdown 不缺段、不破坏代码块。
