@@ -1841,7 +1841,7 @@ def _hfc_group_context_lines(event: SidecarEvent, route: RouteResult) -> list[st
         "",
         "**群聊**",
         "- @机器人触发: 由 Hermes @/白名单准入控制，sidecar 只负责卡片路由和诊断。",
-        "- 群内 slash command: `/new`、`/model`、`/reset` 等独立命令先通过 Hermes @/白名单，再使用独立命令卡片；`/update` 仍保持 Hermes 后台升级流程。",
+        "- 群内 slash command: 先通过 Hermes @/白名单；所有非空文本反馈使用独立命令卡片。`/update` 仍保持后台升级流程，仅将重启前反馈卡片化。",
     ]
     if group.get("enabled"):
         allowed = "yes" if group.get("chat_allowed") else "no"

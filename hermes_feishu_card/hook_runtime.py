@@ -46,6 +46,7 @@ OPERATIONS_ACTION_FORWARD_ATTEMPTS = 2
 OPERATIONS_ACTION_RETRY_DELAY_SECONDS = 0.1
 OPERATIONS_ACTION_WORKERS = 4
 OPERATIONS_ACTION_QUEUE_LIMIT = 64
+COMMAND_FEEDBACK_CONTEXT_TTL_SECONDS = 600.0
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _CONTEXT_COMPACTION_STATUS_RE = re.compile(
     r"\bCompacting\s+context\b",
@@ -154,7 +155,7 @@ _SEND_LOCKS_GUARD = threading.Lock()
 _POST_FAILED = object()
 _PENDING_DELTAS: dict[tuple[int, str, str, str, str], _PendingDelta] = {}
 _PENDING_DELTAS_LOCK = threading.Lock()
-_HFC_FEISHU_COMMAND_RESULT_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+_HFC_FEISHU_COMMAND_RESULT_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     "hfc_feishu_command_result_context",
     default=None,
 )
@@ -168,7 +169,6 @@ _HFC_NATIVE_MEDIA_TEXT_SUPPRESSION: ContextVar[
     "hfc_native_media_text_suppression",
     default=None,
 )
-_HFC_COMMAND_RESULT_CARD_COMMANDS = {"new", "reset", "clear", "undo", "stop", "model"}
 _OPERATION_TRANSPORT_SECRETS: dict[str, tuple[bytes, str, float]] = {}
 _OPERATION_TRANSPORT_SECRETS_LOCK = threading.Lock()
 _OPERATION_TRANSPORT_SECRET_TTL_SECONDS = 600.0
@@ -1856,6 +1856,81 @@ def _hfc_install_resume_picker_handler(runner_type: type[Any]) -> bool:
     return True
 
 
+async def _hfc_handle_compress_command_with_card(runner: Any, event: Any) -> Any:
+    original = getattr(type(runner), "_hfc_original_handle_compress_command", None)
+    if not callable(original):
+        return None
+    source = getattr(event, "source", None)
+    if source is None or _platform_name({}, source) != "feishu":
+        return await original(runner, event)
+
+    context = _HFC_FEISHU_COMMAND_RESULT_CONTEXT.get()
+    if not isinstance(context, dict):
+        context = _hfc_command_result_context_from_event(event)
+        if context is not None:
+            _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(context)
+    if not isinstance(context, dict):
+        return await original(runner, event)
+    command = str(context.get("command") or "").strip().lower()
+    raw_command = str(context.get("raw_command") or "").strip().lower()
+    if command not in {"compress", "compact"} and raw_command not in {
+        "compress",
+        "compact",
+    }:
+        return await original(runner, event)
+    context["command"] = "compress"
+
+    adapter = _hfc_feishu_adapter_from_runner(runner, source)
+    chat_id = str(getattr(source, "chat_id", "") or "").strip()
+    if adapter is None or not chat_id:
+        return await original(runner, event)
+
+    started = await _hfc_send_native_command_result_card(
+        adapter,
+        chat_id=chat_id,
+        content="⏳ 正在压缩上下文…",
+        reply_to=str(context.get("reply_to_message_id") or "").strip() or None,
+        metadata=None,
+        context=context,
+    )
+    result = await original(runner, event)
+    if not getattr(started, "success", False):
+        return result
+
+    terminal_content = str(result or "").strip() or "上下文压缩已完成。"
+    completed = await _hfc_send_native_command_result_card(
+        adapter,
+        chat_id=chat_id,
+        content=terminal_content,
+        reply_to=str(context.get("reply_to_message_id") or "").strip() or None,
+        metadata=None,
+        context=context,
+    )
+    if getattr(completed, "success", False):
+        return None
+    return result
+
+
+def _hfc_install_compress_command_handler(runner_type: type[Any]) -> bool:
+    current = runner_type.__dict__.get("_handle_compress_command")
+    if current is _hfc_handle_compress_command_with_card:
+        setattr(runner_type, "_hfc_compress_command_wrapped", True)
+        return True
+    if getattr(runner_type, "_hfc_compress_command_wrapped", False):
+        return callable(getattr(runner_type, "_handle_compress_command", None))
+    original = current or getattr(runner_type, "_handle_compress_command", None)
+    if not callable(original):
+        return False
+    setattr(runner_type, "_hfc_original_handle_compress_command", original)
+    setattr(
+        runner_type,
+        "_handle_compress_command",
+        _hfc_handle_compress_command_with_card,
+    )
+    setattr(runner_type, "_hfc_compress_command_wrapped", True)
+    return True
+
+
 def _parse_model_picker_choice(choice: str) -> tuple[str, str] | None:
     try:
         data = json.loads(choice)
@@ -2055,6 +2130,10 @@ def _hfc_command_result_card(
     content: str,
     template: str = "green",
 ) -> dict[str, Any]:
+    from .render import MAIN_CONTENT_CHUNK_CHARS
+    from .text import split_markdown_blocks
+
+    normalized_content = str(content or "").strip() or "已处理。"
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -2064,8 +2143,12 @@ def _hfc_command_result_card(
         "elements": [
             {
                 "tag": "markdown",
-                "content": str(content or "").strip() or "已处理。",
+                "content": chunk,
             }
+            for chunk in split_markdown_blocks(
+                normalized_content,
+                MAIN_CONTENT_CHUNK_CHARS,
+            )
         ],
     }
 
@@ -2090,6 +2173,23 @@ def _hfc_command_from_event(event: Any) -> str:
     return command.split(None, 1)[0].strip().lower()
 
 
+def _hfc_canonical_command(command: str) -> str:
+    raw = str(command or "").strip().lstrip("/")
+    if not raw:
+        return ""
+    raw = raw.split(None, 1)[0].lower()
+    try:
+        from hermes_cli.commands import resolve_command
+
+        resolved = resolve_command(raw)
+        name = str(getattr(resolved, "name", "") or "").strip().lower()
+        if name:
+            return name
+    except Exception:
+        pass
+    return raw.replace("_", "-")
+
+
 def _hfc_command_event_message_id(event: Any) -> str:
     for obj in (event, getattr(event, "source", None)):
         if obj is None:
@@ -2104,23 +2204,31 @@ def _hfc_command_event_message_id(event: Any) -> str:
     return ""
 
 
-def _hfc_command_result_context_from_event(event: Any) -> dict[str, str] | None:
+def _hfc_command_result_context_from_event(event: Any) -> dict[str, Any] | None:
     if event is None:
         return None
     source = getattr(event, "source", None)
     if _platform_name({}, source) != "feishu":
         return None
-    command = _hfc_command_from_event(event)
-    if command not in _HFC_COMMAND_RESULT_CARD_COMMANDS:
+    raw_command = _hfc_command_from_event(event)
+    command = _hfc_canonical_command(raw_command)
+    if not command:
         return None
+    now = time.monotonic()
     return {
         "command": command,
+        "raw_command": raw_command,
         "chat_id": str(getattr(source, "chat_id", "") or "").strip(),
-        "message_id": _hfc_command_event_message_id(event),
+        "reply_to_message_id": _hfc_command_event_message_id(event),
+        "thread_id": str(getattr(source, "thread_id", "") or "").strip(),
+        "card_message_id": "",
+        "created_at": now,
+        "expires_at": now + COMMAND_FEEDBACK_CONTEXT_TTL_SECONDS,
     }
 
 
 def _hfc_command_result_title(command: str) -> str:
+    normalized = str(command or "").strip().lower()
     return {
         "new": "会话已重置",
         "reset": "会话已重置",
@@ -2128,13 +2236,16 @@ def _hfc_command_result_title(command: str) -> str:
         "undo": "已撤销上一步",
         "stop": "已停止",
         "model": "模型已更新",
-    }.get(command, "命令已完成")
+        "compress": "上下文压缩",
+    }.get(normalized, f"/{normalized}" if normalized else "命令反馈")
 
 
 def _hfc_command_result_template(content: str) -> str:
     text = str(content or "").strip().lower()
     if text.startswith(("❌", "error", "failed")) or "失败" in text or "error:" in text:
         return "red"
+    if text.startswith(("⏳", "正在", "running", "starting")):
+        return "blue"
     if text.startswith(("⚠️", "warning")) or "cancel" in text or "取消" in text:
         return "orange"
     return "green"
@@ -2144,22 +2255,28 @@ def _hfc_take_feishu_command_result_context(
     *,
     chat_id: str,
     content: Any,
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
     context = _HFC_FEISHU_COMMAND_RESULT_CONTEXT.get()
     if not isinstance(context, dict):
         return None
     command = str(context.get("command") or "").strip().lower()
-    if command not in _HFC_COMMAND_RESULT_CARD_COMMANDS:
+    if not command:
         _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
         return None
     if not str(content or "").strip():
+        return None
+    try:
+        expires_at = float(context.get("expires_at") or 0.0)
+    except (TypeError, ValueError):
+        expires_at = 0.0
+    if expires_at <= time.monotonic():
+        _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
         return None
     expected_chat_id = str(context.get("chat_id") or "").strip()
     actual_chat_id = str(chat_id or "").strip()
     if expected_chat_id and actual_chat_id and expected_chat_id != actual_chat_id:
         _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
         return None
-    _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
     return context
 
 
@@ -2512,48 +2629,76 @@ async def _hfc_send_native_command_result_card(
     content: str,
     reply_to: str | None,
     metadata: dict[str, Any] | None,
-    context: dict[str, str],
+    context: dict[str, Any],
 ) -> Any:
     if not getattr(adapter, "_client", None):
         return _send_result(False, error="not connected")
     if not hasattr(adapter, "_feishu_send_with_retry"):
         return _send_result(False, error="feishu send unavailable")
 
-    command = str(context.get("command") or "").strip().lower()
-    card = _hfc_command_result_card(
-        title=_hfc_command_result_title(command),
-        content=content,
-        template=_hfc_command_result_template(content),
-    )
-    effective_reply_to = (
-        str(reply_to or "").strip()
-        or _metadata_reply_to(metadata)
-        or str(context.get("message_id") or "").strip()
-        or None
-    )
-    try:
-        response = await adapter._feishu_send_with_retry(
-            chat_id=chat_id,
-            msg_type="interactive",
-            payload=json.dumps(card, ensure_ascii=False),
-            reply_to=effective_reply_to,
-            metadata=metadata,
-        )
-    except Exception as exc:
-        _hfc_warn(f"send command result card failed: {exc.__class__.__name__}: {exc}")
-        return _send_result(False, error=str(exc))
+    lock = context.get("_lock")
+    if not isinstance(lock, asyncio.Lock):
+        lock = asyncio.Lock()
+        context["_lock"] = lock
 
-    finalizer = getattr(adapter, "_finalize_send_result", None)
-    if callable(finalizer):
+    async with lock:
+        command = str(context.get("command") or "").strip().lower()
+        card = _hfc_command_result_card(
+            title=_hfc_command_result_title(command),
+            content=content,
+            template=_hfc_command_result_template(content),
+        )
+        card_message_id = str(context.get("card_message_id") or "").strip()
+        if card_message_id:
+            updated = await _hfc_update_native_command_card(
+                adapter,
+                card_message_id,
+                card,
+            )
+            if updated:
+                return _send_result(True, message_id=card_message_id)
+            return _send_result(False, error="update command result card failed")
+
+        effective_reply_to = (
+            str(reply_to or "").strip()
+            or _metadata_reply_to(metadata)
+            or str(context.get("reply_to_message_id") or "").strip()
+            or None
+        )
+        effective_metadata = dict(metadata or {})
+        thread_id = str(context.get("thread_id") or "").strip()
+        if thread_id and not effective_metadata.get("thread_id"):
+            effective_metadata["thread_id"] = thread_id
         try:
-            return finalizer(response, "send command result card failed")
-        except Exception:
-            pass
-    success, message_id = _hfc_feishu_send_success(response)
-    if not success:
-        _hfc_warn(f"send command result card failed: response={response!r}")
-        return _send_result(False, error="send command result card failed")
-    return _send_result(True, message_id=message_id)
+            response = await adapter._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=effective_reply_to,
+                metadata=effective_metadata or None,
+            )
+        except Exception as exc:
+            _hfc_warn(f"send command result card failed: {exc.__class__.__name__}: {exc}")
+            return _send_result(False, error=str(exc))
+
+        finalizer = getattr(adapter, "_finalize_send_result", None)
+        if callable(finalizer):
+            try:
+                result = finalizer(response, "send command result card failed")
+                if getattr(result, "success", False):
+                    message_id = str(getattr(result, "message_id", "") or "").strip()
+                    if message_id:
+                        context["card_message_id"] = message_id
+                    return result
+                return result
+            except Exception:
+                pass
+        success, message_id = _hfc_feishu_send_success(response)
+        if not success:
+            _hfc_warn(f"send command result card failed: response={response!r}")
+            return _send_result(False, error="send command result card failed")
+        context["card_message_id"] = message_id
+        return _send_result(True, message_id=message_id)
 
 
 async def _hfc_send_with_native_command_result_card(
@@ -4283,6 +4428,7 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
             return False
         runner_type = type(runner)
         _hfc_install_resume_picker_handler(runner_type)
+        _hfc_install_compress_command_handler(runner_type)
         current_notice_delivery = runner_type.__dict__.get("_deliver_platform_notice")
         if current_notice_delivery is _hfc_deliver_platform_notice_with_card:
             setattr(runner_type, "_hfc_platform_notice_wrapped", True)

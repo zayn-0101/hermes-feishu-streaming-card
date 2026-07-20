@@ -1304,6 +1304,7 @@ async def test_hfc_status_group_unbound_shows_binding_hint_and_slash_guidance():
     assert "bots bind-chat oc_group default" in content
     assert "群内 slash command" in content
     assert "Hermes @/白名单" in content
+    assert "所有非空文本反馈使用独立命令卡片" in content
 
 
 async def test_hfc_monitor_command_reports_safe_metrics(client):

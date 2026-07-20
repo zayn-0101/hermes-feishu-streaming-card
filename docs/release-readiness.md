@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前已发布版本为 `4.0.12`。它修复 Issues #133/#136：上下文压缩阶段保持卡片可见，五类文本支持 PC/mobile 字号映射，并让 selected-env 凭据和 Noop 降级状态可验证、可诊断。V3.9.1 已于 2026-07-11 发布，V4.0.11 及更早版本也已发布。
+当前发布版本为 `4.0.13`。它把 built-in、alias、plugin/quick 和 unknown command 的所有非空文本反馈统一卡片化，并让手动 `/compress` 从运行态到原始终态结果都更新同一卡片。V3.9.1 已于 2026-07-11 发布，V4.0.12 及更早版本也已发布。
 
 ## 已具备
 
@@ -34,11 +34,11 @@
 - pre-tool answer 会先显示在正文区，并在下一段 answer 或终态到来时归档进辅助 timeline；终态卡片会剥离已归档的中间说明。
 - 辅助 timeline 中思考条目和工具详情使用不同字号和灰度层级，raw `thinking.delta` 不进入用户可见 timeline。
 - 工具详情可展示参数摘要、耗时和失败原因，并继续按紧凑 timeline 渲染。
-- 独立 slash 命令确认支持 Feishu command card：`/new`、`/reset`、`/undo` 和高成本 `/model <model>` 确认会优先渲染为独立命令卡片。
+- 独立 slash 命令确认继续支持 Feishu command card；此外，built-in、alias、plugin/quick 和 unknown command 的所有非空文本反馈都由独立命令卡片承载，同一命令的后续反馈 PATCH 同一卡片。
 - Feishu/Lark WebSocket 长连接部署会动态获得原生 `send_slash_confirm(...)` 和 `send_model_picker(...)` 卡片能力；按钮点击经 `_on_card_action_trigger` 回到 Hermes 原 handler。
 - WebSocket 原生卡片可用时跳过 sidecar `interaction.requested` 预交互，避免同一 slash 命令同时出现 sidecar 选项卡和原生按钮卡。
 - `/model` 无参数选择可通过 Feishu-only `send_model_picker(...)` 卡片呈现；选择后回调 Hermes 并更新同一张命令卡片。
-- `/update` 保持 Hermes 后台升级命令语义，不渲染交互命令卡片；sidecar 不可用或卡片完成态更新失败时退回 Hermes 原生文本路径。
+- `/update` 保持 Hermes 后台升级命令语义，重启前反馈进入命令卡，重启后状态继续由 `system.notice` 承载；命令卡 create/PATCH 失败时，对应反馈逐条退回 Hermes 原生文本路径。
 - terminal 事件会快速 ACK Hermes，慢 Feishu PATCH 在后台完成，避免中断或更新堆积后触发重复原生答复。
 - `load_config()` 会读取 config 同目录 `.env`，真实环境变量仍保持最高优先级。
 - `install.sh` 白名单读取 `.env` 中的飞书/sidecar 变量，不会执行带空格路径等无关配置。
@@ -144,6 +144,13 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - tag 后验证 macOS、Linux、Windows 与 checksums 四个 assets。
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
+
+## V4.0.13 发布门禁
+
+- 全命令上下文、同卡多反馈、并发单 create、长 Markdown、create/PATCH 原文回退与 `/compress` 全分支矩阵：**已通过**。
+- 专用 `/model`、裸 `/resume`、confirmation、`/hfc`、Agent turn、媒体和 `/update` 重启边界回归：**已通过**。
+- 真实 Feishu 客户端命令矩阵和桌面/移动端视觉确认：**本次未执行，不写成已通过**。
+- 最终全量自动化：**已通过（`1482 passed, 4 skipped`）**；`git diff --check`、sdist/wheel 和隔离 Python 3.12 import/CLI smoke 均在 tag 前验证。
 
 ## V4.0.12 发布门禁
 
