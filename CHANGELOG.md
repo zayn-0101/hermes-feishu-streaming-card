@@ -5,6 +5,183 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.20 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.20.md](docs/release-notes-v4.0.20.md)
+
+### Fixed
+- Existing-card `system.notice` updates now return `delivery.outcome=accepted` only after the event is applied and the asynchronous PATCH task is queued, preventing the hook from emitting a false unknown-delivery warning.
+- Initial independent notice create/reply semantics remain `delivered`, `not_sent`, or `unknown`; the fix does not wait for every PATCH or weaken create-delivery confirmation.
+
+### Diagnostics
+- `/health.metrics.notice_update_failures` counts accepted notice update tasks that still fail after internal PATCH retries.
+- `last_update_error` may include only validated `status_code` and `api_code` fields in addition to the exception type; response bodies, tokens, URLs, and credentials remain excluded.
+
+### Tests
+- Added hook and sidecar regressions for explicit `accepted + applied=true`, rejection of incomplete acknowledgements, queued update responses, retry exhaustion, and redacted diagnostics.
+- Full automation passed with `1517 passed, 4 skipped`; the package also passed sdist/wheel and isolated `site-packages` import checks.
+
+## V4.0.19 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.19.md](docs/release-notes-v4.0.19.md)
+
+### Fixed
+- The macOS/Linux one-line installer no longer passes `pip --user` when it selects a Python interpreter inside the Hermes venv.
+- A failed package installation now preserves the real pip exit status and stops before setup, preventing an older checkout or installed package from making an upgrade appear successful.
+
+### Tests
+- Added regression coverage for Hermes-venv pip arguments and fail-fast package-install behavior.
+- A fresh public-install fixture completed without `HFC_PIP_USER`, then imported the tagged package from the Hermes venv `site-packages`.
+
+## V4.0.18 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.18.md](docs/release-notes-v4.0.18.md)
+
+### Fixed
+- Hermes Feishu SDK compatibility now follows the adapter's actual `extra_ua_tags` requirement and the installed `lark_oapi.ws.Client` constructor signature instead of assuming a running Gateway means Feishu is connected.
+- `setup/install` repairs stale Gateway venvs with the verified `lark-oapi==1.6.8` and rechecks the constructor capability before patching Hermes.
+
+### Diagnostics
+- `doctor` reports a dedicated `feishu_sdk` section and `feishu_sdk_incompatible` finding; the operations card includes localized recovery guidance.
+- Older Hermes adapters that do not use `extra_ua_tags` remain untouched, while already-compatible newer SDKs are accepted without forced replacement.
+
+### Tests
+- Added red/green regression coverage for stale SDK repair and read-only doctor reporting.
+- Full automation passed with `1511 passed, 4 skipped`; the real Hermes v0.19.0 Gateway recovered its Feishu WebSocket connection after the SDK correction.
+
+## V4.0.17 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.17.md](docs/release-notes-v4.0.17.md)
+
+### Fixed
+- Parallel tools with the same name now use Hermes' stable `tool_start_callback` / `tool_complete_callback` call IDs, so each query, argument set, status, and duration stays on its own timeline row.
+- The timeline header counts tool invocations once instead of counting both started and completed lifecycle events.
+- Rendering removes every duration metadata line from the detail body and keeps only the first valid duration on the compact tool headline.
+
+### Compatibility
+- Existing Hermes tool callbacks are preserved and wrapped without retaining stale per-turn HFC closures on cached agents.
+- Hermes layouts without compatible stable callback anchors retain the established progress-callback fallback and fail-open behavior.
+
+### Tests
+- Added regression coverage for parallel same-name tools, invocation counting, duplicate-duration cleanup, stable patch insertion, idempotency, compilation against the current Hermes Gateway source, and exact restore.
+- Full automation passed with `1508 passed, 4 skipped`; package build, isolated install, public tagged-install, release assets, and local runtime provenance are verified during release.
+
+## V4.0.16 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.16.md](docs/release-notes-v4.0.16.md)
+
+### Fixed
+- Initial loading keeps `Hermes Agent` as the only Header text while the animated `正在加载上下文…` placeholder remains in the body.
+- Once a tool starts, its current action moves to the Header subtitle and an empty model body no longer repeats the loading placeholder.
+- Tool completion now reads Hermes progress-callback `kwargs.duration`, preserves the started-event query and arguments, and renders the duration on the compact tool headline.
+
+### Reliability
+- Explicit upstream duration remains authoritative; a started/completed event-time delta is used only when Hermes omits duration, while terminal-only events never invent elapsed time.
+- Added regression coverage for loading-state transitions, callback duration extraction, detail preservation, explicit-duration precedence, and terminal-only compatibility.
+
+### Tests
+- Full automation passed with `1504 passed, 4 skipped`; release metadata, package build, isolated install, and public tagged-install checks are recorded in the release notes.
+
+## V4.0.15 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.15.md](docs/release-notes-v4.0.15.md)
+
+### Added
+- Fixed Issue #141 with a compact semantic tool-event timeline: the first line shows status, tool name, and duration while arguments, results, and failure details stay on a smaller second line without blockquote backgrounds.
+- The initial card displays an animated `正在加载上下文…` state, and running tools advance the same spinner through the existing serialized PATCH controller without creating a second card.
+
+### Reliability
+- `status` and `start` now detect a verified Hermes upgrade that replaced the injected hook while leaving safe installer evidence. They report `upgrade_repair_required`; `start` refuses the silent broken state and prints the explicit recovery plus Gateway-start commands.
+- User-edited, corrupt, unsupported, or incomplete Hermes source stays fail-closed as `manual_review_required`; the CLI never suggests upgrade acceptance for those states.
+- Hook installation now prints `gateway.restart_required: hermes gateway start` whenever patched Gateway or cron source changed.
+
+### Tests
+- Added render/server animation coverage, first-event compatibility, terminal drain checks, safe upgrade-recovery lifecycle coverage, and real Hermes/Feishu validation with the configured model.
+- Full automation, package build, isolated `site-packages` import, tagged install, and release-asset results are recorded in the release notes.
+
+## V4.0.14 — 2026-07-20
+
+See also: [docs/release-notes-v4.0.14.md](docs/release-notes-v4.0.14.md)
+
+### Fixed
+- Fixed Issue #142: orphaned long-running `Working` heartbeats are explicitly non-terminal, so standalone cards remain in the running state instead of combining a “运行中” title with an “已完成” subtitle.
+- Consecutive heartbeat updates now derive one stable independent card identity from the chat and original message anchor rather than changing heartbeat text or a five-minute bucket. Separate user-message anchors remain isolated.
+- A later `message.completed` event still resolves the original reply-anchor alias and completes the same card. The existing `unknown` delivery warning and fail-open rules remain unchanged.
+
+### Tests
+- Added regression coverage for non-terminal heartbeat classification, stable per-anchor identity, orphaned 6/9-minute updates, final completion, and recovery after an unknown delivery outcome.
+- Thanks to @ati121 for reporting the long-task duplicate-card and contradictory-status symptom in Issue #142.
+
+## V4.0.13 — 2026-07-20
+
+See also: [docs/release-notes-v4.0.13.md](docs/release-notes-v4.0.13.md)
+
+### Added
+- All non-empty Feishu/Lark slash-command feedback now enters a generic command-card context, covering built-ins, aliases, plugin/quick commands, and unknown-command feedback without a fixed allowlist.
+- Manual `/compress` creates an in-place running card before invoking the original Hermes handler, then updates the same card with the unchanged success, no-op, or aborted result.
+
+### Changed
+- The first feedback creates one interactive card; later feedback for the same command is serialized and PATCHed into that card. Long Markdown uses the existing structural splitter, and topic/reply anchors are preserved.
+- Existing `/model`, bare `/resume`, destructive-confirmation, and `/hfc` cards retain priority. Agent turns, native media delivery, and post-restart `/update` status notices keep their established paths.
+
+### Reliability
+- Native gray text is suppressed only after confirmed card create/PATCH success. Any failed card operation returns the exact original Hermes feedback through the native adapter.
+
+## V4.0.12 — 2026-07-18
+
+See also: [docs/release-notes-v4.0.12.md](docs/release-notes-v4.0.12.md)
+
+### Added
+- Fixed Issue #133's silent context-compaction gap by forwarding Hermes' exact `Compacting context` status callback into a `context-compaction` card phase. Existing cards stay visible, and a missing primary card is created without timeout inference or fabricated progress.
+- Added closed-schema `card.text_sizes` configuration for `body`, `reasoning`, `tool`, `notice`, and `footer`, with scalar values or deterministic `default` / `pc` / `mobile` mappings. Physical card dimensions remain controlled by Feishu/Lark clients.
+
+### Fixed
+- Fixed Issue #136: `setup` / `start --env-file` credentials now reach the sidecar runner and operations diagnostics with precedence YAML < sibling `.env` < selected env file < process environment; no implicit global env fallback was added.
+- Credential-free Noop mode now logs a warning, reports `degraded` health with `noop_mode: true`, returns `not_sent`, and records `feishu_noop_attempts` / failures instead of fake message IDs and successes.
+
+### Credits
+- Thanks to @tianxia3111 for Issue #133's production compaction and mobile-readability report, @Jasonsun77 for reinforcing the configurable-font request, and @nasvip for Issue #136's complete Linux/systemd credential-chain diagnosis and health evidence.
+
+## V4.0.11 — 2026-07-18
+
+See also: [docs/release-notes-v4.0.11.md](docs/release-notes-v4.0.11.md)
+
+### Fixed
+- Fixed issue #135: initial Feishu create/reply delivery now uses a stable UUID and at most three attempts for retryable HTTP/network failures, while sidecar `/events` requests remain single-shot.
+- System notices now distinguish `delivered`, `not_sent`, and `unknown`: only definite non-delivery falls back to the original text, while uncertain outcomes use a generic warning without repeating private notice content.
+
+### Operations and safety
+- Added retry, unknown-outcome, native-fallback, and uncertain-warning metrics plus redacted send-error diagnostics; raw IDs, UUIDs, response bodies, URLs, and credentials are excluded.
+
+## V4.0.10 — 2026-07-17
+
+See also: [docs/release-notes-v4.0.10.md](docs/release-notes-v4.0.10.md)
+
+### Security
+- Non-loopback sidecar listeners now require explicit `server.allow_non_loopback: true`; accidental `0.0.0.0`, private-address, or named-host exposure fails before binding.
+- Every enabled non-loopback `/events` request requires a timestamped, nonce-bound HMAC-SHA256 proof over the exact raw body using the private operations transport root. Missing, invalid, stale, and replayed proofs return a generic 401.
+- Loopback listeners remain backward compatible with unsigned hook events. HMAC authenticates but does not encrypt; cross-host deployments still require a trusted private network plus TLS or mTLS.
+
+### Operations and documentation
+- `/health`, CLI `status`, and card-safe diagnostics expose bounded `event_auth_required` / `event_auth_rejections` state without exposing proof headers or secret material.
+- Replaced stale architecture claims with the current V4 event flow and added a maintainer fail-open boundary matrix for authentication, native suppression, delivery, and installer recovery.
+
+## V4.0.9 — 2026-07-16
+
+See also: [docs/release-notes-v4.0.9.md](docs/release-notes-v4.0.9.md)
+
+### Fixed
+- Fixed issue #130: the startup hook no longer rebuilds and replaces the live `EventDispatcherHandler` owned by an already-connected Lark WebSocket client.
+- HFC now updates only the `p2.card.action.trigger` processor callback, scheduled through the SDK WebSocket thread with `call_soon_threadsafe(...)`; message, reaction, bot lifecycle, drive, meeting, and other registered processors keep the same handler object.
+
+### Compatibility and safety
+- Unsupported or changed Lark handler internals fail open without falling back to whole-handler replacement.
+- Added a dedicated Ubuntu/Python 3.11 compatibility job for `lark-oapi==1.6.8` and `websockets==15.0.1`, matching the reported production stack.
+- The separate upstream Hermes reconnect-exhaustion bug remains tracked by NousResearch/hermes-agent#64712 and #64741; this release removes HFC's live-handler mutation instead of rewriting Hermes reconnect ownership.
+
+### Credits
+- Thanks to @Jasonsun77 for issue #130's clean-versus-patched Linux A/B, complete 3–6 minute disconnect timeline, SDK versions, sidecar health evidence, and upstream reconnect correlation.
+
 ## V4.0.8 — 2026-07-16
 
 See also: [docs/release-notes-v4.0.8.md](docs/release-notes-v4.0.8.md)

@@ -9,9 +9,16 @@ class SidecarMetrics:
     events_applied: int = 0
     events_ignored: int = 0
     events_rejected: int = 0
+    event_auth_rejections: int = 0
     feishu_send_attempts: int = 0
+    feishu_noop_attempts: int = 0
     feishu_send_successes: int = 0
     feishu_send_failures: int = 0
+    feishu_send_retries: int = 0
+    feishu_send_unknown_outcomes: int = 0
+    notice_native_fallbacks: int = 0
+    notice_uncertain_warnings: int = 0
+    notice_update_failures: int = 0
     feishu_update_attempts: int = 0
     feishu_update_successes: int = 0
     feishu_update_failures: int = 0

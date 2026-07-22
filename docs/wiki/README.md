@@ -18,6 +18,8 @@
    - 适合用已认证的 `lark-cli` 旁路核对群成员、卡片回调和 topic/message 锚点。
 5. [发布手册](release-playbook.md)
    - 适合发版前按步骤核对版本号、测试、tag、release assets。
+6. [Fail-open 边界](fail-open-boundaries.md)
+   - 适合判断异常时应退回 Hermes 原生路径，还是必须拒绝启动、请求或修复。
 
 ## 当前核心能力
 
@@ -26,7 +28,7 @@
 - Feishu/Lark 话题体验：后续事件通过 `reply_to_message_id` 回到原卡片，避免 topic timeline 停住。
 - 群聊诊断：`/hfc status` 提示 chat binding、fallback/default 路由和群内 slash command 边界，真实 @/白名单准入仍由 Hermes 控制。
 - 系统提示卡片化：`Working`、上下文窗口/压缩、session reset、skill loading、自我改进 review 等归一为 `system.notice`。
-- 独立命令卡片：`/new`、`/reset`、`/undo`、`/model` 走 Feishu interactive card；`/update` 保持 Hermes 后台升级语义。
+- 全命令反馈卡片：所有进入 Hermes 的 slash command（含 built-in、alias、plugin/quick 和 unknown command）只要产生非空文本反馈，就由独立 Feishu interactive card 承载；`/update` 仍保持后台升级语义，仅将重启前反馈卡片化。
 - 安装与诊断：`install/setup/doctor/repair/restore/uninstall` 覆盖本机、Hermes venv、Docker/source-stripped Hermes。
 
 ## 文档分层

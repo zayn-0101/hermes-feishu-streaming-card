@@ -217,6 +217,61 @@ exit 0
     assert f"runtime package: {PACKAGE_VERSION} import ok" in result.stdout
 
 
+def test_install_upgrades_incompatible_hermes_feishu_sdk(tmp_path, monkeypatch):
+    hermes_dir = copy_hermes(tmp_path)
+    adapter = hermes_dir / "plugins" / "platforms" / "feishu" / "adapter.py"
+    adapter.parent.mkdir(parents=True)
+    adapter.write_text(
+        "FeishuWSClient(app_id='test', extra_ua_tags=['channel'])\n",
+        encoding="utf-8",
+    )
+    venv_bin = hermes_dir / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    runtime_python = venv_bin / "python"
+    upgraded = tmp_path / "feishu-sdk-upgraded"
+    runtime_log = tmp_path / "runtime-python.log"
+    runtime_python.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> {str(runtime_log)!r}
+if [ "$1" = "-c" ]; then
+  if [[ "$2" == *"lark_oapi.ws"* ]]; then
+    if [ -f {str(upgraded)!r} ]; then
+      printf '%s\\n' '{{"version":"1.6.8","supports_extra_ua_tags":true}}'
+    else
+      printf '%s\\n' '{{"version":"1.5.3","supports_extra_ua_tags":false}}'
+    fi
+  else
+    printf '%s\\n' '{{"version":"{PACKAGE_VERSION}","location":"/runtime/hermes_feishu_card/__init__.py"}}'
+  fi
+  exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ] && [ "$3" = "--version" ]; then
+  exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ] && [ "$3" = "install" ]; then
+  if [[ "$*" == *"lark-oapi==1.6.8"* ]]; then
+    touch {str(upgraded)!r}
+  fi
+  exit 0
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    runtime_python.chmod(0o755)
+    monkeypatch.delenv("HFC_INSTALL_SPEC", raising=False)
+
+    result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+
+    assert result.returncode == 0, result.stderr
+    assert upgraded.exists()
+    log = runtime_log.read_text(encoding="utf-8")
+    assert "-m pip install --upgrade lark-oapi==1.6.8" in log
+    assert "feishu sdk: upgraded 1.5.3 -> 1.6.8" in result.stdout
+    assert "install ok" in result.stdout.lower()
+
+
 def test_install_does_not_accept_project_cwd_runtime_import_false_positive(
     tmp_path, monkeypatch
 ):
@@ -401,8 +456,9 @@ def test_setup_starts_sidecar_with_selected_env_file(tmp_path, monkeypatch, caps
     hermes_dir = copy_hermes(tmp_path)
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / "selected.env"
-    config_path.write_text(
-        "feishu:\n  app_id: setup-app\n  app_secret: setup-secret\n",
+    config_path.write_text("", encoding="utf-8")
+    env_path.write_text(
+        "FEISHU_APP_ID=setup-app\nFEISHU_APP_SECRET=setup-secret\n",
         encoding="utf-8",
     )
     started = {}
@@ -1108,11 +1164,105 @@ def test_install_accepts_explicit_changed_state_after_hermes_upgrade(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "install state: cleared stale unpatched state" in result.stdout
     assert "install ok" in result.stdout.lower()
+    assert "gateway.restart_required: hermes gateway start" in result.stdout
     assert backup_path(hermes_dir).read_text(encoding="utf-8") == upgraded
     current = run_py(hermes_dir).read_text(encoding="utf-8")
     assert patcher.remove_patch(current) == upgraded
     manifest = json.loads(manifest_path(hermes_dir).read_text(encoding="utf-8"))
     assert manifest["backup_sha256"] == sha256(upgraded.encode("utf-8")).hexdigest()
+
+
+def _write_lifecycle_config(tmp_path, hermes_dir):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server:\n  port: 19015\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        f"HERMES_DIR={hermes_dir}\n",
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def _simulate_hermes_upgrade(hermes_dir):
+    upgraded = patcher.remove_patch(
+        run_py(hermes_dir).read_text(encoding="utf-8")
+    ) + "\n# upstream Hermes changed this file during upgrade\n"
+    run_py(hermes_dir).write_text(upgraded, encoding="utf-8")
+    return upgraded
+
+
+def test_status_detects_missing_hook_after_hermes_upgrade(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = _write_lifecycle_config(tmp_path, hermes_dir)
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+    upgraded = _simulate_hermes_upgrade(hermes_dir)
+
+    result = run_cli("status", "--config", str(config_path))
+
+    assert result.returncode != 0
+    assert "hook.status: upgrade_repair_required" in result.stdout
+    assert "--accept-hermes-upgrade --yes" in result.stdout
+    assert "hermes gateway start" in result.stdout
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == upgraded
+
+    repair = run_cli(
+        "install",
+        "--hermes-dir",
+        str(hermes_dir),
+        "--accept-hermes-upgrade",
+        "--yes",
+    )
+    assert repair.returncode == 0, repair.stderr
+    assert "gateway.restart_required: hermes gateway start" in repair.stdout
+
+    repaired_status = run_cli("status", "--config", str(config_path))
+    assert repaired_status.returncode == 0, repaired_status.stderr
+    assert "hook.status: installed" in repaired_status.stdout
+
+
+def test_start_refuses_missing_hook_after_hermes_upgrade(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = _write_lifecycle_config(tmp_path, hermes_dir)
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+    upgraded = _simulate_hermes_upgrade(hermes_dir)
+
+    result = run_cli("start", "--config", str(config_path))
+
+    assert result.returncode != 0
+    assert "hook.status: upgrade_repair_required" in result.stderr
+    assert "--accept-hermes-upgrade --yes" in result.stderr
+    assert "hermes gateway start" in result.stderr
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == upgraded
+
+
+def test_status_reports_installed_hook(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = _write_lifecycle_config(tmp_path, hermes_dir)
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+
+    result = run_cli("status", "--config", str(config_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "hook.status: installed" in result.stdout
+
+
+def test_status_does_not_offer_upgrade_acceptance_for_user_edited_patch(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = _write_lifecycle_config(tmp_path, hermes_dir)
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+    edited = run_py(hermes_dir).read_text(encoding="utf-8") + "\n# user edit\n"
+    run_py(hermes_dir).write_text(edited, encoding="utf-8")
+
+    result = run_cli("status", "--config", str(config_path))
+
+    assert result.returncode != 0
+    assert "hook.status: manual_review_required" in result.stdout
+    assert "--accept-hermes-upgrade" not in result.stdout
+    assert "doctor" in result.stdout
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == edited
 
 
 def test_doctor_json_reports_changed_installed_run_py(tmp_path):

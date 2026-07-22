@@ -9,6 +9,33 @@ def read_doc(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def test_maintainer_docs_define_reliable_notice_delivery_contract():
+    event_flow = read_doc("docs/wiki/event-flow.md")
+    maintenance = read_doc("docs/wiki/maintenance-guide.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+    combined = "\n".join((event_flow, maintenance, acceptance))
+
+    for marker in (
+        "delivery_uuid",
+        "accepted",
+        "not_sent",
+        "unknown",
+        "feishu_send_retries",
+        "feishu_send_unknown_outcomes",
+        "feishu_noop_attempts",
+        "notice_native_fallbacks",
+        "notice_uncertain_warnings",
+        "notice_update_failures",
+        "status_code",
+        "api_code",
+    ):
+        assert marker in combined
+    assert "不重试 `/events`" in combined
+    assert "原始通知文本" in combined
+    assert "不重复原始通知文本" in combined
+    assert "⚠️ 一条运行提示的卡片投递结果无法确认，请稍后查看 /hfc status。" in combined
+
+
 def test_readme_documents_sidecar_only_and_supported_hermes_version():
     readme = read_doc("README.md")
     guide = read_doc("docs/user-guide.md")
@@ -46,7 +73,11 @@ def test_readme_documents_sidecar_only_and_supported_hermes_version():
     assert "thinking.delta" in readme
     assert "v2026.4.23" in readme
     assert "Git tag `v2026.4.23+`" in readme
-    assert len(readme.splitlines()) <= 260
+    assert (
+        "</p>\n\n"
+        "![Hermes Feishu Streaming Card 封面](docs/assets/readme-cover.png)"
+    ) in readme
+    assert len(readme.splitlines()) <= 262
     assert (ROOT / "docs/assets/readme-cover.png").exists()
     assert (ROOT / "docs/assets/feishu-card-showcase-v385.png").exists()
     assert (ROOT / "docs/assets/feishu-weather-card.png").exists()
@@ -552,6 +583,53 @@ def test_docs_describe_event_forwarding_and_real_e2e_completion():
     assert "- [x] 在真实 Hermes Gateway 进程中做人工 smoke test。" in todo
 
 
+def test_docs_describe_secure_event_transport_and_current_feishu_state():
+    readme = read_doc("README.md")
+    english_readme = read_doc("README.en.md")
+    guide = read_doc("docs/user-guide.md")
+    english_guide = read_doc("docs/user-guide.en.md")
+    architecture = read_doc("docs/architecture.md")
+    english_architecture = read_doc("docs/architecture.en.md")
+    config = read_doc("config.yaml.example")
+
+    assert "真实飞书应用联调仍未完成" not in architecture
+    assert "真实飞书应用联调仍是后续阶段" not in architecture
+    for doc in (readme, guide, architecture):
+        assert "本机进程互信" in doc
+        assert "allow_non_loopback" in doc
+        assert "事件鉴权" in doc
+    for doc in (english_readme, english_guide, english_architecture):
+        assert "local-process trust" in doc
+        assert "allow_non_loopback" in doc
+        assert "event authentication" in doc
+    assert "allow_non_loopback: false" in config
+    assert "不要把 sidecar 未鉴权暴露" in config
+    assert "Do not expose an unauthenticated sidecar" in config
+
+
+def test_install_and_maintainer_docs_define_event_security_and_fail_open_boundaries():
+    install_doc = read_doc("README-install.md")
+    wiki = read_doc("docs/wiki/README.md")
+    boundaries = read_doc("docs/wiki/fail-open-boundaries.md")
+
+    for phrase in (
+        "local-process trust",
+        "allow_non_loopback",
+        "event authentication",
+        "TLS or mTLS",
+    ):
+        assert phrase in install_doc
+    assert "fail-open-boundaries.md" in wiki
+    for phrase in (
+        "可继续",
+        "必须失败",
+        "event_auth_rejections",
+        "未知事件",
+        "用户可验证修改",
+    ):
+        assert phrase in boundaries
+
+
 def test_docs_describe_sidecar_process_management_scope():
     docs = "\n".join(
         [
@@ -841,6 +919,55 @@ def test_config_example_documents_profile_and_bot_card_titles():
     assert "interaction_mode: auto" in config
     assert "WebSocket card-action path" in config
     assert "explicitly render numbered text choices" in config
+
+
+def test_docs_describe_card_text_sizes_and_client_controlled_dimensions():
+    from hermes_feishu_card.cli import _default_setup_config_text
+
+    config = read_doc("config.yaml.example")
+    setup_template = _default_setup_config_text()
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install = read_doc("README-install.md")
+    event_flow = read_doc("docs/wiki/event-flow.md")
+
+    for example in (config, setup_template):
+        for marker in ("text_sizes:", "body: normal", "footer:", "mobile: notation"):
+            assert marker in example
+    for doc in (readme, readme_en, install):
+        assert "card.text_sizes" in doc
+        assert "body" in doc
+        assert "footer" in doc
+        assert "mobile" in doc
+        assert "width/height" in doc
+    for marker in (
+        "reasoning",
+        "tool",
+        "notice",
+        "heading-0",
+        "xxxx-large",
+        "normal_v2",
+    ):
+        assert marker in event_flow
+
+
+def test_maintainer_docs_define_compaction_visibility_contract():
+    event_flow = read_doc("docs/wiki/event-flow.md")
+    maintenance = read_doc("docs/wiki/maintenance-guide.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+    combined = "\n".join((event_flow, maintenance, acceptance))
+
+    for marker in (
+        "_status_callback_sync",
+        "Compacting context",
+        "context-compaction",
+        "create_session",
+        "status_callback",
+    ):
+        assert marker in combined
+    assert "静默 watchdog" in combined
+    assert "百分比" in combined
+    assert "真实长会话" in acceptance
 
 
 def test_testing_docs_describe_v340_doctor_output_without_stale_counts():
@@ -1193,9 +1320,9 @@ def test_v400_release_docs_cover_live_runtime_cards():
     assert "tool.updated.detail" in notes_en
     assert "thinking.delta" in notes_en
     assert "运行态 Header" in readme
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.8}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.8" in doc
+        assert "HFC_VERSION=v4.0.20" in doc
     for event_name in (
         "progress_callback.preview",
         "tool.updated.detail",
@@ -1462,6 +1589,487 @@ def test_v408_release_docs_cover_issue_127_cron_native_attachments():
         assert "native_delivery" in doc
 
 
+def test_v409_release_docs_cover_issue_130_websocket_handler_stability():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.9.md")
+    notes_en = read_doc("docs/release-notes-v4.0.9.en.md")
+    todo = read_doc("TODO.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    event_flow = read_doc("docs/wiki/event-flow.md")
+    maintenance = read_doc("docs/wiki/maintenance-guide.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+
+    assert "## V4.0.9 — 2026-07-16" in changelog
+    assert "[docs/release-notes-v4.0.9.md](docs/release-notes-v4.0.9.md)" in changelog
+    assert "V4.0.9" in todo
+    for doc in (readme, readme_en, guide, guide_en):
+        assert "v4.0.9" in doc
+        assert "Issue #130" in doc
+        assert "Jasonsun77" in doc
+    for doc in (notes, notes_en):
+        assert "#130" in doc
+        assert "EventDispatcherHandler" in doc
+        assert "call_soon_threadsafe" in doc
+        assert "lark-oapi==1.6.8" in doc
+        assert "websockets==15.0.1" in doc
+        assert "@Jasonsun77" in doc
+        for asset in (
+            "hermes-feishu-card-v4.0.9-macos.tar.gz",
+            "hermes-feishu-card-v4.0.9-linux.tar.gz",
+            "hermes-feishu-card-v4.0.9-windows.zip",
+            "hermes-feishu-card-v4.0.9-checksums.txt",
+        ):
+            assert asset in doc
+    for doc in (event_flow, maintenance, acceptance):
+        assert "EventDispatcherHandler" in doc
+        assert "call_soon_threadsafe" in doc
+    assert "lark-oapi==1.6.8" in acceptance
+    assert "websockets==15.0.1" in acceptance
+
+
+def test_v4010_release_candidate_documents_event_transport_security():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.10.md")
+    notes_en = read_doc("docs/release-notes-v4.0.10.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    todo = read_doc("TODO.md")
+
+    assert "## V4.0.10 — 2026-07-17" in changelog
+    assert "[docs/release-notes-v4.0.10.md](docs/release-notes-v4.0.10.md)" in changelog
+    for text in (notes, notes_en):
+        assert "allow_non_loopback" in text
+        assert "HMAC-SHA256" in text
+        assert "event_auth_rejections" in text
+    assert "docs/release-notes-v4.0.10.md" in readme
+    assert "docs/release-notes-v4.0.10.en.md" in readme_en
+    assert "V4.0.10" in todo
+
+
+def test_v4011_release_docs_cover_reliable_notice_delivery():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.11.md")
+    notes_en = read_doc("docs/release-notes-v4.0.11.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    todo = read_doc("TODO.md")
+
+    assert "## V4.0.11 — 2026-07-18" in changelog
+    assert "[docs/release-notes-v4.0.11.md](docs/release-notes-v4.0.11.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in (
+            "delivery_uuid",
+            "not_sent",
+            "unknown",
+            "feishu_send_retries",
+            "notice_uncertain_warnings",
+            "Issue #135",
+        ):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.11-macos.tar.gz",
+            "hermes-feishu-card-v4.0.11-linux.tar.gz",
+            "hermes-feishu-card-v4.0.11-windows.zip",
+            "hermes-feishu-card-v4.0.11-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.11.md" in readme
+    assert "docs/release-notes-v4.0.11.en.md" in readme_en
+    assert "V4.0.11" in todo
+
+
+def test_v4012_release_docs_cover_compaction_text_sizes_and_noop_credentials():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.12.md")
+    notes_en = read_doc("docs/release-notes-v4.0.12.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    compose = read_doc("docker-compose.example.yml")
+    todo = read_doc("TODO.md")
+
+    assert "## V4.0.12 — 2026-07-18" in changelog
+    assert "[docs/release-notes-v4.0.12.md](docs/release-notes-v4.0.12.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in (
+            "Issue #133",
+            "Issue #136",
+            "context-compaction",
+            "text_sizes",
+            "--env-file",
+            "noop_mode",
+            "feishu_noop_attempts",
+            "not_sent",
+        ):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.12-macos.tar.gz",
+            "hermes-feishu-card-v4.0.12-linux.tar.gz",
+            "hermes-feishu-card-v4.0.12-windows.zip",
+            "hermes-feishu-card-v4.0.12-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.12.md" in readme
+    assert "docs/release-notes-v4.0.12.en.md" in readme_en
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
+    for doc in (readme, readme_en, install_doc, guide, guide_en):
+        assert "HFC_VERSION=v4.0.20" in doc
+    assert "V4.0.12" in todo
+
+
+def test_v4013_release_docs_cover_all_command_feedback_cards():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.13.md")
+    notes_en = read_doc("docs/release-notes-v4.0.13.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    compose = read_doc("docker-compose.example.yml")
+    todo = read_doc("TODO.md")
+    readiness = read_doc("docs/release-readiness.md")
+    readiness_en = read_doc("docs/release-readiness.en.md")
+
+    assert "## V4.0.13 — 2026-07-20" in changelog
+    assert "[docs/release-notes-v4.0.13.md](docs/release-notes-v4.0.13.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in (
+            "plugin/quick",
+            "unknown command",
+            "/compress",
+            "/model",
+            "/resume",
+            "/update",
+            "system.notice",
+            "1482 passed, 4 skipped",
+        ):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.13-macos.tar.gz",
+            "hermes-feishu-card-v4.0.13-linux.tar.gz",
+            "hermes-feishu-card-v4.0.13-windows.zip",
+            "hermes-feishu-card-v4.0.13-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.13.md" in readme
+    assert "docs/release-notes-v4.0.13.en.md" in readme_en
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
+    for doc in (readme, readme_en, install_doc, guide, guide_en):
+        assert "HFC_VERSION=v4.0.20" in doc
+    assert "V4.0.13" in todo
+    assert "V4.0.13 发布门禁" in readiness
+    assert "V4.0.13 Release Gates" in readiness_en
+
+
+def test_v4014_release_docs_cover_long_running_heartbeat_fix():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.14.md")
+    notes_en = read_doc("docs/release-notes-v4.0.14.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    compose = read_doc("docker-compose.example.yml")
+    todo = read_doc("TODO.md")
+    readiness = read_doc("docs/release-readiness.md")
+    readiness_en = read_doc("docs/release-readiness.en.md")
+    event_flow = read_doc("docs/wiki/event-flow.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+
+    assert "## V4.0.14 — 2026-07-20" in changelog
+    assert "[docs/release-notes-v4.0.14.md](docs/release-notes-v4.0.14.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in (
+            "Issue #142",
+            "heartbeat",
+            "non-terminal",
+            "message.completed",
+            "unknown",
+            "@ati121",
+        ):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.14-macos.tar.gz",
+            "hermes-feishu-card-v4.0.14-linux.tar.gz",
+            "hermes-feishu-card-v4.0.14-windows.zip",
+            "hermes-feishu-card-v4.0.14-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.14.md" in readme
+    assert "docs/release-notes-v4.0.14.en.md" in readme_en
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
+    for doc in (readme, readme_en, install_doc, guide, guide_en):
+        assert "HFC_VERSION=v4.0.20" in doc
+    assert "V4.0.14" in todo
+    assert "V4.0.14 发布门禁" in readiness
+    assert "V4.0.14 Release Gates" in readiness_en
+    assert "原始用户消息锚点" in event_flow
+    assert "V4.0.14 长任务 heartbeat 热修" in acceptance
+
+
+def test_v4015_release_docs_cover_tool_timeline_and_upgrade_guard():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.15.md")
+    notes_en = read_doc("docs/release-notes-v4.0.15.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    compose = read_doc("docker-compose.example.yml")
+    todo = read_doc("TODO.md")
+    readiness = read_doc("docs/release-readiness.md")
+    readiness_en = read_doc("docs/release-readiness.en.md")
+    event_flow = read_doc("docs/wiki/event-flow.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+
+    assert "## V4.0.15 — 2026-07-22" in changelog
+    assert "[docs/release-notes-v4.0.15.md](docs/release-notes-v4.0.15.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in (
+            "Issue #141",
+            "FlushController",
+            "upgrade_repair_required",
+            "manual_review_required",
+            "deepseek-v4-flash",
+        ):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.15-macos.tar.gz",
+            "hermes-feishu-card-v4.0.15-linux.tar.gz",
+            "hermes-feishu-card-v4.0.15-windows.zip",
+            "hermes-feishu-card-v4.0.15-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.15.md" in readme
+    assert "docs/release-notes-v4.0.15.en.md" in readme_en
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
+    for doc in (readme, readme_en, install_doc, guide, guide_en):
+        assert "HFC_VERSION=v4.0.20" in doc
+    assert "V4.0.15" in todo
+    assert "V4.0.15 发布门禁" in readiness
+    assert "V4.0.15 Release Gates" in readiness_en
+    assert "正在加载上下文" in event_flow
+    assert "V4.0.15 工具事件视觉与加载动画" in acceptance
+
+
+def test_v4016_release_docs_cover_loading_dedup_and_real_tool_duration():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.16.md")
+    notes_en = read_doc("docs/release-notes-v4.0.16.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    compose = read_doc("docker-compose.example.yml")
+    todo = read_doc("TODO.md")
+    readiness = read_doc("docs/release-readiness.md")
+    readiness_en = read_doc("docs/release-readiness.en.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+
+    assert "## V4.0.16 — 2026-07-22" in changelog
+    assert "[docs/release-notes-v4.0.16.md](docs/release-notes-v4.0.16.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in (
+            "kwargs.duration",
+            "duration_ms",
+            "terminal-only",
+            "1504 passed, 4 skipped",
+        ):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.16-macos.tar.gz",
+            "hermes-feishu-card-v4.0.16-linux.tar.gz",
+            "hermes-feishu-card-v4.0.16-windows.zip",
+            "hermes-feishu-card-v4.0.16-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.16.md" in readme
+    assert "docs/release-notes-v4.0.16.en.md" in readme_en
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
+    for doc in (readme, readme_en, install_doc, guide, guide_en):
+        assert "HFC_VERSION=v4.0.20" in doc
+    assert "V4.0.16" in todo
+    assert "V4.0.16 发布门禁" in readiness
+    assert "V4.0.16 Release Gates" in readiness_en
+    assert "V4.0.16 加载态去重与真实工具耗时" in acceptance
+
+
+def test_v4017_release_docs_cover_parallel_tool_correlation():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.17.md")
+    notes_en = read_doc("docs/release-notes-v4.0.17.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    compose = read_doc("docker-compose.example.yml")
+    todo = read_doc("TODO.md")
+    readiness = read_doc("docs/release-readiness.md")
+    readiness_en = read_doc("docs/release-readiness.en.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+
+    assert "## V4.0.17 — 2026-07-22" in changelog
+    assert "[docs/release-notes-v4.0.17.md](docs/release-notes-v4.0.17.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in (
+            "tool_start_callback",
+            "tool_complete_callback",
+            "call_id",
+            "1508 passed, 4 skipped",
+        ):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.17-macos.tar.gz",
+            "hermes-feishu-card-v4.0.17-linux.tar.gz",
+            "hermes-feishu-card-v4.0.17-windows.zip",
+            "hermes-feishu-card-v4.0.17-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.17.md" in readme
+    assert "docs/release-notes-v4.0.17.en.md" in readme_en
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
+    for doc in (readme, readme_en, install_doc, guide, guide_en):
+        assert "HFC_VERSION=v4.0.20" in doc
+    assert "V4.0.17" in todo
+    assert "V4.0.17 发布门禁" in readiness
+    assert "V4.0.17 Release Gates" in readiness_en
+    assert "V4.0.17 并行同名工具事件关联" in acceptance
+
+
+def test_v4018_release_docs_cover_feishu_sdk_capability_guard():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.18.md")
+    notes_en = read_doc("docs/release-notes-v4.0.18.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    compose = read_doc("docker-compose.example.yml")
+    todo = read_doc("TODO.md")
+    readiness = read_doc("docs/release-readiness.md")
+    readiness_en = read_doc("docs/release-readiness.en.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+
+    assert "## V4.0.18 — 2026-07-22" in changelog
+    assert "[docs/release-notes-v4.0.18.md](docs/release-notes-v4.0.18.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in (
+            "extra_ua_tags",
+            "feishu_sdk_incompatible",
+            "lark-oapi==1.6.8",
+            "1511 passed, 4 skipped",
+        ):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.18-macos.tar.gz",
+            "hermes-feishu-card-v4.0.18-linux.tar.gz",
+            "hermes-feishu-card-v4.0.18-windows.zip",
+            "hermes-feishu-card-v4.0.18-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.18.md" in readme
+    assert "docs/release-notes-v4.0.18.en.md" in readme_en
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
+    for doc in (readme, readme_en, install_doc, guide, guide_en):
+        assert "HFC_VERSION=v4.0.20" in doc
+    assert "V4.0.18" in todo
+    assert "V4.0.18 发布门禁" in readiness
+    assert "V4.0.18 Release Gates" in readiness_en
+    assert "V4.0.18 Hermes Feishu SDK 兼容门禁" in acceptance
+
+
+def test_v4019_release_docs_cover_venv_pip_install_guard():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.19.md")
+    notes_en = read_doc("docs/release-notes-v4.0.19.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    compose = read_doc("docker-compose.example.yml")
+    todo = read_doc("TODO.md")
+    readiness = read_doc("docs/release-readiness.md")
+    readiness_en = read_doc("docs/release-readiness.en.md")
+
+    assert "## V4.0.19 — 2026-07-22" in changelog
+    assert "[docs/release-notes-v4.0.19.md](docs/release-notes-v4.0.19.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in ("pip --user", "HFC_PIP_USER", "1513 passed, 4 skipped"):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.19-macos.tar.gz",
+            "hermes-feishu-card-v4.0.19-linux.tar.gz",
+            "hermes-feishu-card-v4.0.19-windows.zip",
+            "hermes-feishu-card-v4.0.19-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.19.md" in readme
+    assert "docs/release-notes-v4.0.19.en.md" in readme_en
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
+    for doc in (readme, readme_en, install_doc, guide, guide_en):
+        assert "HFC_VERSION=v4.0.20" in doc
+    assert "V4.0.19" in todo
+    assert "V4.0.19 发布门禁" in readiness
+    assert "V4.0.19 Release Gates" in readiness_en
+
+
+def test_v4020_release_docs_cover_notice_accepted_ack_and_observability():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.20.md")
+    notes_en = read_doc("docs/release-notes-v4.0.20.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    compose = read_doc("docker-compose.example.yml")
+    todo = read_doc("TODO.md")
+    readiness = read_doc("docs/release-readiness.md")
+    readiness_en = read_doc("docs/release-readiness.en.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+
+    assert "## V4.0.20 — 2026-07-22" in changelog
+    assert "[docs/release-notes-v4.0.20.md](docs/release-notes-v4.0.20.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in (
+            "accepted",
+            "applied=true",
+            "notice_update_failures",
+            "status_code",
+            "api_code",
+            "1517 passed, 4 skipped",
+        ):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.20-macos.tar.gz",
+            "hermes-feishu-card-v4.0.20-linux.tar.gz",
+            "hermes-feishu-card-v4.0.20-windows.zip",
+            "hermes-feishu-card-v4.0.20-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.20.md" in readme
+    assert "docs/release-notes-v4.0.20.en.md" in readme_en
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
+    for doc in (readme, readme_en, install_doc, guide, guide_en):
+        assert "HFC_VERSION=v4.0.20" in doc
+    assert "V4.0.20" in todo
+    assert "V4.0.20 发布门禁" in readiness
+    assert "V4.0.20 Release Gates" in readiness_en
+    assert "V4.0.20 notice 异步 ACK 语义" in acceptance
+
+
 def test_feishu_cli_playbook_is_linked_and_keeps_cli_optional():
     wiki = read_doc("docs/wiki/README.md")
     playbook = read_doc("docs/wiki/feishu-cli-playbook.md")
@@ -1546,3 +2154,34 @@ def test_v400_model_picker_matches_hermes_cli_hierarchy():
         assert phrase in acceptance
     for field in ("total_models", "is_current", "Provider → Model"):
         assert field in spec
+
+
+def test_all_command_feedback_card_lifecycle_is_documented():
+    event_flow = read_doc("docs/wiki/event-flow.md")
+    maintenance = read_doc("docs/wiki/maintenance-guide.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+    todo = read_doc("TODO.md")
+
+    for phrase in (
+        "all slash command feedback",
+        "same card",
+        "fail-open",
+        "/compress",
+        "/model",
+        "/resume",
+        "/update",
+    ):
+        assert phrase in event_flow
+    assert "固定 command allowlist" in maintenance
+    assert "create/PATCH 成功才抑制" in maintenance
+    assert "V4.0.13 全命令反馈卡片" in acceptance
+    assert "手动 `/compress`" in acceptance
+    assert "V4.0.13：Hermes 全命令反馈卡片化" in todo
+
+    wiki = read_doc("docs/wiki/README.md")
+    assert "全命令反馈卡片" in wiki
+    assert "plugin/quick" in wiki
+
+    readiness = read_doc("docs/release-readiness.md")
+    assert "所有非空文本反馈" in readiness
+    assert "重启前反馈进入命令卡" in readiness

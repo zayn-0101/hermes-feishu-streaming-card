@@ -77,6 +77,7 @@ _CARD_CAPABILITIES = {
     "message_handler",
     "reply_context",
     "run_agent",
+    "status_callback",
     "thinking_delta_callback",
     "tool_callback",
 }
@@ -87,8 +88,10 @@ _CARD_METRICS = {
     "events_ignored",
     "events_received",
     "events_rejected",
+    "event_auth_rejections",
     "feishu_send_attempts",
     "feishu_send_failures",
+    "feishu_noop_attempts",
     "feishu_send_successes",
     "feishu_update_attempts",
     "feishu_update_failures",
@@ -148,6 +151,7 @@ _CARD_FINDING_CODES = {
     "current_patch_mismatch",
     "current_read_error",
     "event_endpoint_mismatch",
+    "feishu_sdk_incompatible",
     "hermes_check_skipped",
     "hermes_compatibility_partial",
     "hermes_not_checked",
@@ -272,6 +276,14 @@ def build_diagnostic_report(
             "message": "Hermes runtime import was not checked.",
         },
     )
+    feishu_sdk = _section(
+        health_data.get("feishu_sdk"),
+        {
+            "checked": False,
+            "status": "not_checked",
+            "message": "Hermes Feishu SDK was not checked.",
+        },
+    )
     route = _last_route(health_data)
     routing = build_route_chain(
         config,
@@ -280,13 +292,14 @@ def build_diagnostic_report(
         event_url=event_url,
         route=route,
     )
-    runtime = _build_runtime(health_data, runtime_import)
+    runtime = _build_runtime(health_data, runtime_import, feishu_sdk)
     findings = _build_findings(
         config,
         detection,
         install_state,
         streaming,
         runtime_import,
+        feishu_sdk,
         routing,
         recovery_plan,
     )
@@ -381,6 +394,7 @@ def _report_dict(report: DiagnosticReport) -> dict[str, object]:
     if server:
         address = f"{server.get('host')}:{server.get('port')}"
     runtime_import = _section(report.runtime.get("runtime_import"), {})
+    feishu_sdk = _section(report.runtime.get("feishu_sdk"), {})
     recommendations = [_recommendation(finding) for finding in report.findings]
     return {
         "schema_version": "1",
@@ -392,6 +406,7 @@ def _report_dict(report: DiagnosticReport) -> dict[str, object]:
         "streaming": dict(report.streaming),
         "install_state": dict(report.install_state),
         "runtime_import": runtime_import,
+        "feishu_sdk": feishu_sdk,
         "routing": dict(report.routing),
         "runtime": dict(report.runtime),
         "findings": [_finding_dict(finding) for finding in report.findings],
@@ -413,6 +428,7 @@ def _card_safe_report(data: dict[str, object]) -> dict[str, object]:
         ),
         "install_state": _card_safe_install_state(data.get("install_state")),
         "runtime_import": _card_safe_runtime_import(data.get("runtime_import")),
+        "feishu_sdk": _card_safe_feishu_sdk(data.get("feishu_sdk")),
         "routing": _card_safe_routing(data.get("routing")),
         "runtime": _card_safe_runtime(data.get("runtime")),
         "findings": findings,
@@ -480,6 +496,12 @@ def format_diagnostic_text(report: DiagnosticReport, explain: bool) -> str:
             f"- Runtime import: {runtime_import['status']} - "
             f"{runtime_import.get('message', '')}"
         )
+    feishu_sdk = _section(report.runtime.get("feishu_sdk"), {})
+    if feishu_sdk.get("status"):
+        lines.append(
+            f"- Feishu SDK: {feishu_sdk['status']} - "
+            f"{feishu_sdk.get('message', '')}"
+        )
     if report.streaming.get("status"):
         lines.append(
             f"- Streaming: {report.streaming['status']} - "
@@ -508,6 +530,7 @@ def _build_findings(
     install_state: dict[str, object],
     streaming: dict[str, object],
     runtime_import: dict[str, object],
+    feishu_sdk: dict[str, object],
     routing: dict[str, object],
     recovery_plan: RecoveryPlan,
 ) -> tuple[DiagnosticFinding, ...]:
@@ -523,14 +546,25 @@ def _build_findings(
             )
         )
     elif detection.compatibility != "full":
+        status_callback_missing = detection.capabilities.get("status_callback") is False
         findings.append(
             DiagnosticFinding(
                 "hermes_compatibility_partial",
                 "warning",
                 "Hermes is supported, but optional compatibility anchors are missing.",
-                "Some streaming, cron, reply, or attachment features may be unavailable.",
                 (
-                    "Review the anchors section if streaming, cron, reply, or attachment features do not behave as expected.",
+                    "Context-compaction visibility is unavailable; other supported "
+                    "features remain installable."
+                    if status_callback_missing
+                    else "Some streaming, cron, reply, or attachment features may be unavailable."
+                ),
+                (
+                    (
+                        "Review anchors.status_callback before relying on "
+                        "context-compaction visibility."
+                        if status_callback_missing
+                        else "Review the anchors section if streaming, cron, reply, or attachment features do not behave as expected."
+                    ),
                 ),
             )
         )
@@ -543,6 +577,21 @@ def _build_findings(
                 "Hermes cannot load the sidecar hook runtime.",
                 (
                     "Run setup/install again so hermes-feishu-streaming-card is installed into the Hermes Gateway venv Python.",
+                ),
+            )
+        )
+    if feishu_sdk.get("status") == "failed":
+        findings.append(
+            DiagnosticFinding(
+                "feishu_sdk_incompatible",
+                "warning",
+                str(
+                    feishu_sdk.get("message")
+                    or "Hermes Feishu SDK is incompatible."
+                ),
+                "Hermes Gateway can run while the Feishu WebSocket connector stays offline.",
+                (
+                    "Run setup/install again to install a lark-oapi version that supports extra_ua_tags, then restart Hermes Gateway.",
                 ),
             )
         )
@@ -745,9 +794,14 @@ def _build_install_state(
 
 
 def _build_runtime(
-    health: dict[str, object], runtime_import: dict[str, object]
+    health: dict[str, object],
+    runtime_import: dict[str, object],
+    feishu_sdk: dict[str, object],
 ) -> dict[str, object]:
-    runtime: dict[str, object] = {"runtime_import": runtime_import}
+    runtime: dict[str, object] = {
+        "runtime_import": runtime_import,
+        "feishu_sdk": feishu_sdk,
+    }
     if health:
         runtime["sidecar_status"] = str(health.get("status") or "")
         runtime["active_sessions"] = _integer(health.get("active_sessions"), 0)
@@ -1045,6 +1099,19 @@ def _card_safe_runtime_import(value: object) -> dict[str, object]:
     return result
 
 
+def _card_safe_feishu_sdk(value: object) -> dict[str, object]:
+    data = _mapping(value)
+    result = _card_safe_status_section(
+        data, {"failed", "not_checked", "not_required", "ok", "skipped"}
+    )
+    version = str(data.get("version") or "")
+    if _SAFE_VERSION_RE.fullmatch(version):
+        result["version"] = version
+    _copy_bool(result, data, "supports_extra_ua_tags")
+    _copy_path_hash(result, data, "python")
+    return result
+
+
 def _card_safe_routing(value: object) -> dict[str, object]:
     data = _mapping(value)
     result: dict[str, object] = {}
@@ -1071,6 +1138,8 @@ def _card_safe_runtime(value: object) -> dict[str, object]:
     result: dict[str, object] = {}
     if isinstance(data.get("runtime_import"), dict):
         result["runtime_import"] = _card_safe_runtime_import(data["runtime_import"])
+    if isinstance(data.get("feishu_sdk"), dict):
+        result["feishu_sdk"] = _card_safe_feishu_sdk(data["feishu_sdk"])
     status = _safe_enum(data.get("sidecar_status"), {"degraded", "healthy", "ok"}, "")
     if status:
         result["sidecar_status"] = status

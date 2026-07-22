@@ -2,6 +2,101 @@
 
 自动化测试不能完全证明 Feishu/Lark 客户端体验。涉及卡片 UX、topic、系统提示、命令卡片的版本，发布前需要真实飞书 smoke。
 
+## V4.0.20 notice 异步 ACK 语义
+
+- 已有卡片收到 `system.notice` 时，`/events` 只在事件已应用且 PATCH 任务已排队后返回 `delivery.outcome=accepted`；hook 不再发送“投递结果无法确认”的灰色误报。
+- 独立 notice 的首次 create/reply 仍需确认 `delivered` / `not_sent` / `unknown`，不得用 `accepted` 替代实际初始投递结果。
+- 故障注入让 notice PATCH 的内部重试耗尽后，`notice_update_failures` 增加一次，`last_update_error` 只包含异常类型与白名单 `status_code` / `api_code`，不包含响应正文、token、URL 或凭据。
+
+2026-07-22 发布候选证据：本地真实 aiohttp `/events` 链路与 Hermes hook 回归确认 `accepted + applied=true` 会被接管，缺少 `applied` 的 accepted ACK 会 fail-open；模拟 Feishu 503/API 9499 的三次 PATCH 均失败后，异步失败指标增加一次且诊断未泄露注入的私密 token。该协议修复不改变卡片视觉结构，不把自动化写成飞书客户端视觉复验；公开版安装后将复核两台 Mac 的 runtime 来源与 Gateway/sidecar 状态。
+
+## V4.0.18 Hermes Feishu SDK 兼容门禁
+
+- Hermes Gateway 进程存活不能单独证明 Feishu 在线；日志必须出现 `✓ feishu connected`，且不能持续出现 `extra_ua_tags` 构造错误。
+- Hermes adapter 使用 `extra_ua_tags` 时，`doctor --json/--explain` 必须显示 `feishu_sdk`；不兼容时给出 `feishu_sdk_incompatible`。
+- `setup/install` 修复后必须复检 `lark_oapi.ws.Client` 构造签名，并重启 Gateway 才视为恢复。
+
+2026-07-22 验收结果：真实 Hermes v0.19.0 Gateway 进程仍在运行，但 Feishu connector 因 `lark-oapi 1.5.3` 不接受 `extra_ua_tags` 而持续失败。将 Gateway venv 修复到 `lark-oapi 1.6.8` 后，构造签名检查通过，`uv pip check` 确认 214 个包兼容，Gateway 与 sidecar 保持运行，日志恢复 `✓ feishu connected` 且未再出现新的参数错误。自动化使用同一失败条件完成红灯/绿灯回归。
+
+## V4.0.17 并行同名工具事件关联
+
+- 两个并行同名工具必须渲染为两条独立事件，不能重复显示任一查询摘要或参数。
+- “思考与工具”次数按真实调用计数；两个工具显示 `2 次工具调用`，不能把四个生命周期事件显示为 `4 次`。
+- 每条完成事件标题只显示自己的耗时，详情末尾不能再出现第二个 `耗时:` 行。
+- 最终答案、工具时间线顺序、topic/reply anchor 和 footer 保持既有行为。
+
+2026-07-22 发布候选证据：真实 Hermes 日志确认问题样本实际执行了两个不同 `web_search`，分别耗时 `2.12s` 和 `2.47s`；旧卡片因工具名关联重复了第二条查询并混入两个耗时。候选版使用 Hermes 稳定 `call_id` 重放同样的并行生命周期，得到两条独立详情、`2 次工具调用` 和各自耗时；全量自动化与真实 Gateway source patch 编译/还原验证通过。公开版安装后的本机 runtime/hook/sidecar 来源另行复核。
+
+## V4.0.16 加载态去重与真实工具耗时
+
+- 初始加载卡的 Header 只显示 `Hermes Agent`，正文显示动画“正在加载上下文…”，两处不能重复。
+- 工具开始后，subtitle 显示当前动作；没有模型正文时，不保留加载占位。
+- 工具完成行显示真实耗时；上游显式 duration 优先，兼容兜底只能使用可配对的 started/completed 事件，terminal-only 不得伪造。
+- 查询摘要、参数、最终答案、工具时间线结构与 footer 保持既有行为。
+
+2026-07-22 发布候选证据：本机真实 Hermes `progress_callback` 源码确认 `tool.completed` 通过 `kwargs.duration` 提供耗时；按该 callback 结构执行候选 hook/session/render smoke，得到 `✓ web_search · 1.75s`，查询摘要和参数保留，工具开始后无空正文加载占位。renderer/session/server 与全量自动化通过。本补丁不重复宣称飞书客户端视觉复验；公开版安装后的本机 runtime/hook/sidecar 来源另行复核。
+
+## V4.0.15 工具事件视觉与加载动画
+
+- 首个模型/工具事件前，同一张卡显示“正在加载上下文…”及可见 spinner；不能发送额外原生灰色消息或第二张卡。
+- 运行中工具的首行显示语义状态、工具名与耗时，次行显示参数摘要；完成、失败、取消、等待的颜色和详情保持可区分。
+- spinner 通过同一 card message PATCH 推进；正文、工具终态或消息终态到达即停止，最终只留下单张完成卡。
+- topic/reply anchor、工具失败详情、终态 drain 和 create/PATCH 失败回退按既有规则保持。
+
+2026-07-22 验收结果：通过正式 patcher 接入真实 Hermes `v2026.7.20`，使用配置模型 `deepseek-v4-flash` 在飞书中观察到初始“正在加载上下文…”spinner、同卡切换到运行中终端工具、再收束为单张完成卡；候选 sidecar 共处理 10/10 个相关事件，2 次发送、35 次更新全部成功，发送/更新失败和事件拒绝均为 0。Hermes 升级覆盖 hook 的用户侧防护由临时 fixture 完整闭环验证；不把它写成飞书客户端视觉验证。
+
+## V4.0.14 长任务 heartbeat 热修
+
+- 对同一个真实用户消息 reply anchor 连续观察或等价重放 6 分钟、9 分钟 `Working` heartbeat：只能创建一张独立卡，后续为同卡更新。
+- heartbeat 卡 Header 保持“运行中”，不能出现“已完成”副标题；最终 `message.completed` 到达后才转为完成态。
+- 同一 chat 的两个不同原始消息锚点必须生成不同 independent card identity，不能互相覆盖。
+- 受控 unknown delivery 后的下一次 heartbeat 仍回到同一独立生命周期；既有通用警告不得重复原始通知正文。
+
+2026-07-20 发布边界：真实 Feishu 已在公开版 `v4.0.13` 复现两张矛盾状态卡并确认根因；候选修复通过等价 6/9 分钟事件重放、最终完成和 unknown delivery 回归。本次不再次等待真实长任务窗口，不把自动化重放写成客户端视觉复验。
+
+## V4.0.13 全命令反馈卡片
+
+- `/status`、`/usage`、`/commands`、`/reasoning` 与一个 unknown command：每条反馈使用独立命令卡，无灰色原生文本；`/commands` 长 Markdown 不缺段、不破坏代码块。
+- 同一命令产生两条以上反馈时只 create 一次，后续更新 same card；topic 内 reply anchor 不掉出原话题。
+- 手动 `/compress`：先显示蓝色“正在压缩上下文”，完成后原位显示 Hermes 的 messages/tokens 统计；no-op 和 aborted warning 也更新原卡。
+- `/model`、裸 `/resume`、`/new` confirmation：继续使用已有交互卡，选择/确认后原卡更新，不出现第二张结果卡。
+- `/learn` 或 `/blueprint`：即时确认使用命令卡，后续 Agent reasoning/answer 使用普通流式卡，不串到命令卡。
+- `/update`：重启前反馈使用命令卡；重启后状态允许由独立 `system.notice` 卡继续，不要求跨进程 PATCH 内存中的旧卡。
+- 受控让 command card create/PATCH 失败：对应 Hermes 原始反馈必须通过 native fail-open 可见，不能静默丢失。
+- 媒体/附件命令继续投递原生文件；文本卡片不能吞掉附件。
+
+## V4.0.12 上下文压缩与字号（发布候选验收）
+
+- 使用官方 installer/patcher 更新真实 Hermes；确认 `doctor` 的 `status_callback=true`，不得手工编辑 `gateway/run.py`。
+- 真实长会话触发 Hermes 原生 `Compacting context`：压缩开始时同一张 primary card 的 Header 显示“正在压缩上下文”，后续 answer/tool 清除阶段并继续更新原卡；完成后仅剩一张终态卡，无灰色原生压缩提示。
+- 以压缩为首个可见事件时，确认 `create_session=true` 只创建一张卡，私聊与 topic reply anchor 不变。
+- 不接受静默 watchdog 或百分比作为验收证据；必须观察真实 callback 和后续事件。
+- 桌面端与移动端分别检查 `body`、`reasoning`、`tool`、`notice`、`footer` 的 scalar 和 `pc`/`mobile` 映射，覆盖长中文、代码块、表格、深色模式与 streaming-to-terminal；不得出现 `hfc_*` 可见文本或跨 bot 字号污染。
+- 卡片物理 width/height 不在验收范围，由 Feishu/Lark 客户端控制。
+
+2026-07-18 发布候选验收边界：已通过官方 setup/patcher 将候选 runtime 装入真实 Hermes，`doctor` 确认 `status_callback` capability 与 install state 一致；真实 Feishu 字号演示卡完成 create + update，五类 alias 均进入 Card JSON。手动 `/compress` 不经过 `_status_callback_sync`，因此不作为自动压缩 callback 证据；按发布决定不再执行自动压缩长会话 smoke，也不宣称桌面/移动端视觉验收完成。Issue #136 的 selected-env live/noop 分支由真实子进程集成测试覆盖；报告者的 Linux/systemd 环境仍邀请发布后复验。发布后进一步确认 annotated tag `v4.0.12` 指向 `00a48a7`，四个 assets/checksums 与公共 tagged installer 均通过；这些发布验证不扩大上述真实客户端验收结论。
+
+## V4.0.11 system.notice 可靠投递（发布候选验收）
+
+- 私聊触发一条独立 `system.notice`，确认 create 请求携带稳定 `delivery_uuid`，正常路径只有一张卡和 0 条灰色原文。
+- topic 内触发 notice，确认 reply 保留原 `reply_to_message_id` / `thread_id`，卡片与任何降级提示都留在 topic。
+- 受控测试让前两次 Feishu create/reply 返回 503、第三次成功：三次使用同一 UUID，最终只创建一张卡，`feishu_send_retries=2`。
+- 受控永久 400 返回 `not_sent`：只出现一次原始通知文本，`notice_native_fallbacks` 加一。
+- 受控 503 耗尽或连接结果不明返回 `unknown`：只尝试一次 `⚠️ 一条运行提示的卡片投递结果无法确认，请稍后查看 /hfc status。`，不重复原始通知文本，`notice_uncertain_warnings` 加一；飞书完全不可用时不要求该提示必达。
+- 检查 `/health`：`feishu_send_retries`、`feishu_send_unknown_outcomes`、`notice_native_fallbacks`、`notice_uncertain_warnings` 与脱敏 `last_send_error` 符合分支，且没有原始 chat/message id、UUID、通知正文、URL、token 或 secret。
+
+2026-07-18 发布验收结果：真实 Hermes `v2026.7.7.2` 通过项目 CLI 重载当前工作树的 sidecar，并使用 Gateway 官方 CLI 重启 Gateway；`doctor` 显示 runtime/import/install state 一致。通过 loopback `/events` 向已认证 Feishu 会话执行私聊 create 与 topic reply，两条事件均返回 `delivered/applied`，sidecar 指标增加 2 次接收、2 次应用和 2 次成功发送，失败、重试及 unknown 均未增加；card-safe diagnostics 未包含验收正文或 `delivery_uuid`。受控 503/400/unknown 与 hook 原生回退分支由自动化集成测试覆盖；本次直接 `/events` smoke 不宣称已完成客户端原生灰字去重视觉验收或真实 Feishu 故障注入。发布后进一步确认 annotated tag 指向 `2a806d3`、四个 assets/checksums 全部通过，公共 `v4.0.11` tag 可安装到独立 Python 3.12 `site-packages`，临时 Hermes fixture 的 hook install state 完整一致。
+
+## V4.0.10 事件传输安全边界
+
+- 使用官方 `install` 把真实 Hermes Gateway venv 升级到 4.0.10；不得手工编辑 `gateway/run.py`。
+- `doctor --json` 必须显示 runtime import、install state 与 recovery state 一致。
+- 默认 loopback 配置发起一条唯一普通消息，确认 hook 事件能创建、更新并完成一张卡；sidecar 的 `events_rejected`、`event_auth_rejections` 和 Feishu send/update failures 保持为 0。
+- 通过 Feishu API 结构检查完成卡只有一张，匹配答案不存在 app text duplicate；不在记录中暴露 chat/message/user id。
+- 非回环默认拒绝、显式 opt-in 后强制 event proof、错误/过期/重放 proof 的 401 由自动化矩阵验证；真实 smoke 不临时把生产 sidecar 暴露到非回环地址。
+
+2026-07-17 发布验收结果：真实 Hermes `v2026.7.7.2` 通过官方安装路径将 Gateway venv 从 4.0.9 升级到 4.0.10，`doctor` 的 runtime/import/install/recovery state 一致。已认证 Feishu user 发起唯一 transport smoke，sidecar 收到并应用 3/3 个事件，1 次发送和 2 次更新全部成功，事件/鉴权拒绝与投递失败均为 0；客户端为 1 张完成 interactive card、0 条匹配原生 app text duplicate。发布后进一步验证 annotated tag、Release、四个 assets/checksums 与 public tagged installer fixture；真实 Gateway/sidecar 强制切换到 `v4.0.10@e464316` 的 `site-packages` 后再次完成 3/3 事件 smoke，目标卡完成态 1、运行态 0、原生重复 0。Gateway 与 sidecar 在 smoke 前后保持运行。
+
 ## 准备
 
 - 本机 Hermes Gateway 正常运行。
@@ -9,6 +104,16 @@
 - `doctor --explain` 通过，且 `Runtime import` 指向当前版本。
 - 飞书 bot 已在目标会话可用。
 - 不在仓库、issue 或日志中暴露 App Secret、tenant token、真实 chat id。
+
+## V4.0.9 WebSocket live handler 稳定性
+
+- 使用官方 `restore` / `install` 路径把真实 Hermes Gateway 更新到 V4.0.9，不手工编辑 `gateway/run.py`；`doctor --explain` 必须显示 runtime/import/install state 一致。
+- 启动后先发送一条普通消息并确认收到流式完成卡，再保持 WebSocket 空闲超过 Issue #130 报告的 3–6 分钟故障窗口。
+- 空闲窗口后再次发送普通消息，确认仍能收到回复；期间 Gateway 不得出现 Lark `ConnectionClosedOK` 后的 restart loop，进程 identity 和 restart count 保持稳定。
+- 发送 `/model` 或 `/new` 并完成一次卡片交互，确认 `p2.card.action.trigger` callback 仍可用，且没有 callback timeout 或灰色 fallback。
+- 自动化门禁在 Python 3.11 上使用 `lark-oapi==1.6.8`、`websockets==15.0.1`，断言 startup hook 前后 live `EventDispatcherHandler` identity 不变，并且卡片 callback 已通过 `_ws_thread_loop.call_soon_threadsafe(...)` 更新。
+
+2026-07-16 验收结果：真实 Hermes v2026.7.7.2 通过官方 `restore` / `install` 路径加载 V4.0.9，`doctor --explain` 的 runtime/import/install state 一致。私聊先后完成 pre-idle、超过故障窗口的 420 秒空闲、post-idle 与额外 liveness 消息；Gateway/sidecar PID 全程不变，sidecar 10/10 个事件全部应用，3 次发送与 7 次更新成功，发送/更新失败均为 0。`/model` 卡片成功打开，Provider 选择回调原位进入模型列表，随后由 Bailey 手动切换模型并确认成功，没有 callback timeout。完整自动化为 `1330 passed, 4 skipped`，精确 SDK smoke 另行通过；四个发布资产 checksums 和公共 tagged installer fixture smoke 均通过。
 
 ## V4.0.8 cron 原生附件投递
 

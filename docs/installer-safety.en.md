@@ -48,6 +48,8 @@ python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --
 
 `setup` also accepts `--accept-hermes-upgrade`. The option never restores the old backup over upgraded Hermes source. It clears only verified stale HFC backup/manifest artifacts, after which installation backs up and patches the current upgraded source. The current source must parse and expose supported hook anchors, the manifest must be valid, and the old backup must be unchanged and match its manifest hash. Missing or corrupt backups, invalid manifests, symlinks, unreadable files, unknown markers, unsupported current source, or remaining owned patches still fail closed.
 
+`status` and `start` resolve `HERMES_DIR` from an explicit `--hermes-dir`, the selected env file, the config-adjacent `.env`, or process environment, then check hook state read-only. When a Hermes upgrade replaced the source but the old backup/manifest still verify, they report `hook.status: upgrade_repair_required` and print the explicit recovery command plus `hermes gateway start`; `start` refuses before launching the sidecar, preventing a silent “healthy sidecar, missing Gateway hook” state. User edits, corruption, unsupported source, or incomplete evidence report `manual_review_required` without offering the `--accept-hermes-upgrade` shortcut.
+
 ## Backup And Manifest
 
 Installation saves a backup of `gateway/run.py` before writing the patched file, then writes a manifest. The manifest records at least:

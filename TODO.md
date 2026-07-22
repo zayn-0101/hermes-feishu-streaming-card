@@ -2,18 +2,120 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 / V3.9 / V3.10 / V4.0 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6 / V4.0.7 / V4.0.8
+## V3.8 / V3.9 / V3.10 / V4.0 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6 / V4.0.7 / V4.0.8 / V4.0.9 / V4.0.10 / V4.0.11 / V4.0.12 / V4.0.13 / V4.0.14 / V4.0.15 / V4.0.16 / V4.0.17 / V4.0.18 / V4.0.19 / V4.0.20
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
-### V4.0.8：cron 原生附件投递热修（发布候选）
+### V4.0.20：notice 异步 ACK 语义热修（发布候选）
+
+- [x] 已有卡片的 `system.notice` 在事件应用且 PATCH 任务排队后返回 `accepted`，hook 不再误报投递未知。
+- [x] `accepted` 必须同时带有 `applied=true`；独立 notice 首次 create/reply 继续使用 `delivered` / `not_sent` / `unknown`。
+- [x] 异步 notice PATCH 内部重试耗尽时增加 `notice_update_failures`，并仅记录脱敏的 `status_code` / `api_code`。
+- [x] hook、server、metrics、文档、包与完整发布门禁均有回归覆盖。
+
+### V4.0.19：one-line installer venv 安装热修（发布候选）
+
+- [x] 选中 Hermes venv Python 时默认关闭 `pip --user`；system Python fallback 继续使用 user install。
+- [x] pip 安装失败时保留真实退出码并停止，不再继续调用旧版 `hermes_feishu_card.cli setup`。
+- [x] fresh venv 不设置 `HFC_PIP_USER` 的真实安装、`site-packages` 来源与回归测试进入发布门禁。
+
+### V4.0.18：Hermes Feishu SDK 兼容门禁（发布候选）
+
+- [x] 仅在 Hermes adapter 实际使用 `extra_ua_tags` 时检查 Gateway venv 的 `lark_oapi.ws.Client` 构造签名。
+- [x] `doctor` 输出 `feishu_sdk` 并以 `feishu_sdk_incompatible` 解释“Gateway 存活但飞书不回应”。
+- [x] `setup/install` 对不兼容环境安装已验证的 `lark-oapi==1.6.8`，并在能力复检通过后继续。
+- [x] 真实 Hermes v0.19.0 Gateway 恢复 Feishu WebSocket；全量自动化、文档、包和发布资产进入门禁。
+
+### V4.0.17：并行同名工具事件关联热修（发布候选）
+
+- [x] 使用 Hermes `tool_start_callback` / `tool_complete_callback` 的真实 `call_id` 关联 started/completed。
+- [x] 两个并行 `web_search` 保留各自查询摘要、参数和耗时，不再发生详情串线。
+- [x] 工具调用次数按 invocation 计数，不再把 started/completed 各算一次。
+- [x] 渲染时清除详情中的全部 `耗时:` 行，只在工具标题保留一个耗时。
+- [x] 无稳定回调锚点的旧 Hermes 继续使用既有 fail-open fallback；当前 Hermes patch 可编译、幂等并可还原。
+
+### V4.0.16：加载态去重与真实工具耗时（发布候选）
+
+- [x] 初始 Header 仅显示 `Hermes Agent`，正文保留动画“正在加载上下文…”。
+- [x] 工具开始后 subtitle 显示当前动作；没有模型正文时移除加载占位。
+- [x] 读取 Hermes `kwargs.duration`，缺失时用 started/completed 事件时间兜底，terminal-only 不伪造耗时。
+- [x] 工具完成时保留 started 事件的查询摘要与参数，并继续使用紧凑时间线首行耗时。
+- [x] 全量测试、包构建、隔离安装、公开 tagged installer 和本机运行来源进入发布门禁。
+
+### V4.0.15：工具事件视觉与 Hermes 升级防护（发布候选）
+
+- [x] Issue #141：工具事件改为状态/工具/耗时首行加参数/结果/失败详情次行的紧凑时间线。
+- [x] 首事件前显示“正在加载上下文…”同卡 spinner，运行中工具复用动画；正文、工具终态或消息终态及时停止。
+- [x] 动画走既有串行 PATCH、终态 drain、topic/reply anchor 与失败停止边界，不创建重复卡片。
+- [x] `status` / `start` 主动识别经过验证的 Hermes 升级覆盖并给出显式恢复；用户改动继续 fail-closed。
+- [x] 真实 Hermes 配置模型飞书验证、升级闭环模拟、全量自动化与包验证均纳入发布门禁。
+
+### V4.0.14：长任务 heartbeat 卡片生命周期热修（发布候选）
+
+- [x] Issue #142：heartbeat 明确为非终态，独立卡不再出现“运行中 / 已完成”矛盾状态。
+- [x] 同一原始消息锚点的连续 heartbeat 复用同一 independent card；同 chat 不同锚点保持隔离。
+- [x] orphan heartbeat 的 6/9 分钟更新、最终 `message.completed` 收束和 unknown delivery 后恢复均有回归覆盖。
+- [x] `not_sent` / `unknown` 安全回退及其他 system notice 行为保持不变。
+
+### V4.0.13：Hermes 全命令反馈卡片化（已发布）
+
+- [x] 任意 Feishu/Lark slash command 的非空文本反馈进入统一 command context，不再维护固定命令 allowlist；built-in、alias、plugin/quick 和 unknown-command 提示自动覆盖。
+- [x] 首次反馈创建命令卡，后续反馈串行更新同一卡；长 Markdown 分块，topic/reply anchor 保持不变。
+- [x] create/PATCH 成功才抑制原生灰色文本，失败逐条回退 Hermes 原始反馈。
+- [x] `/model`、裸 `/resume`、destructive confirmation 与 `/hfc` 专用交互卡保持优先；Agent turn 继续进入普通流式卡。
+- [x] 手动 `/compress` 先创建“正在压缩上下文”卡，再以 original handler 的成功、no-op 或 aborted 结果更新同一卡。
+- [x] 全量自动化与发布文档整理完成；真实 Feishu 命令矩阵未执行，不写成已通过。
+
+### V4.0.12：上下文压缩、字号与凭据可观测性（已发布）
+
+- [x] Issue #133：从 Hermes 精确 `Compacting context` callback 生成 `context-compaction` 阶段；已有卡继续更新，无卡时只创建一张 primary card。
+- [x] `card.text_sizes` 支持 `body`、`reasoning`、`tool`、`notice`、`footer`，以及 `default` / `pc` / `mobile` 映射；物理 width/height 明确由客户端控制。
+- [x] Issue #136：runner 与运维诊断读取 selected env 凭据；配置优先级固定且不隐式读取全局 `~/.hermes/.env`。
+- [x] Noop 模式显示 `degraded` / `noop_mode`，发送返回 `not_sent` 并记录 `feishu_noop_attempts`，不再制造假 message id/success。
+- [x] 自动化覆盖压缩 hook/session/render/server、字号 schema/merge/render/device，以及 selected-env/Noop process 集成。
+- [x] 最终全量 gate `1460 passed, 4 skipped`、`git diff --check`、sdist/wheel 与干净 Python 3.12 wheel import `4.0.12` 通过。
+- [x] 合并发布 PR；annotated tag `v4.0.12` 指向 `00a48a7`，Release 四个 assets/checksums 与公共 tagged installer fixture 验证通过。
+
+### V4.0.11：system.notice 可靠投递（发布候选）
+
+- [x] Issue #135：Feishu create/reply 使用稳定 `delivery_uuid`，只对可重试 HTTP/网络错误做最多 3 次有界重试。
+- [x] sidecar 明确返回 `delivered`、`not_sent`、`unknown`；Hermes hook 分别抑制原生文本、回退原文或只发不含原通知内容的通用警告。
+- [x] `/health` 与 card-safe diagnostics 增加重试、未知结果、原生回退、通用警告指标，并排除原始 ID、UUID、响应正文、URL 与凭据。
+- [x] 自动化覆盖 503 后成功、永久 400、结果不明、topic 路由、同 UUID 重试与单次 hook `/events` 调用。
+- [x] 真实 loopback sidecar + Feishu API 的私聊 create 与 topic reply 均为 `delivered/applied`，2 次发送全部成功；诊断未包含验收正文或 UUID。
+- [x] 最终全量 gate `1389 passed, 4 skipped`、`git diff --check`、sdist/wheel 构建与干净 Python 3.12 wheel import `4.0.11` 通过。
+- [x] annotated tag `v4.0.11`、GitHub Release、四个 assets/checksums 与公共 tagged installer fixture 验证通过。
+
+### V4.0.10：事件传输安全边界（已发布）
+
+- [x] 本机回环监听保持兼容；非回环监听默认拒绝，只有显式 `server.allow_non_loopback: true` 才允许启动。
+- [x] 非回环 `/events` 使用 transport root 对 raw body、timestamp、nonce 做 HMAC-SHA256 鉴权，并拒绝错误、过期和重放 proof。
+- [x] `/health`、CLI 与 card-safe diagnostics 增加不含敏感内容的 `event_auth_rejections` 可观测性。
+- [x] 中英文架构、安装与安全说明更新；新增 fail-open/必须失败维护矩阵。
+- [x] 安全专项 `523 passed`，候选全量 gate 与 `git diff --check` 通过。
+- [x] sdist/wheel、干净 Python 3.12 import 与真实 Hermes/Feishu smoke 通过；客户端为 1 张完成卡、0 条匹配原生灰色重复正文，sidecar 发送/更新/鉴权拒绝均无异常。
+- [x] 版本文档合入后的最终全量 gate `1362 passed, 4 skipped` 与 `git diff --check` 通过。
+- [x] annotated tag `v4.0.10`、GitHub Release、四个 assets/checksums 与公共 tagged installer fixture 验证通过。
+
+### V4.0.9：Feishu WebSocket live handler 稳定性热修（已发布）
+
+- [x] Issue #130：startup hook 不再重建并替换已连接 Lark WS client 的 live `EventDispatcherHandler`。
+- [x] 仅更新 `p2.card.action.trigger` processor callback，并通过 `_ws_thread_loop.call_soon_threadsafe(...)` 在 SDK 线程执行。
+- [x] 不兼容的 handler 内部结构保持 fail-open，不回退到 live handler 整体替换。
+- [x] Python 3.11.15 + `lark-oapi==1.6.8` + `websockets==15.0.1` 精确兼容 smoke 通过；Ubuntu 专用 CI job 已加入。
+- [x] 感谢 @Jasonsun77 提供安装 hook 前后 A/B、断连时间线、SDK 版本与上游 #64712/#64741 关联证据。
+- [x] 完整 gate `1330 passed, 4 skipped`、`git diff --check` 与真实飞书 420 秒 idle/message、`/model` callback/实际切换 smoke 通过。
+- [x] sdist/wheel 构建与干净 Python 3.12 wheel import `4.0.9` 通过。
+- [x] annotated tag `v4.0.9`、GitHub Release、四个 assets/checksums 与公共 tagged installer fixture 验证通过。
+
+### V4.0.8：cron 原生附件投递热修（已发布）
 
 - [x] Issue #127：cron 卡片成功后不再于 `extract_media` 前提前返回；有 `media_files` 时继续执行 Hermes 原生附件上传。
 - [x] 卡片保留正文与附件摘要，原生 `cleaned_delivery_content` 清空，避免再次发送灰色 cron 文本。
 - [x] V4.0.7 旧 cron hook 可安全迁移到媒体提取后的新锚点，保持幂等、可移除与 fail-open。
 - [x] `/health` 记录真实 `native_delivery` 策略；感谢 @zyq2552899783-lgtm 报告 Issue #127。
 - [x] 完整 gate `1328 passed, 3 skipped`、`git diff --check`、真实飞书 cron 文件 smoke、sdist/wheel 与干净 Python 3.12 import 通过。
-- [ ] `v4.0.8` tag、GitHub Release、四个 assets 与公共 tagged installer 验证。
+- [x] `v4.0.8` tag、GitHub Release、四个 assets 与公共 tagged installer 验证。
 
 ### V4.0.7：Linux/systemd sidecar 生命周期热修（已发布）
 

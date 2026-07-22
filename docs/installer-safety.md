@@ -24,7 +24,7 @@ python3 -m hermes_feishu_card.cli doctor --config config.yaml.example --hermes-d
 python3 -m hermes_feishu_card.cli doctor --config config.yaml.example --hermes-dir ~/.hermes/hermes-agent --json
 ```
 
-诊断输出会展示 Hermes 是否支持、Hermes root、`gateway/run.py` 路径、`run_py_exists`、`version_source`、`version`、`minimum_supported_version`、`hook_strategy`、`compatibility`、anchors 和 `reason`。V3.9.1 起，只有 anchors 可用而版本 metadata 缺失的 source-stripped Hermes 会显示 `version: unknown (source-stripped metadata)`，避免把 anchor 策略误解为实际版本号。V3.6.2 起还会展示 `runtime_import`，用于确认 Hermes Gateway 实际运行的 Python 是否能 import `hermes_feishu_card.hook_runtime`。`--explain` 会把 runtime import、streaming 配置、manifest/backup/run.py 安装状态和下一步建议整理成人可读摘要；`--json` 会输出包含 `schema_version`、顶层 `status`、`runtime_import`、`install_state` 和 `recommendations` 的机器可读报告，适合 issue 模板和自动化排障。`doctor` 所有模式都是只读诊断，不会写入 Hermes 文件。
+诊断输出会展示 Hermes 是否支持、Hermes root、`gateway/run.py` 路径、`run_py_exists`、`version_source`、`version`、`minimum_supported_version`、`hook_strategy`、`compatibility`、anchors 和 `reason`。V3.9.1 起，只有 anchors 可用而版本 metadata 缺失的 source-stripped Hermes 会显示 `version: unknown (source-stripped metadata)`，避免把 anchor 策略误解为实际版本号。V3.6.2 起还会展示 `runtime_import`，用于确认 Hermes Gateway 实际运行的 Python 是否能 import `hermes_feishu_card.hook_runtime`。当 Hermes Feishu adapter 使用 `extra_ua_tags` 时，诊断还会检查 Gateway venv 中 `lark_oapi.ws.Client` 的真实构造签名；不兼容时输出 `feishu_sdk_incompatible`。`setup/install` 会安装已验证的 `lark-oapi==1.6.8` 并在能力复检通过后才继续安装 hook。`--explain` 会把 runtime import、Feishu SDK、streaming 配置、manifest/backup/run.py 安装状态和下一步建议整理成人可读摘要；`--json` 会输出包含 `schema_version`、顶层 `status`、`runtime_import`、`feishu_sdk`、`install_state` 和 `recommendations` 的机器可读报告，适合 issue 模板和自动化排障。`doctor` 所有模式都是只读诊断，不会写入 Hermes 文件。
 
 `install` 在拒绝不支持的目录时也会输出同一组 Hermes 检测信息，便于用户判断是版本过低、版本文件不可读、`gateway/run.py` 缺失，还是 hook 锚点结构不兼容。
 
@@ -49,6 +49,8 @@ python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --
 ```
 
 `setup` 同样支持 `--accept-hermes-upgrade`。该开关不会用旧 backup 覆盖升级后的 Hermes 源码，只会清理经过校验的旧 HFC backup/manifest；随后安装器以当前升级后源码创建新 backup 并重新打补丁。它仍要求当前源码可解析且具备受支持的 hook anchors、manifest 有效、旧 backup 未变化并与 manifest hash 一致。backup 缺失或损坏、manifest 无效、symlink、文件不可读、未知 marker、当前源码不受支持，或仍残留本项目 owned patch 时都会继续 fail-closed。
+
+`status` 和 `start` 会从显式 `--hermes-dir`、选定 env file、配置旁 `.env` 或进程环境读取 `HERMES_DIR`，只读检查 hook 安装状态。若 Hermes 升级替换了源码但旧 backup/manifest 仍可验证，输出 `hook.status: upgrade_repair_required`，并提示上述显式恢复命令及 `hermes gateway start`；`start` 会在启动 sidecar 前拒绝继续，避免“sidecar 正常但 Gateway hook 已丢失”的静默降级。若检测到用户改动、损坏或不受支持的源码，则输出 `manual_review_required`，不提供 `--accept-hermes-upgrade` 捷径。
 
 ## 备份与 manifest
 

@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .config import merge_card_config, normalize_text_sizes
 from .feishu_client import FeishuClient, FeishuClientConfig
 
 
@@ -117,7 +118,9 @@ class BotRegistry:
         if isinstance(feishu, dict) and (
             feishu.get("app_id") or feishu.get("app_secret")
         ) and not explicit_default_configured:
-            bots["default"] = _bot_from_mapping("default", "Default", feishu)
+            bots["default"] = _bot_from_mapping(
+                "default", "Default", feishu, path="feishu"
+            )
 
         for raw_bot_id, value in items.items():
             bot_id = _normalize_bot_id(raw_bot_id)
@@ -126,7 +129,10 @@ class BotRegistry:
             if not isinstance(value, dict):
                 raise ValueError(f"bot {bot_id} must be a mapping")
             bots[bot_id] = _bot_from_mapping(
-                bot_id, str(value.get("name") or bot_id), value
+                bot_id,
+                str(value.get("name") or bot_id),
+                value,
+                path=f"bots.items.{raw_bot_id}",
             )
 
         default_bot_id, default_reason = _select_default_bot_id(bots_section, bindings)
@@ -240,12 +246,8 @@ def resolve_card_config(
     profile_card: dict[str, Any] | None,
     bot_card: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    resolved = copy.deepcopy(base_card or {})
-    if isinstance(profile_card, dict):
-        resolved.update(copy.deepcopy(profile_card))
-    if isinstance(bot_card, dict):
-        resolved.update(copy.deepcopy(bot_card))
-    return resolved
+    resolved = merge_card_config(base_card, profile_card)
+    return merge_card_config(resolved, bot_card)
 
 
 def _select_default_bot_id(
@@ -268,7 +270,9 @@ def _group_rules_from_mapping(value: object) -> GroupRules:
     )
 
 
-def _bot_from_mapping(bot_id: str, name: str, value: dict[str, Any]) -> BotConfig:
+def _bot_from_mapping(
+    bot_id: str, name: str, value: dict[str, Any], *, path: str
+) -> BotConfig:
     normalized = _normalize_bot_id(bot_id)
     app_id = str(value.get("app_id") or "").strip()
     app_secret = str(value.get("app_secret") or "").strip()
@@ -277,6 +281,11 @@ def _bot_from_mapping(bot_id: str, name: str, value: dict[str, Any]) -> BotConfi
         card = {}
     if not isinstance(card, dict):
         raise ValueError(f"bot {normalized} card must be a mapping")
+    card = copy.deepcopy(card)
+    if "text_sizes" in card:
+        card["text_sizes"] = normalize_text_sizes(
+            card["text_sizes"], path=f"{path}.card.text_sizes"
+        )
     if not app_id:
         raise ValueError(f"bot {normalized} app_id is required")
     if not app_secret:
@@ -290,7 +299,7 @@ def _bot_from_mapping(bot_id: str, name: str, value: dict[str, Any]) -> BotConfi
         timeout_seconds=value.get(
             "timeout_seconds", FeishuClientConfig.timeout_seconds
         ),
-        card=copy.deepcopy(card),
+        card=card,
     )
 
 

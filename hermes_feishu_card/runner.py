@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from aiohttp import web
@@ -9,15 +10,16 @@ from aiohttp import web
 from .bots import BotRegistry, FeishuClientFactory, RoutingContext
 from .bots import resolve_card_config as _resolve_card_config
 from .config import load_config, resolve_operations_hermes_root
-from .feishu_client import FeishuClient, FeishuClientConfig
+from .event_auth import is_loopback_host
+from .feishu_client import FeishuAPIError, FeishuClient, FeishuClientConfig
 from .server import create_app
 from .operations_transport import ensure_transport_root_secret
 
 
-class NoopFeishuClient:
-    def __init__(self) -> None:
-        self._sent_count = 0
+logger = logging.getLogger(__name__)
 
+
+class NoopFeishuClient:
     async def send_card(
         self,
         chat_id: str,
@@ -25,11 +27,18 @@ class NoopFeishuClient:
         thread_id: str | None = None,
         reply_to_message_id: str | None = None,
     ) -> str:
-        self._sent_count += 1
-        return f"noop-feishu-message-{self._sent_count}"
+        raise FeishuAPIError(
+            "Feishu delivery is disabled in no-op mode",
+            retryable=False,
+            outcome="not_sent",
+        )
 
     async def update_card_message(self, message_id: str, card: dict[str, Any]) -> None:
-        return None
+        raise FeishuAPIError(
+            "Feishu delivery is disabled in no-op mode",
+            retryable=False,
+            outcome="not_sent",
+        )
 
 
 @dataclass(frozen=True)
@@ -186,15 +195,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--token", default="")
     args = parser.parse_args(argv)
 
-    config = load_config(args.config)
+    config = (
+        load_config(args.config, env_file=args.env_file)
+        if args.env_file is not None
+        else load_config(args.config)
+    )
     server = config["server"]
+    allow_non_loopback = server.get("allow_non_loopback", False)
+    if not isinstance(allow_non_loopback, bool):
+        raise ValueError("server.allow_non_loopback must be a boolean")
+    event_auth_required = not is_loopback_host(str(server["host"]))
+    if event_auth_required and not allow_non_loopback:
+        raise ValueError(
+            "non-loopback sidecar binding requires "
+            "server.allow_non_loopback: true"
+        )
     try:
         operations_transport_root_secret = ensure_transport_root_secret()
     except OSError:
         operations_transport_root_secret = None
-    if _has_any_feishu_credentials(config):
+    if event_auth_required and operations_transport_root_secret is None:
+        raise RuntimeError(
+            "non-loopback sidecar binding requires event authentication"
+        )
+    noop_mode = not _has_any_feishu_credentials(config)
+    if not noop_mode:
         boundary = build_feishu_boundary(config)
     else:
+        logger.warning(
+            "No Feishu credentials found; sidecar is running in no-op delivery "
+            "mode. Configure FEISHU_APP_ID and FEISHU_APP_SECRET in the selected "
+            "config or env source."
+        )
         boundary = FeishuBoundary(client=NoopFeishuClient(), router=None)
     web.run_app(
         create_app(
@@ -202,12 +234,15 @@ def main(argv: list[str] | None = None) -> int:
             process_token=args.token,
             card_config=_card_config_for_server(config),
             bot_router=boundary.router,
+            noop_mode=noop_mode,
             operations_config_path=args.config,
+            operations_env_file=args.env_file,
             operations_hermes_root=resolve_operations_hermes_root(
                 config_path=args.config,
                 env_file=args.env_file,
             ),
             operations_transport_root_secret=operations_transport_root_secret,
+            event_auth_required=event_auth_required,
         ),
         host=server["host"],
         port=server["port"],

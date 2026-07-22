@@ -1,5 +1,6 @@
 from hermes_feishu_card.events import SidecarEvent
 from hermes_feishu_card.session import CardSession
+import pytest
 
 
 def event(name, sequence, data, **overrides):
@@ -169,14 +170,91 @@ def test_failed_event_clears_explicit_status_to_session_source():
     assert session.display_status_source == "session"
 
 
-def test_tool_updates_count_all_events():
+def test_tool_count_tracks_invocations_instead_of_lifecycle_events():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     session.apply(event("tool.updated", 1, {"tool_id": "t1", "name": "search", "status": "running"}))
     session.apply(event("tool.updated", 2, {"tool_id": "t1", "name": "search", "status": "completed"}))
     session.apply(event("tool.updated", 3, {"tool_id": "t2", "name": "fetch", "status": "completed"}))
-    assert session.tool_count == 3  # 3 actual tool calls (1 unique: t1 called twice, t2 once)
-    assert len(session.tools) == 2  # tools dict still deduplicates
+    assert session.tool_count == 2
+    assert len(session.tools) == 2
     assert session.tools["t1"].status == "completed"
+
+
+def test_compaction_notice_sets_runtime_phase_without_changing_answer():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "system.notice",
+            1,
+            {
+                "notice_kind": "context-compaction",
+                "phase": "started",
+                "title": "正在压缩上下文",
+                "content": "正在总结较早的对话，完成后会继续当前任务。",
+            },
+        )
+    )
+
+    assert session.runtime_phase_text == "正在压缩上下文"
+    assert session.answer_text == ""
+    assert session.runtime_header_text == "正在压缩上下文"
+
+
+def test_generic_notice_does_not_set_runtime_phase():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "system.notice",
+            1,
+            {
+                "notice_kind": "system",
+                "phase": "started",
+                "title": "运行提示",
+                "content": "普通提示",
+            },
+        )
+    )
+
+    assert session.runtime_phase_text == ""
+
+
+@pytest.mark.parametrize(
+    ("event_name", "data"),
+    [
+        ("thinking.delta", {"text": "继续思考"}),
+        ("answer.delta", {"text": "继续回答"}),
+        (
+            "tool.updated",
+            {
+                "tool_id": "tool-1",
+                "name": "terminal",
+                "status": "running",
+                "detail": "pytest",
+            },
+        ),
+        ("message.completed", {"answer": "完成"}),
+        ("message.failed", {"error": "失败"}),
+    ],
+)
+def test_runtime_activity_clears_compaction_phase(event_name, data):
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    assert session.apply(
+        event(
+            "system.notice",
+            1,
+            {
+                "notice_kind": "context-compaction",
+                "phase": "started",
+                "title": "正在压缩上下文",
+            },
+        )
+    )
+
+    assert session.apply(event(event_name, 2, data))
+
+    assert session.runtime_phase_text == ""
 
 
 def test_tool_update_builds_compact_detail_from_arguments_duration_and_error():
@@ -201,6 +279,90 @@ def test_tool_update_builds_compact_detail_from_arguments_duration_and_error():
     assert "参数: {\"query\": \"广州天气\", \"limit\": 3}" in detail
     assert "耗时: 1.23s" in detail
     assert "失败: timeout" in detail
+
+
+def test_tool_update_computes_duration_from_lifecycle_when_event_omits_it():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "tool.updated",
+            1,
+            {
+                "tool_id": "search-1",
+                "name": "web_search",
+                "status": "running",
+                "detail": "DeepSeek V4 official release",
+                "arguments": {"query": "DeepSeek V4 official release", "limit": 5},
+            },
+            created_at=100.0,
+        )
+    )
+    assert session.apply(
+        event(
+            "tool.updated",
+            2,
+            {
+                "tool_id": "search-1",
+                "name": "web_search",
+                "status": "completed",
+            },
+            created_at=101.75,
+        )
+    )
+
+    detail = session.tools["search-1"].detail
+    assert "DeepSeek V4 official release" in detail
+    assert '参数: {"query": "DeepSeek V4 official release", "limit": 5}' in detail
+    assert "耗时: 1.75s" in detail
+
+
+def test_tool_update_prefers_explicit_duration_over_lifecycle_duration():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "tool.updated",
+            1,
+            {"tool_id": "search-1", "name": "web_search", "status": "running"},
+            created_at=100.0,
+        )
+    )
+    assert session.apply(
+        event(
+            "tool.updated",
+            2,
+            {
+                "tool_id": "search-1",
+                "name": "web_search",
+                "status": "completed",
+                "duration_ms": 250,
+            },
+            created_at=105.0,
+        )
+    )
+
+    assert "耗时: 250ms" in session.tools["search-1"].detail
+    assert "5s" not in session.tools["search-1"].detail
+
+
+def test_terminal_only_tool_update_does_not_invent_duration():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "tool.updated",
+            1,
+            {
+                "tool_id": "search-1",
+                "name": "web_search",
+                "status": "completed",
+            },
+            created_at=101.75,
+        )
+    )
+
+    assert "耗时:" not in session.tools["search-1"].detail
 
 
 def test_completion_replaces_thinking_with_answer():
@@ -495,13 +657,69 @@ def test_failed_visible_main_text_shows_error():
     assert session.visible_main_text == "失败原因"
 
 
-def test_tool_count_increments_for_same_tool_id():
+def test_repeated_running_updates_do_not_inflate_tool_count():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     for i in range(3):
         e = event("tool.updated", i, {"tool_id": "web_search", "name": "web_search", "status": "running"})
         session.apply(e)
-    assert session.tool_count == 3  # 实际调用次数
-    assert len(session.tools) == 1  # tools 字典仍去重
+    assert session.tool_count == 1
+    assert len(session.tools) == 1
+
+
+def test_parallel_same_name_tools_keep_details_and_durations_separate():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "tool.updated",
+            1,
+            {
+                "tool_id": "call-1",
+                "name": "web_search",
+                "status": "running",
+                "detail": "DeepSeek V4 official release July 2026 live status",
+            },
+            created_at=100.0,
+        )
+    )
+    assert session.apply(
+        event(
+            "tool.updated",
+            2,
+            {
+                "tool_id": "call-2",
+                "name": "web_search",
+                "status": "running",
+                "detail": "site:api-docs.deepseek.com V4 models latest",
+            },
+            created_at=100.01,
+        )
+    )
+    assert session.apply(
+        event(
+            "tool.updated",
+            3,
+            {"tool_id": "call-1", "name": "web_search", "status": "completed"},
+            created_at=102.12,
+        )
+    )
+    assert session.apply(
+        event(
+            "tool.updated",
+            4,
+            {"tool_id": "call-2", "name": "web_search", "status": "completed"},
+            created_at=102.48,
+        )
+    )
+
+    entries = [item for item in session.timeline.snapshot() if item.kind == "tool"]
+
+    assert session.tool_count == 2
+    assert len(entries) == 2
+    assert entries[0].tool_id == "call-1"
+    assert entries[0].detail == "DeepSeek V4 official release July 2026 live status\n耗时: 2.12s"
+    assert entries[1].tool_id == "call-2"
+    assert entries[1].detail == "site:api-docs.deepseek.com V4 models latest\n耗时: 2.47s"
 
 
 def test_timeline_preserves_repeated_completed_tool_calls_with_same_id():
@@ -559,7 +777,7 @@ def test_timeline_updates_running_tool_until_terminal_status():
 
     assert len(entries) == 1
     assert entries[0].status == "completed"
-    assert entries[0].detail == "读取完成"
+    assert entries[0].detail == "读取完成\n耗时: 1s"
 
 
 def test_session_keeps_current_answer_visible_until_next_answer_block():
@@ -653,7 +871,7 @@ def test_session_timeline_records_pre_tool_preface_tool_answer_order():
         ("tool", "read_file", "completed"),
     ]
     assert entries[0].content == "先看约束。"
-    assert entries[1].detail == "README.md"
+    assert entries[1].detail == "README.md\n耗时: 1s"
     assert session.answer_text == "最终回答开始"
 
 

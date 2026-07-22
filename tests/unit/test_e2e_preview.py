@@ -28,6 +28,8 @@ def test_generate_e2e_preview_writes_visual_and_card_json(tmp_path):
     assert "已完成" in svg
     assert "读取资料" in svg
     assert "生成答案" in svg
+    assert "&lt;font" not in svg
+    assert "✓ 读取资料" in svg
     assert "</think>" not in svg
     assert set(cards) == {"thinking", "completed"}
     assert cards["thinking"]["schema"] == "2.0"

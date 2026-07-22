@@ -771,6 +771,112 @@ def test_apply_patch_inserts_streaming_callback_hooks():
     assert patcher.remove_patch(patched) == content
 
 
+def test_apply_patch_uses_stable_tool_call_ids_when_gateway_exposes_callbacks():
+    content = (
+        "async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "    return await self._run_agent(source, event_message_id=event.message_id)\n"
+        "\n"
+        "async def _run_agent(self, source, event_message_id=None):\n"
+        "    _loop_for_step = asyncio.get_running_loop()\n"
+        "    agent = self.agent\n"
+        "    def _run_still_current():\n"
+        "        return True\n"
+        "    def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):\n"
+        "        return None\n"
+        "    agent.tool_progress_callback = progress_callback\n"
+        "    agent.tool_start_callback = voice_ack_callback if voice_enabled else None\n"
+        "    return agent\n"
+    )
+
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    assert patcher.STABLE_TOOL_PATCH_BEGIN in patched
+    assert '"tool_id": str(call_id or tool_name or "tool")' in patched
+    assert "agent.tool_start_callback = _hfc_tool_start_callback" in patched
+    assert "agent.tool_complete_callback = _hfc_tool_complete_callback" in patched
+    assert "_hfc_pending_tool_previews" in patched
+    assert patcher.apply_patch(patched, strategy="gateway_run_013_plus") == patched
+    assert patcher.remove_patch(patched) == content
+
+
+def _status_callback_fixture() -> str:
+    return (
+        "async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "    return await self._run_agent(source, event_message_id=event.message_id)\n"
+        "\n"
+        "async def _run_agent(self, source, event_message_id=None):\n"
+        "    _loop_for_step = asyncio.get_running_loop()\n"
+        "    _status_chat_id = source.chat_id\n"
+        "    def _run_still_current():\n"
+        "        return True\n"
+        "\n"
+        "    def _status_callback_sync(event_type: str, message: str) -> None:\n"
+        "        prepared_message = _prepare_gateway_status_message(message)\n"
+        "        status_queue.put(prepared_message)\n"
+    )
+
+
+def test_apply_patch_inserts_removable_status_callback_hook():
+    content = _status_callback_fixture()
+
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    assert patcher.STATUS_PATCH_BEGIN in patched
+    assert patched.index(patcher.STATUS_PATCH_BEGIN) < patched.index(
+        "prepared_message = _prepare_gateway_status_message("
+    )
+    assert "handle_status_from_hermes_locals as _hfc_handle_status" in patched
+    assert patched.count(patcher.STATUS_PATCH_BEGIN) == 1
+    assert patcher.apply_patch(patched, strategy="gateway_run_013_plus") == patched
+    assert patcher.remove_patch(patched) == content
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        _status_callback_fixture().replace(
+            "def _status_callback_sync(", "def _renamed_status_callback_sync("
+        ),
+        _status_callback_fixture().replace(
+            "event_type: str, message: str", "event_type: str"
+        ),
+        _status_callback_fixture().replace(
+            "    _status_chat_id = source.chat_id\n", ""
+        ),
+    ],
+)
+def test_apply_patch_skips_status_callback_hook_when_anchor_is_incompatible(content):
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    assert patcher.PATCH_BEGIN in patched
+    assert patcher.STATUS_PATCH_BEGIN not in patched
+
+
+def test_remove_patch_lenient_removes_previous_status_callback_block():
+    content = _status_callback_fixture()
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+    previous = patched.replace(
+        "handle_status_from_hermes_locals as _hfc_handle_status",
+        "old_status_handler as _hfc_handle_status",
+    )
+
+    assert patcher.remove_patch_lenient(previous) == content
+
+
+def test_remove_patch_rejects_corrupt_status_callback_block():
+    patched = patcher.apply_patch(
+        _status_callback_fixture(), strategy="gateway_run_013_plus"
+    )
+    corrupt = patched.replace(
+        patcher.STATUS_PATCH_END,
+        patcher.STATUS_PATCH_BEGIN + "\n        " + patcher.STATUS_PATCH_END,
+        1,
+    )
+
+    with pytest.raises(ValueError, match="status callback patch markers"):
+        patcher.remove_patch(corrupt)
+
+
 def test_apply_patch_inserts_streaming_hooks_into_run_agent_inner():
     content = (
         "async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"

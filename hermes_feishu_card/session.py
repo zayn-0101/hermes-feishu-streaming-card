@@ -8,7 +8,7 @@ import time
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
 
-from .card_timeline import CardTimeline
+from .card_timeline import CardTimeline, TERMINAL_TOOL_STATUSES
 from .events import SidecarEvent
 from .status import StatusConfig, resolve_display_status
 from .text import StreamingTextNormalizer, normalize_stream_text
@@ -34,6 +34,7 @@ class ToolState:
     name: str
     status: str
     detail: str = ""
+    started_at: float | None = None
 
 
 @dataclass
@@ -72,6 +73,7 @@ class CardSession:
     thinking_text: str = ""
     answer_text: str = ""
     latest_tool_preview: str = ""
+    runtime_phase_text: str = ""
     tools: Dict[str, ToolState] = field(default_factory=dict)
     tokens: Dict[str, Any] = field(default_factory=dict)
     model: str = "Unknown"
@@ -103,6 +105,8 @@ class CardSession:
             return normalize_stream_text(interaction.prompt).strip()
         if self.status == "completed":
             return ""
+        if self.runtime_phase_text:
+            return self.runtime_phase_text
         return self.latest_tool_preview
 
     @property
@@ -135,6 +139,14 @@ class CardSession:
 
         self.display_status = event.display_status
         self.display_status_source = "explicit" if event.display_status else "session"
+        if event.event in {
+            "thinking.delta",
+            "answer.delta",
+            "tool.updated",
+            "message.completed",
+            "message.failed",
+        }:
+            self.runtime_phase_text = ""
 
         if event.event == "thinking.delta":
             mode = str(event.data.get("mode") or "delta").strip().lower()
@@ -179,15 +191,46 @@ class CardSession:
             status = event.data.get("status")
             resolved_name = name if isinstance(name, str) else tool_id
             resolved_status = status if isinstance(status, str) else "running"
-            resolved_detail = _tool_detail_from_event_data(event.data)
+            normalized_status = resolved_status.strip().lower()
+            is_terminal = normalized_status in TERMINAL_TOOL_STATUSES
+            previous_tool = self.tools.get(tool_id)
+            previous_is_terminal = (
+                previous_tool is not None
+                and previous_tool.status.strip().lower() in TERMINAL_TOOL_STATUSES
+            )
+            if previous_tool is None or (previous_is_terminal and not is_terminal):
+                started_at = None if is_terminal else event.created_at
+            else:
+                started_at = previous_tool.started_at
+            detail_data = event.data
+            if (
+                is_terminal
+                and _tool_duration_milliseconds(event.data) is None
+                and started_at is not None
+                and event.created_at >= started_at
+            ):
+                detail_data = dict(event.data)
+                detail_data["duration_ms"] = (event.created_at - started_at) * 1000
+            resolved_detail = _tool_detail_from_event_data(detail_data)
+            if (
+                is_terminal
+                and previous_tool is not None
+                and not _tool_event_has_primary_detail(event.data)
+            ):
+                resolved_detail = _merge_tool_details(
+                    previous_tool.detail,
+                    resolved_detail,
+                )
             self.tools[tool_id] = ToolState(
                 tool_id=tool_id,
                 name=resolved_name,
                 status=resolved_status,
                 detail=resolved_detail,
+                started_at=started_at,
             )
             self.timeline.record_tool(tool_id, resolved_name, resolved_status, resolved_detail)
-            self._tool_call_count += 1
+            if previous_tool is None or previous_is_terminal:
+                self._tool_call_count += 1
         elif event.event == "message.started":
             delivery_kind = event.data.get("delivery_kind")
             if isinstance(delivery_kind, str) and delivery_kind.strip():
@@ -205,6 +248,12 @@ class CardSession:
             self._fail_interaction(event.data)
         elif event.event == "system.notice":
             title = str(event.data.get("title") or "运行提示").strip() or "运行提示"
+            is_runtime_phase = (
+                str(event.data.get("notice_kind") or "") == "context-compaction"
+                and str(event.data.get("phase") or "") == "started"
+            )
+            if is_runtime_phase:
+                self.runtime_phase_text = title
             content = normalize_stream_text(
                 str(event.data.get("content") or event.data.get("text") or "")
             ).strip()
@@ -230,7 +279,8 @@ class CardSession:
                 self.updated_at = time.time()
                 self.refresh_display_status_source()
                 return True
-            self.timeline.record_notice(notice_id, title, level, content)
+            if not is_runtime_phase:
+                self.timeline.record_notice(notice_id, title, level, content)
         elif event.event == "message.completed":
             completed_answer = normalize_stream_text(str(event.data.get("answer") or ""))
             if completed_answer.strip():
@@ -450,6 +500,22 @@ def _tool_detail_from_event_data(data: dict[str, Any]) -> str:
         if rendered_error:
             lines.append(f"失败: {rendered_error}")
 
+    return "\n".join(lines)
+
+
+def _tool_event_has_primary_detail(data: dict[str, Any]) -> bool:
+    detail = data.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        return True
+    return _first_tool_value(data, ("arguments", "parameters", "args", "input")) is not None
+
+
+def _merge_tool_details(previous: str, current: str) -> str:
+    lines: list[str] = []
+    for detail in (previous, current):
+        for line in str(detail or "").splitlines():
+            if line and line not in lines:
+                lines.append(line)
     return "\n".join(lines)
 
 

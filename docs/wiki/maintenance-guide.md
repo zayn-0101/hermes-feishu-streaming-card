@@ -20,15 +20,20 @@
 - 向 sidecar 发送 `message.*`、`tool.updated`、`system.notice` 等事件。
 - monkeypatch Feishu adapter 的 `send`、`edit_message`、slash confirm、model picker。
 - 运行时包装 bare `/resume` 并安装 native resume picker；选择结果复用 original Hermes resume handler。
+- 运行时包装手动 `/compress`，先创建运行卡，再以 original handler 返回值更新同一卡。
+- 用 task-local command context 承载 all slash command feedback；首次 create、后续 PATCH，失败逐条回原生文本。
 - 处理新版 Hermes 缺少 `message.started` 的首事件场景。
 
 高风险点：
 
 - 字段名必须贴合 Hermes 变量：`source`、`event`、`response`、`agent_result`、`event_message_id` 等。
 - Feishu topic 场景必须保留 `source.message_id` 和 `reply_to_message_id`。
-- 已识别 `system.notice` 不能在卡片投递超时后再次退回灰色原生文本。
+- 已识别 `system.notice` 必须按 sidecar 结果分流：已有卡片异步更新的 `accepted` 与独立卡首次投递的 `delivered` 抑制原生文本，`not_sent` 回退原始通知文本，`unknown` 只尝试固定通用提示且不重复原始通知文本；`accepted` 必须同时带有 `applied=true`，不可解析响应一律视为 `unknown`。
+- 上下文压缩只从 `_status_callback_sync` 的固定 `Compacting context` 标记产生 `context-compaction`；不得用静默 watchdog、普通 compression 文本或虚构百分比推断。
 - cron completion hook 必须位于 `extract_media` / `media_files` 过滤之后：`native_delivery=required` 时清空原生正文但继续文件上传，不能在媒体提取前提前返回。
-- `/update` 不进入命令卡片，保持 Hermes 后台升级。
+- 不得恢复固定 command allowlist；built-in、alias、plugin/quick、unknown feedback 都必须经过统一 command context。`/update` 只卡片化重启前反馈，不改变后台升级和重启语义。
+- command context 只能接管非空文本；Agent turn、专用交互卡和媒体路径保持原边界。只有 create/PATCH 成功才抑制对应原生文本。
+- 已连接 Lark WebSocket 的 live `EventDispatcherHandler` identity 不得被重建或替换；只可通过 `_ws_thread_loop.call_soon_threadsafe(...)` 更新现有 `p2.card.action.trigger` processor callback，不兼容内部结构必须 fail-open。
 - `_hfc_original_handle_resume_command` 必须保留为唯一恢复执行路径；不要在 HFC 重写 session ownership、continuation 或 `switch_session` 规则。
 - 群聊/topic picker 只有在发起者 `open_id` 可验证时才显示；不可验证时 fail-open。私聊不额外比较操作者。
 
@@ -46,6 +51,10 @@
 - topic 后续事件使用不同内部 `message_id` 时，必须先查 reply anchor。
 - terminal 事件前要 flush pending delta，避免尾部文本丢失。
 - 卡片已完成时不能让 Hermes 原生 resend 泄漏成灰色消息。
+- 初始 create/reply 只能在 Feishu API 边界用稳定 `delivery_uuid` 重试，最多 3 次；不重试 `/events`，也不把这套策略套到 PATCH。
+- `feishu_send_retries`、`feishu_send_unknown_outcomes`、`notice_native_fallbacks`、`notice_uncertain_warnings`、`notice_update_failures`、`last_send_error` 与 `last_update_error` 必须保持脱敏；更新失败只可附加白名单校验后的 `status_code` / `api_code`，不得记录 UUID、响应正文、URL 或原始标识符。
+- 无凭据的 Noop 模式必须在 `/health` 中标记 `degraded` / `noop_mode`，发送计入 `feishu_noop_attempts` 和 failure；不得生成假 message id 或计入 success。
+- 首轮加载和运行中工具动画必须复用 session 的 `FlushController` 更新同一卡，并保持有界；正文/工具终态到达、更新失败、session reset 或应用清理时必须停止，不能与 terminal drain 竞争或制造独立消息。
 - 群聊 `/hfc status` 只做路由诊断和 binding 提示；@机器人触发、白名单和群消息准入属于 Hermes Gateway。
 
 ### `hermes_feishu_card/install/patcher.py`
@@ -61,6 +70,7 @@
 - patch 必须幂等、可移除、可检测 corrupt markers。
 - Hermes source-stripped Docker 目录缺少 `VERSION`，或版本 metadata 可读但格式不可解析时，只能在 gateway anchors 可验证时兜底。
 - 新 hook block 必须有 patcher 单测和 remove/restore 覆盖。
+- `_status_callback_sync` 是 optional `status_callback` capability；缺失时保持其他安装路径可用并由 doctor 报 partial compatibility。
 
 ### `hermes_feishu_card/install/recovery.py` and operations execution
 
@@ -88,14 +98,23 @@
 
 - `start_new_session=True` 不能脱离 systemd cgroup，不能作为 Linux Gateway 重启隔离方案。
 - systemd 可重启 sidecar 并改变 PID；status/stop 必须以 token 和记录的 unit 为稳定身份，不能只比较旧 PID。
+- Hermes 升级可能替换 `gateway/run.py` 而保留 HFC backup/manifest；CLI `status` / `start` 必须只读识别 verified `stale_unpatched`，仅对可执行的 `accept_hermes_upgrade` plan 给出显式恢复命令。用户改动、损坏或证据不足必须 fail-closed，不得自动重写 Hermes 或自动重启 Gateway。
+- runner 必须真正读取 `setup` / `start` 显式传入的 `--env-file`。配置优先级保持 YAML < 同目录 `.env` < 显式 env file < process env；禁止为了修复 systemd 环境而隐式读取全局 `~/.hermes/.env`。
 - 升级迁移只能停止 PID/token/health 三者一致的旧进程，未知进程保持 fail-closed。
 - 调整 lifecycle 时运行 `tests/unit/test_process.py`、`tests/integration/test_cli_process.py` 和 `tests/unit/test_install_scripts.py`。
+
+### Hermes Feishu SDK 能力门禁
+
+- Hermes adapter 出现 `extra_ua_tags` 调用时，Gateway venv 的 `lark_oapi.ws.Client` 必须支持同名参数；不能只看 Gateway 进程是否存活。
+- `doctor` 保持只读并报告 `feishu_sdk`；`setup/install` 仅在 adapter 确实需要该能力且当前 SDK 不兼容时安装 `lark-oapi==1.6.8`，随后以构造签名复检。
+- 修改门禁时运行 `tests/integration/test_cli.py`、`tests/integration/test_cli_install.py` 和 `tests/unit/test_diagnostics.py`。
 
 ## 常见改动对应测试
 
 | 改动 | 先跑 | 发布前还要跑 |
 |---|---|---|
 | runtime event 抽取、topic、notice | `python -m pytest tests/unit/test_hook_runtime.py tests/integration/test_server.py -q` | `python -m pytest -q` |
+| Lark WebSocket handler / command-card callback | `python -m pytest tests/unit/test_hook_runtime.py tests/integration/test_feishu_sdk_compat.py -q` | Python 3.11 + `lark-oapi==1.6.8` + `websockets==15.0.1` CI、真实 Feishu 稳定性 smoke、`python -m pytest -q` |
 | `/resume` / `/model` 原生 picker | `python -m pytest tests/unit/test_hook_runtime.py tests/unit/test_patcher.py tests/integration/test_cli_install.py -q` | 真实 Feishu 私聊、群聊、topic smoke + `python -m pytest -q` |
 | 群聊路由诊断 / 工具详情 | `python -m pytest tests/unit/test_bots.py tests/unit/test_session.py tests/unit/test_render.py tests/integration/test_server.py -q` | `python -m pytest -q` |
 | patcher / install hook | `python -m pytest tests/unit/test_patcher.py tests/integration/test_cli_install.py -q` | `python -m pytest -q` |

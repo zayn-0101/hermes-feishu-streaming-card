@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from hermes_feishu_card.config import load_config, resolve_operations_hermes_root
+from hermes_feishu_card.config import (
+    load_config,
+    normalize_text_sizes,
+    resolve_operations_hermes_root,
+)
 
 
 CONFIG_ENV_VARS = (
@@ -27,7 +31,11 @@ def test_load_config_missing_file_returns_defaults(tmp_path):
     config = load_config(tmp_path / "missing.yaml")
 
     assert config == {
-        "server": {"host": "127.0.0.1", "port": 8765},
+        "server": {
+            "host": "127.0.0.1",
+            "port": 8765,
+            "allow_non_loopback": False,
+        },
         "feishu": {"app_id": "", "app_secret": ""},
         "profiles": {},
         "bots": {"default": "default", "items": {}},
@@ -128,7 +136,11 @@ card:
 
     config = load_config(path)
 
-    assert config["server"] == {"host": "127.0.0.1", "port": 9000}
+    assert config["server"] == {
+        "host": "127.0.0.1",
+        "port": 9000,
+        "allow_non_loopback": False,
+    }
     assert config["feishu"] == {"app_id": "cli_test", "app_secret": ""}
     assert config["card"] == {
         "max_wait_ms": 800,
@@ -150,6 +162,112 @@ card:
             "context",
         ],
     }
+
+
+def test_load_config_normalizes_card_text_sizes(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+card:
+  text_sizes:
+    body: large
+    footer:
+      default: x-small
+      mobile: notation
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config["card"]["text_sizes"] == {
+        "body": "large",
+        "footer": {
+            "default": "x-small",
+            "pc": "x-small",
+            "mobile": "notation",
+        },
+    }
+
+
+def test_normalize_text_sizes_uses_role_default_for_pc_only_mapping():
+    assert normalize_text_sizes({"reasoning": {"pc": "large"}}) == {
+        "reasoning": {
+            "default": "small",
+            "pc": "large",
+            "mobile": "small",
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_path"),
+    [
+        ({"unknown": "small"}, "card.text_sizes.unknown"),
+        ({"footer": {"tablet": "small"}}, "card.text_sizes.footer.tablet"),
+        ({"body": ""}, "card.text_sizes.body"),
+        ({"body": "normal_v2"}, "card.text_sizes.body"),
+        ({"body": 12}, "card.text_sizes.body"),
+        ({"footer": []}, "card.text_sizes.footer"),
+        ({"footer": {}}, "card.text_sizes.footer"),
+        ({"footer": {"mobile": 12}}, "card.text_sizes.footer.mobile"),
+    ],
+)
+def test_normalize_text_sizes_rejects_invalid_values_with_exact_path(
+    value, expected_path
+):
+    with pytest.raises(ValueError) as exc_info:
+        normalize_text_sizes(value)
+
+    message = str(exc_info.value)
+    assert expected_path in message
+    assert "private-sibling-secret" not in message
+
+
+def test_load_config_normalizes_profile_and_bot_text_sizes(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+bots:
+  items:
+    sales:
+      app_id: app
+      app_secret: secret
+      card:
+        text_sizes:
+          footer:
+            mobile: notation
+profiles:
+  work:
+    card:
+      text_sizes:
+        body: large
+    bots:
+      items:
+        support:
+          app_id: app
+          app_secret: secret
+          card:
+            text_sizes:
+              tool: small
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config["bots"]["items"]["sales"]["card"]["text_sizes"]["footer"] == {
+        "default": "x-small",
+        "pc": "x-small",
+        "mobile": "notation",
+    }
+    assert config["profiles"]["work"]["card"]["text_sizes"]["body"] == "large"
+    assert (
+        config["profiles"]["work"]["bots"]["items"]["support"]["card"][
+            "text_sizes"
+        ]["tool"]
+        == "small"
+    )
 
 
 def test_load_config_defaults_include_multi_bot_sections(tmp_path):
@@ -305,7 +423,11 @@ def test_load_config_applies_supported_environment_overrides(tmp_path, monkeypat
 
     config = load_config(tmp_path / "missing.yaml")
 
-    assert config["server"] == {"host": "0.0.0.0", "port": 9001}
+    assert config["server"] == {
+        "host": "0.0.0.0",
+        "port": 9001,
+        "allow_non_loopback": False,
+    }
     assert config["feishu"] == {"app_id": "cli_app", "app_secret": "cli_secret"}
 
 
@@ -326,7 +448,11 @@ def test_load_config_applies_dotenv_next_to_config(tmp_path):
 
     config = load_config(config_path)
 
-    assert config["server"] == {"host": "0.0.0.0", "port": 9012}
+    assert config["server"] == {
+        "host": "0.0.0.0",
+        "port": 9012,
+        "allow_non_loopback": False,
+    }
     assert config["feishu"] == {
         "app_id": "dotenv_app",
         "app_secret": "dotenv secret",
@@ -350,6 +476,37 @@ def test_load_config_environment_overrides_dotenv(tmp_path, monkeypatch):
 
     assert config["server"]["port"] == 9013
     assert config["feishu"] == {"app_id": "env_app", "app_secret": "env_secret"}
+
+
+def test_load_config_selected_env_overrides_sibling_dotenv(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    selected_env = tmp_path / "selected.env"
+    config_path.write_text("", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "FEISHU_APP_ID=sibling_app\nFEISHU_APP_SECRET=sibling_secret\n",
+        encoding="utf-8",
+    )
+    selected_env.write_text(
+        "FEISHU_APP_ID=selected_app\nFEISHU_APP_SECRET=selected_secret\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path, env_file=selected_env)
+
+    assert config["feishu"] == {
+        "app_id": "selected_app",
+        "app_secret": "selected_secret",
+    }
+
+    monkeypatch.setenv("FEISHU_APP_ID", "process_app")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "process_secret")
+
+    config = load_config(config_path, env_file=selected_env)
+
+    assert config["feishu"] == {
+        "app_id": "process_app",
+        "app_secret": "process_secret",
+    }
 
 
 def test_load_config_rejects_invalid_environment_port(tmp_path, monkeypatch):
@@ -471,6 +628,31 @@ profiles:
 
     assert config["profiles"]["work"]["card"]["title"] == "Work"
     assert config["profiles"]["work"]["card"]["footer_fields"] == ["model"]
+
+
+def test_profile_card_text_size_override_preserves_global_roles(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+card:
+  text_sizes:
+    body: normal
+    footer: x-small
+profiles:
+  work:
+    card:
+      text_sizes:
+        footer: notation
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config["profiles"]["work"]["card"]["text_sizes"] == {
+        "body": "normal",
+        "footer": "notation",
+    }
 
 
 def test_load_config_rejects_non_mapping_profile_card(tmp_path):

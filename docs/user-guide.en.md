@@ -203,7 +203,7 @@ Full release notes: [docs/release-notes-v3.8.10.md](release-notes-v3.8.10.md).
 V3.8.9 fixes Feishu/Lark topic reply flows where the first card appears, but later `answer.delta`, `thinking.delta`, `tool.updated`, or `system.notice` events can miss the same card because Hermes switches to a different internal streaming `message_id`. In that state, system notices can also appear both inside the card timeline and as separate gray native messages.
 
 - **One card keeps updating inside the topic**: the sidecar maps later topic events back to the active card session through `reply_to_message_id`.
-- **No duplicate gray notices after cardification**: when a session-scoped `system.notice` is accepted into the card, the sidecar returns `applied: true`; if card delivery briefly times out, recognized Hermes system notices are still suppressed instead of being resent as gray native text.
+- **No duplicate gray notices after cardification**: once a session-scoped `system.notice` is applied and queued for asynchronous PATCH, the sidecar returns `applied: true` with `delivery.outcome: accepted`. The hook no longer mistakes that queued state for unknown delivery; real asynchronous failures remain visible through `notice_update_failures` and a redacted `last_update_error`.
 - **Hermes v0.18.x Relay metadata support**: the hook runtime preserves Relay `source.message_id` as the original topic reply anchor.
 
 ![Feishu topic reply card continuity and reasoning/tool timeline showcase](assets/feishu-topic-card-showcase-v389.png)
@@ -459,7 +459,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.8
+export HFC_VERSION=v4.0.20
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -621,6 +621,21 @@ card:
 
 In multi-profile mode, `FEISHU_APP_ID`/`FEISHU_APP_SECRET` env vars are ignored. `footer_fields` accepts: `duration`, `model`, `input_tokens`, `output_tokens`, `context`, `subscription_usage`. `subscription_usage` is disabled by default; when explicitly included, completed cards use Hermes runtime `fetch_account_usage("openai-codex")` and render remaining quota in the `5h 26% · weekly 89%` style. Older Hermes versions, missing login, network errors, and timeouts silently omit it.
 
+`card.text_sizes` configures `body`, `reasoning`, `tool`, `notice`, and `footer`. Base, profile, and bot settings merge by role, with bot settings taking precedence:
+
+```yaml
+card:
+  text_sizes:
+    body: large
+    reasoning: small
+    footer:
+      default: x-small
+      pc: x-small
+      mobile: notation
+```
+
+Mappings accept only `default`, `pc`, and `mobile`. Allowed sizes are `heading-0`, `heading-1`, `heading-2`, `heading-3`, `heading-4`, `heading`, `normal`, `notation`, `xxxx-large`, `xxx-large`, `xx-large`, `x-large`, `large`, `medium`, `small`, and `x-small`; `normal_v2` is a custom alias in platform examples and is rejected. With no setting, the existing Card JSON is unchanged. Physical card width/height are controlled by the Feishu/Lark client.
+
 ## Feishu App Setup
 
 ```bash
@@ -644,9 +659,9 @@ Ensure Hermes `config.yaml` has `streaming.enabled: true` and `streaming.transpo
 | `setup --repair ... --yes` / `--no-repair` | Automatically repair known-safe state, or explicitly opt out |
 | `restore --hermes-dir ... --yes` | Restore original Hermes files |
 | `uninstall --hermes-dir ... --yes` | Uninstall and restore |
-| `start --config ...` | Start sidecar; prefer an independent systemd user service on Linux |
+| `start --config ...` | Start sidecar; when `HERMES_DIR` is configured, first refuse a silent start if an upgrade removed the hook |
 | `stop --config ...` | Stop sidecar after validating its PID/token and recorded process manager identity |
-| `status --config ...` | Sidecar status, routing, profile diagnostics, and metrics |
+| `status --config ...` | Sidecar, routing, profile diagnostics, metrics, and Hermes hook install status |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | Send a real Feishu smoke card for a specific profile |
 | `bots list|show|add|remove --config ...` | Manage bot registry |
 | `bots test --profile-id ... --chat-id ...` | Run a real Feishu bot smoke for a specific profile/bot |
@@ -673,6 +688,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 - **No thinking / not streaming**: check Hermes `streaming.enabled: true` + `streaming.transport: edit`, confirm model exposes reasoning deltas. Don't blindly enable `show_reasoning`.
 - **No real Feishu cards**: without credentials, the sidecar uses a no-op client. In multi-profile mode, check each profile's `feishu` config.
 - **Hook installed but cards never arrive**: run `doctor --explain` and check `Runtime import`. If Hermes runtime cannot import `hook_runtime`, rerun `setup` or `install --hermes-dir ... --yes`.
+- **Gateway is running but Feishu never responds**: run `doctor --explain` and check `Feishu SDK`. If it reports `feishu_sdk_incompatible`, rerun `setup` or `install --hermes-dir ... --yes` so the installer can repair the SDK, then restart Hermes Gateway.
 - **Duplicate cards**: inspect `/health` metrics (`events_received`, `feishu_send_successes`). V3.3.0 per-message lock + `profile_id:message_id` keys ensure one card per message.
 - **Multi-profile route is unclear**: run `status --config ...` and inspect `routing.last_route`, `profile.<id>.events`, and `profile.<id>.last_profile_source`, then verify directly with `smoke-feishu-card --profile-id ...` or `bots test --profile-id ...`.
 - **Gray native text**: after sidecar accepts `message.completed`, Hermes hook suppresses native text; fail-open on sidecar unavailable. V3.3.0 fixes non-Feishu platforms being swallowed.
@@ -686,6 +702,16 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v4.0.20](release-notes-v4.0.20.en.md) | 2026-07-22 | Issue #153: queued notice ACKs use `accepted`, with redacted metrics and codes for real PATCH failures |
+| [v4.0.19](release-notes-v4.0.19.en.md) | 2026-07-22 | Avoids `pip --user` inside the Hermes venv and stops immediately with the real pip failure |
+| [v4.0.18](release-notes-v4.0.18.en.md) | 2026-07-22 | Checks the Hermes Feishu SDK constructor capability, repairs stale `lark-oapi`, and exposes operations guidance |
+| [v4.0.17](release-notes-v4.0.17.en.md) | 2026-07-22 | Correlates parallel same-name tools by real call ID and reports one count and duration per invocation |
+| [v4.0.16](release-notes-v4.0.16.en.md) | 2026-07-22 | Deduplicates loading state, removes the empty body placeholder after tools start, and restores real tool durations |
+| [v4.0.15](release-notes-v4.0.15.en.md) | 2026-07-22 | Issue #141: compact tool-event styling, same-card loading animation, and CLI protection when Hermes upgrades remove the hook |
+| [v4.0.14](release-notes-v4.0.14.en.md) | 2026-07-20 | Issue #142: orphaned long-task heartbeats stay running, reuse one card per original message anchor, and complete on the final event |
+| [v4.0.13](release-notes-v4.0.13.en.md) | 2026-07-20 | Cardifies every non-empty Hermes slash-command feedback message, updates one card for multi-message feedback, and shows manual `/compress` progress and terminal results in place |
+| [v4.0.12](release-notes-v4.0.12.en.md) | 2026-07-18 | Issues #133/#136: visible context-compaction phases, five text-size roles with PC/mobile mappings, selected-env credentials, and degraded Noop health/failure metrics |
+| [v4.0.9](release-notes-v4.0.9.en.md) | 2026-07-16 | Issue #130: preserve the live Lark WebSocket event-handler identity and update only the card callback on the WS thread; thanks to @Jasonsun77 for the complete crash-loop evidence |
 | [v4.0.8](release-notes-v4.0.8.en.md) | 2026-07-16 | Issue #127: cron cards retain the text while Hermes native `media_files` delivery uploads the actual attachment; thanks to @zyq2552899783-lgtm for the report |
 | [v4.0.7](release-notes-v4.0.7.en.md) | 2026-07-16 | Restartable Linux/systemd user-service lifecycle, Hermes venv Python preference, and PR #124 self-improvement notice isolation |
 | [v4.0.6](release-notes-v4.0.6.en.md) | 2026-07-15 | Hermes 0.18.x terminal/queued completion, terminal background notice cards without gray native output, and explicit fail-closed Hermes-upgrade recovery |
@@ -777,7 +803,8 @@ Thanks to these contributors for improving the project:
 - [charles5g](https://github.com/charles5g) / jackmim — [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) semantic model-footer color concept (V3.10.0, with mainline HTML escaping)
 - [tianqiii](https://github.com/tianqiii) — [Issue #107](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/107) requirements, Hermes-native API direction, and display format for the Codex subscription-quota footer (V4.0.2)
 - [zyq2552899783-lgtm](https://github.com/zyq2552899783-lgtm) — [Issue #127](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/127) report that cron attachments showed only their filename and never reached native upload (V4.0.8)
+- [Jasonsun77](https://github.com/Jasonsun77) — [Issue #130](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/130) Linux before/after hook stability evidence, 3–6 minute disconnect timing, SDK versions, and upstream reconnect correlation (V4.0.9)
 
 ## Security
 
-Do not commit App Secret, tenant token, or real chat_id. Screenshots demonstrate card rendering only. Production credentials belong in local config or environment variables.
+Default loopback uses local-process trust; do not expose an unauthenticated sidecar to the network. Non-loopback requires explicit `server.allow_non_loopback: true` and state-directory HMAC event authentication. Event authentication does not encrypt traffic, so public deployment still requires TLS/mTLS or a controlled reverse proxy. Do not commit App Secret, tenant token, or real chat_id. Production credentials belong in local config or environment variables.

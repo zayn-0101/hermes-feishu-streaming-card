@@ -130,6 +130,23 @@ initiating user, while private chats do not add an extra identity comparison.
 Recognized model names receive HTML-escaped semantic color inside the existing
 footer; its layout, field order, separators, and text size are unchanged.
 
+`card.text_sizes` can configure the `body`, `reasoning`, `tool`, `notice`, and
+`footer` roles, with optional `default` / `pc` / `mobile` mappings. Physical
+card width/height are controlled by the Feishu/Lark client and are not an
+installer or sidecar setting.
+
+The default `127.0.0.1` / `localhost` deployment uses a local-process trust
+boundary: hook event requests remain compatible with existing local installs.
+Binding the sidecar to a non-loopback address is rejected unless
+`server.allow_non_loopback: true` is set explicitly. In that mode, event authentication
+is mandatory and the hook signs the exact `/events` request
+body with the private transport root stored in the sidecar state directory.
+The signature prevents unauthenticated injection and replay; it does not
+encrypt traffic. Keep the route on a private trusted network, and place TLS or mTLS
+in front of the sidecar before any public or cross-host deployment. Never put
+the transport root in `config.yaml`, environment variables, logs, cards, or
+screenshots.
+
 Current installers default `PIP_ROOT_USER_ACTION=ignore` so Debian/Ubuntu root
 installs do not print pip's root-user warning. If Python reports
 `externally-managed-environment`, `install.sh` and `install-docker.sh` retry with
@@ -163,6 +180,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | `HFC_REPO` | `baileyh8/hermes-feishu-streaming-card` | GitHub repository to install from. |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent root directory. |
 | `HFC_PYTHON` | Hermes venv, then `PYTHON`/`python3` fallback | Explicit Python interpreter override. |
+| `HFC_PIP_USER` | automatic | Hermes venv installs omit `--user`; system Python uses `--user`. Set `0` or `--user` only to override. |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | Sidecar config path. |
 | `HFC_ENV_FILE` | Same directory as `HFC_CONFIG`, named `.env` | Feishu credential file. |
 | `FEISHU_APP_ID` | unset | Feishu/Lark app id. |
@@ -180,7 +198,7 @@ script selects Hermes venv Python and does not fall back to system Python unless
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.8
+export HFC_VERSION=v4.0.20
 bash install-docker.sh
 ```
 

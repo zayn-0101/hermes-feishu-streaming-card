@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
-from html import escape
+from html import escape, unescape
 import json
 from pathlib import Path
+import re
 import sys
 import textwrap
 from typing import Any
@@ -15,6 +16,9 @@ if str(ROOT) not in sys.path:
 from hermes_feishu_card.events import SidecarEvent
 from hermes_feishu_card.render import render_card
 from hermes_feishu_card.session import CardSession
+
+
+_FONT_TAG_RE = re.compile(r"</?font\b[^>]*>", re.IGNORECASE)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -183,7 +187,7 @@ def _render_card_panel(
 def _element_content(elements: list[dict[str, Any]], element_id: str) -> str:
     for element in elements:
         if element.get("element_id") == element_id:
-            return str(element.get("content", ""))
+            return _plain_card_text(element.get("content", ""))
     return ""
 
 
@@ -194,8 +198,20 @@ def _panel_content(elements: list[dict[str, Any]], element_id: str) -> str:
         panel_elements = element.get("elements") or []
         if not panel_elements:
             return ""
-        return "\n".join(str(item.get("content", "")) for item in panel_elements)
+        return "\n".join(
+            _plain_card_text(item.get("content", "")) for item in panel_elements
+        )
     return ""
+
+
+def _plain_card_text(value: Any) -> str:
+    text = unescape(str(value or ""))
+    text = _FONT_TAG_RE.sub("", text)
+    text = text.replace("**", "").replace("`", "")
+    return "\n".join(
+        line[2:] if line.startswith("> ") else line
+        for line in text.splitlines()
+    )
 
 
 def _text_block(

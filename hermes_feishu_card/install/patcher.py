@@ -9,6 +9,8 @@ QUEUED_COMPLETE_PATCH_BEGIN = "# HERMES_FEISHU_CARD_QUEUED_COMPLETE_PATCH_BEGIN"
 QUEUED_COMPLETE_PATCH_END = "# HERMES_FEISHU_CARD_QUEUED_COMPLETE_PATCH_END"
 TOOL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_TOOL_PATCH_BEGIN"
 TOOL_PATCH_END = "# HERMES_FEISHU_CARD_TOOL_PATCH_END"
+STABLE_TOOL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_STABLE_TOOL_PATCH_BEGIN"
+STABLE_TOOL_PATCH_END = "# HERMES_FEISHU_CARD_STABLE_TOOL_PATCH_END"
 ANSWER_DELTA_PATCH_BEGIN = "# HERMES_FEISHU_CARD_ANSWER_DELTA_PATCH_BEGIN"
 ANSWER_DELTA_PATCH_END = "# HERMES_FEISHU_CARD_ANSWER_DELTA_PATCH_END"
 THINKING_DELTA_PATCH_BEGIN = "# HERMES_FEISHU_CARD_THINKING_DELTA_PATCH_BEGIN"
@@ -17,6 +19,8 @@ CLARIFY_PATCH_BEGIN = "# HERMES_FEISHU_CARD_CLARIFY_PATCH_BEGIN"
 CLARIFY_PATCH_END = "# HERMES_FEISHU_CARD_CLARIFY_PATCH_END"
 APPROVAL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_APPROVAL_PATCH_BEGIN"
 APPROVAL_PATCH_END = "# HERMES_FEISHU_CARD_APPROVAL_PATCH_END"
+STATUS_PATCH_BEGIN = "# HERMES_FEISHU_CARD_STATUS_PATCH_BEGIN"
+STATUS_PATCH_END = "# HERMES_FEISHU_CARD_STATUS_PATCH_END"
 CRON_PATCH_BEGIN = "# HERMES_FEISHU_CARD_CRON_PATCH_BEGIN"
 CRON_PATCH_END = "# HERMES_FEISHU_CARD_CRON_PATCH_END"
 SLASH_CONFIRM_PATCH_BEGIN = "# HERMES_FEISHU_CARD_SLASH_CONFIRM_PATCH_BEGIN"
@@ -52,6 +56,7 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
         content = _apply_hfc_command_patch(content)
         content = _apply_platform_notice_patch(content)
         content = _apply_slash_confirm_patch(content)
+    content = _apply_stable_tool_lifecycle_patch(content)
     content = _apply_callback_patch(
         content,
         callback_name="progress_callback",
@@ -109,7 +114,7 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
         ),
         required_callback_args=("question", "choices"),
     )
-    return _apply_callback_patch(
+    content = _apply_callback_patch(
         content,
         callback_name="_approval_notify_sync",
         begin_marker=APPROVAL_PATCH_BEGIN,
@@ -124,6 +129,23 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
         ),
         required_callback_args=("approval_data",),
     )
+    if strategy == "gateway_run_013_plus":
+        content = _apply_callback_patch(
+            content,
+            callback_name="_status_callback_sync",
+            begin_marker=STATUS_PATCH_BEGIN,
+            end_marker=STATUS_PATCH_END,
+            renderer=_render_status_hook_block,
+            required_outer_names=(
+                "source",
+                "event_message_id",
+                "_status_chat_id",
+                "_loop_for_step",
+                "_run_still_current",
+            ),
+            required_callback_args=("event_type", "message"),
+        )
+    return content
 
 
 def apply_cron_patch(content: str) -> str:
@@ -446,6 +468,13 @@ def remove_patch(content: str) -> str:
     )
     content = _remove_simple_owned_patch(
         content,
+        STABLE_TOOL_PATCH_BEGIN,
+        STABLE_TOOL_PATCH_END,
+        _render_stable_tool_lifecycle_hook_block,
+        "stable tool lifecycle patch markers",
+    )
+    content = _remove_simple_owned_patch(
+        content,
         TOOL_PATCH_BEGIN,
         TOOL_PATCH_END,
         _render_tool_hook_block,
@@ -478,6 +507,13 @@ def remove_patch(content: str) -> str:
         APPROVAL_PATCH_END,
         _render_approval_hook_block,
         "approval patch markers",
+    )
+    content = _remove_simple_owned_patch(
+        content,
+        STATUS_PATCH_BEGIN,
+        STATUS_PATCH_END,
+        _render_status_hook_block,
+        "status callback patch markers",
     )
     content = _remove_simple_owned_patch(
         content,
@@ -521,11 +557,13 @@ def remove_patch_lenient(content: str) -> str:
         content = "".join(lines[:begin_index] + lines[end_index + 1 :])
 
     for begin_marker, end_marker in (
+        (STABLE_TOOL_PATCH_BEGIN, STABLE_TOOL_PATCH_END),
         (TOOL_PATCH_BEGIN, TOOL_PATCH_END),
         (ANSWER_DELTA_PATCH_BEGIN, ANSWER_DELTA_PATCH_END),
         (THINKING_DELTA_PATCH_BEGIN, THINKING_DELTA_PATCH_END),
         (CLARIFY_PATCH_BEGIN, CLARIFY_PATCH_END),
         (APPROVAL_PATCH_BEGIN, APPROVAL_PATCH_END),
+        (STATUS_PATCH_BEGIN, STATUS_PATCH_END),
         (COMMAND_CARD_STARTUP_PATCH_BEGIN, COMMAND_CARD_STARTUP_PATCH_END),
         (COMMAND_CARD_PATCH_BEGIN, COMMAND_CARD_PATCH_END),
         (HFC_COMMAND_PATCH_BEGIN, HFC_COMMAND_PATCH_END),
@@ -596,6 +634,34 @@ def _apply_callback_patch(
     newline = _detect_newline(content)
     insert_at, body_indent = callback_body
     hook = renderer(body_indent, newline)
+    return "".join(lines[:insert_at] + hook + lines[insert_at:])
+
+
+def _apply_stable_tool_lifecycle_patch(content: str) -> str:
+    owned_block = _find_simple_marker_block(
+        content,
+        STABLE_TOOL_PATCH_BEGIN,
+        STABLE_TOOL_PATCH_END,
+        "stable tool lifecycle patch markers",
+    )
+    if owned_block is not None:
+        lines = content.splitlines(keepends=True)
+        begin_index, end_index = owned_block
+        indent = _leading_whitespace(_strip_line_ending(lines[begin_index]))
+        newline = _line_ending(lines[begin_index]) or _detect_newline(content)
+        expected = _render_stable_tool_lifecycle_hook_block(indent, newline)
+        if lines[begin_index : end_index + 1] == expected:
+            return content
+        return "".join(lines[:begin_index] + expected + lines[end_index + 1 :])
+
+    tree = _parse_content(content)
+    lines = content.splitlines(keepends=True)
+    location = _find_stable_tool_lifecycle_location(tree, lines)
+    if location is None:
+        return content
+    insert_at, indent = location
+    newline = _detect_newline(content)
+    hook = _render_stable_tool_lifecycle_hook_block(indent, newline)
     return "".join(lines[:insert_at] + hook + lines[insert_at:])
 
 
@@ -841,6 +907,40 @@ def _find_callback_body_location(
                 return None
             return _body_location(node, lines)
     return None
+
+
+def _find_stable_tool_lifecycle_location(tree, lines):
+    run_agent = _find_run_agent_node(tree)
+    if run_agent is None:
+        return None
+    required_names = {
+        "agent",
+        "source",
+        "event_message_id",
+        "_loop_for_step",
+        "_run_still_current",
+        "progress_callback",
+    }
+    if not required_names.issubset(_function_scope_names(run_agent)):
+        return None
+    for node in ast.walk(run_agent):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(_is_agent_callback_target(target, "tool_start_callback") for target in targets):
+            continue
+        end_lineno = getattr(node, "end_lineno", None) or node.lineno
+        return end_lineno, _line_indent(lines, node.lineno - 1)
+    return None
+
+
+def _is_agent_callback_target(node, attribute: str) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == attribute
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "agent"
+    )
 
 
 def _has_required_callback_scope(
@@ -1675,7 +1775,17 @@ def _render_tool_hook_block(indent: str, newline: str):
             f"{inner_indent}from hermes_feishu_card.hook_runtime "
             f"import emit_from_hermes_locals_threadsafe as _hfc_emit_threadsafe{newline}"
         ),
+        f"{inner_indent}_hfc_stable_tool_callbacks = False{newline}",
+        f"{inner_indent}try:{newline}",
+        f"{deeper_indent}_hfc_stable_tool_callbacks = bool(_hfc_stable_tool_callbacks_available[0]){newline}",
+        f"{inner_indent}except (NameError, TypeError, IndexError):{newline}",
+        f"{deeper_indent}pass{newline}",
         f"{inner_indent}if event_type in (\"tool.started\", \"tool.completed\") and _run_still_current():{newline}",
+        f"{deeper_indent}if _hfc_stable_tool_callbacks:{newline}",
+        f"{deeper_indent}    if event_type == \"tool.started\":{newline}",
+        f"{deeper_indent}        _hfc_tool_key = tool_name or \"tool\"{newline}",
+        f"{deeper_indent}        _hfc_pending_tool_previews.setdefault(_hfc_tool_key, []).append(preview or \"\"){newline}",
+        f"{deeper_indent}    return{newline}",
         f"{deeper_indent}if _hfc_emit_threadsafe({{{newline}",
         f"{deeper_indent}    **locals(),{newline}",
         f"{deeper_indent}    \"source\": source,{newline}",
@@ -1689,6 +1799,93 @@ def _render_tool_hook_block(indent: str, newline: str):
         f"{deeper_indent}    return{newline}",
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{TOOL_PATCH_END}{newline}",
+    ]
+
+
+def _render_stable_tool_lifecycle_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    deeper_indent = _child_indent(inner_indent)
+    callback_indent = _child_indent(deeper_indent)
+    payload_indent = _child_indent(callback_indent)
+    return [
+        f"{indent}{STABLE_TOOL_PATCH_BEGIN}{newline}",
+        f"{indent}_hfc_stable_tool_callbacks_available = [False]{newline}",
+        f"{indent}_hfc_pending_tool_previews = {{}}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import emit_from_hermes_locals_threadsafe as _hfc_emit_stable_threadsafe{newline}"
+        ),
+        f"{inner_indent}_hfc_original_tool_start_callback = getattr(agent, \"tool_start_callback\", None){newline}",
+        f"{inner_indent}if getattr(_hfc_original_tool_start_callback, \"_hfc_stable_wrapper\", False):{newline}",
+        f"{deeper_indent}_hfc_original_tool_start_callback = getattr(_hfc_original_tool_start_callback, \"_hfc_original_callback\", None){newline}",
+        f"{inner_indent}_hfc_original_tool_complete_callback = getattr(agent, \"tool_complete_callback\", None){newline}",
+        f"{inner_indent}if getattr(_hfc_original_tool_complete_callback, \"_hfc_stable_wrapper\", False):{newline}",
+        f"{deeper_indent}_hfc_original_tool_complete_callback = getattr(_hfc_original_tool_complete_callback, \"_hfc_original_callback\", None){newline}",
+        f"{inner_indent}def _hfc_tool_start_callback(call_id, tool_name, args):{newline}",
+        f"{deeper_indent}try:{newline}",
+        f"{callback_indent}if callable(_hfc_original_tool_start_callback):{newline}",
+        f"{payload_indent}_hfc_original_tool_start_callback(call_id, tool_name, args){newline}",
+        f"{deeper_indent}except Exception:{newline}",
+        f"{callback_indent}pass{newline}",
+        f"{deeper_indent}_hfc_tool_key = tool_name or \"tool\"{newline}",
+        f"{deeper_indent}_hfc_preview_queue = _hfc_pending_tool_previews.get(_hfc_tool_key) or []{newline}",
+        f"{deeper_indent}_hfc_tool_preview = _hfc_preview_queue.pop(0) if _hfc_preview_queue else \"\"{newline}",
+        f"{deeper_indent}if not _hfc_preview_queue:{newline}",
+        f"{callback_indent}_hfc_pending_tool_previews.pop(_hfc_tool_key, None){newline}",
+        f"{deeper_indent}if not _run_still_current():{newline}",
+        f"{callback_indent}return{newline}",
+        f"{deeper_indent}_hfc_delivered = _hfc_emit_stable_threadsafe({{{newline}",
+        f"{callback_indent}**locals(),{newline}",
+        f"{callback_indent}\"source\": source,{newline}",
+        f"{callback_indent}\"message_id\": event_message_id,{newline}",
+        f"{callback_indent}\"_hfc_loop\": _loop_for_step,{newline}",
+        f"{callback_indent}\"tool_id\": str(call_id or tool_name or \"tool\"),{newline}",
+        f"{callback_indent}\"name\": tool_name or \"tool\",{newline}",
+        f"{callback_indent}\"status\": \"running\",{newline}",
+        f"{callback_indent}\"detail\": _hfc_tool_preview,{newline}",
+        f"{callback_indent}\"arguments\": args,{newline}",
+        f"{deeper_indent}}}, event_name=\"tool.updated\"){newline}",
+        f"{deeper_indent}if not _hfc_delivered:{newline}",
+        f"{callback_indent}_hfc_stable_tool_callbacks_available[0] = False{newline}",
+        f"{callback_indent}try:{newline}",
+        f"{payload_indent}progress_callback(\"tool.started\", tool_name, _hfc_tool_preview, args){newline}",
+        f"{callback_indent}finally:{newline}",
+        f"{payload_indent}_hfc_stable_tool_callbacks_available[0] = True{newline}",
+        f"{inner_indent}def _hfc_tool_complete_callback(call_id, tool_name, args, result):{newline}",
+        f"{deeper_indent}try:{newline}",
+        f"{callback_indent}if callable(_hfc_original_tool_complete_callback):{newline}",
+        f"{payload_indent}_hfc_original_tool_complete_callback(call_id, tool_name, args, result){newline}",
+        f"{deeper_indent}except Exception:{newline}",
+        f"{callback_indent}pass{newline}",
+        f"{deeper_indent}if not _run_still_current():{newline}",
+        f"{callback_indent}return{newline}",
+        f"{deeper_indent}_hfc_delivered = _hfc_emit_stable_threadsafe({{{newline}",
+        f"{callback_indent}**locals(),{newline}",
+        f"{callback_indent}\"source\": source,{newline}",
+        f"{callback_indent}\"message_id\": event_message_id,{newline}",
+        f"{callback_indent}\"_hfc_loop\": _loop_for_step,{newline}",
+        f"{callback_indent}\"tool_id\": str(call_id or tool_name or \"tool\"),{newline}",
+        f"{callback_indent}\"name\": tool_name or \"tool\",{newline}",
+        f"{callback_indent}\"status\": \"completed\",{newline}",
+        f"{callback_indent}\"detail\": \"\",{newline}",
+        f"{deeper_indent}}}, event_name=\"tool.updated\"){newline}",
+        f"{deeper_indent}if not _hfc_delivered:{newline}",
+        f"{callback_indent}_hfc_stable_tool_callbacks_available[0] = False{newline}",
+        f"{callback_indent}try:{newline}",
+        f"{payload_indent}progress_callback(\"tool.completed\", tool_name, None, None){newline}",
+        f"{callback_indent}finally:{newline}",
+        f"{payload_indent}_hfc_stable_tool_callbacks_available[0] = True{newline}",
+        f"{inner_indent}_hfc_tool_start_callback._hfc_stable_wrapper = True{newline}",
+        f"{inner_indent}_hfc_tool_start_callback._hfc_original_callback = _hfc_original_tool_start_callback{newline}",
+        f"{inner_indent}_hfc_tool_complete_callback._hfc_stable_wrapper = True{newline}",
+        f"{inner_indent}_hfc_tool_complete_callback._hfc_original_callback = _hfc_original_tool_complete_callback{newline}",
+        f"{inner_indent}agent.tool_start_callback = _hfc_tool_start_callback{newline}",
+        f"{inner_indent}agent.tool_complete_callback = _hfc_tool_complete_callback{newline}",
+        f"{inner_indent}_hfc_stable_tool_callbacks_available[0] = True{newline}",
+        f"{indent}except Exception:{newline}",
+        f"{inner_indent}_hfc_stable_tool_callbacks_available[0] = False{newline}",
+        f"{indent}{STABLE_TOOL_PATCH_END}{newline}",
     ]
 
 
@@ -1795,6 +1992,29 @@ def _render_approval_hook_block(indent: str, newline: str):
         f"{deeper_indent}    return{newline}",
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{APPROVAL_PATCH_END}{newline}",
+    ]
+
+
+def _render_status_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    deeper_indent = _child_indent(inner_indent)
+    return [
+        f"{indent}{STATUS_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import handle_status_from_hermes_locals as _hfc_handle_status{newline}"
+        ),
+        f"{inner_indent}if _run_still_current():{newline}",
+        f"{deeper_indent}_hfc_handle_status({{{newline}",
+        f"{deeper_indent}    **locals(),{newline}",
+        f"{deeper_indent}    \"source\": source,{newline}",
+        f"{deeper_indent}    \"chat_id\": _status_chat_id,{newline}",
+        f"{deeper_indent}    \"message_id\": event_message_id,{newline}",
+        f"{deeper_indent}    \"_hfc_loop\": _loop_for_step,{newline}",
+        f"{deeper_indent}}}, event_type=event_type, message=message){newline}",
+        *_render_hook_exception_handler(indent, newline),
+        f"{indent}{STATUS_PATCH_END}{newline}",
     ]
 
 

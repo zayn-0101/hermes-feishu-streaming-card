@@ -20,9 +20,11 @@ from types import SimpleNamespace
 import threading
 import time
 from typing import Any, Callable
+from urllib import error as urlerror
 from urllib import parse
 from urllib import request
 
+from .event_auth import sign_event_request
 from .operations import sign_transport_proof
 from .operations_transport import (
     derive_operation_transport_secret,
@@ -36,12 +38,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_EVENT_URL = "http://127.0.0.1:8765/events"
 DEFAULT_TIMEOUT_SECONDS = 0.8
 TERMINAL_TIMEOUT_SECONDS = 10.0
+_NOTICE_UNCERTAIN_WARNING = (
+    "⚠️ 一条运行提示的卡片投递结果无法确认，请稍后查看 /hfc status。"
+)
 OPERATIONS_ACTION_TIMEOUT_SECONDS = 10.0
 OPERATIONS_ACTION_FORWARD_ATTEMPTS = 2
 OPERATIONS_ACTION_RETRY_DELAY_SECONDS = 0.1
 OPERATIONS_ACTION_WORKERS = 4
 OPERATIONS_ACTION_QUEUE_LIMIT = 64
+COMMAND_FEEDBACK_CONTEXT_TTL_SECONDS = 600.0
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_CONTEXT_COMPACTION_STATUS_RE = re.compile(
+    r"\bCompacting\s+context\b",
+    re.IGNORECASE,
+)
 MEDIA_RE = re.compile(r"MEDIA:([^\s\]]+)")
 LOCAL_FILE_RE = re.compile(
     r"(?<![:\w/])(/[^\s`]+\.(?:png|jpg|jpeg|webp|gif|pdf|txt|md|csv|xlsx|docx|mp3|wav|ogg|mp4|mov|webm))"
@@ -145,7 +155,7 @@ _SEND_LOCKS_GUARD = threading.Lock()
 _POST_FAILED = object()
 _PENDING_DELTAS: dict[tuple[int, str, str, str, str], _PendingDelta] = {}
 _PENDING_DELTAS_LOCK = threading.Lock()
-_HFC_FEISHU_COMMAND_RESULT_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+_HFC_FEISHU_COMMAND_RESULT_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     "hfc_feishu_command_result_context",
     default=None,
 )
@@ -159,7 +169,6 @@ _HFC_NATIVE_MEDIA_TEXT_SUPPRESSION: ContextVar[
     "hfc_native_media_text_suppression",
     default=None,
 )
-_HFC_COMMAND_RESULT_CARD_COMMANDS = {"new", "reset", "clear", "undo", "stop", "model"}
 _OPERATION_TRANSPORT_SECRETS: dict[str, tuple[bytes, str, float]] = {}
 _OPERATION_TRANSPORT_SECRETS_LOCK = threading.Lock()
 _OPERATION_TRANSPORT_SECRET_TTL_SECONDS = 600.0
@@ -575,6 +584,41 @@ def emit_from_hermes_locals_threadsafe(
                 )
             )
         return True
+    except Exception:
+        return False
+
+
+def handle_status_from_hermes_locals(
+    local_vars: dict[str, Any],
+    *,
+    event_type: str,
+    message: str,
+) -> bool:
+    try:
+        source = local_vars.get("source")
+        if _platform_name(local_vars, source) != "feishu":
+            return False
+        if not _CONTEXT_COMPACTION_STATUS_RE.search(str(message or "")):
+            return False
+        run_guard = local_vars.get("_run_still_current")
+        if callable(run_guard) and not run_guard():
+            return False
+        event_locals = {
+            **local_vars,
+            "_hfc_notice_title": "正在压缩上下文",
+            "_hfc_notice_level": "info",
+            "_hfc_notice_kind": "context-compaction",
+            "_hfc_notice_id": "context-compaction:active",
+            "_hfc_notice_scope": "session",
+            "_hfc_notice_phase": "started",
+            "_hfc_notice_create_session": True,
+            "display_status": "in_progress",
+            "content": "正在总结较早的对话，完成后会继续当前任务。",
+        }
+        return emit_from_hermes_locals_threadsafe(
+            event_locals,
+            event_name="system.notice",
+        )
     except Exception:
         return False
 
@@ -1812,6 +1856,81 @@ def _hfc_install_resume_picker_handler(runner_type: type[Any]) -> bool:
     return True
 
 
+async def _hfc_handle_compress_command_with_card(runner: Any, event: Any) -> Any:
+    original = getattr(type(runner), "_hfc_original_handle_compress_command", None)
+    if not callable(original):
+        return None
+    source = getattr(event, "source", None)
+    if source is None or _platform_name({}, source) != "feishu":
+        return await original(runner, event)
+
+    context = _HFC_FEISHU_COMMAND_RESULT_CONTEXT.get()
+    if not isinstance(context, dict):
+        context = _hfc_command_result_context_from_event(event)
+        if context is not None:
+            _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(context)
+    if not isinstance(context, dict):
+        return await original(runner, event)
+    command = str(context.get("command") or "").strip().lower()
+    raw_command = str(context.get("raw_command") or "").strip().lower()
+    if command not in {"compress", "compact"} and raw_command not in {
+        "compress",
+        "compact",
+    }:
+        return await original(runner, event)
+    context["command"] = "compress"
+
+    adapter = _hfc_feishu_adapter_from_runner(runner, source)
+    chat_id = str(getattr(source, "chat_id", "") or "").strip()
+    if adapter is None or not chat_id:
+        return await original(runner, event)
+
+    started = await _hfc_send_native_command_result_card(
+        adapter,
+        chat_id=chat_id,
+        content="⏳ 正在压缩上下文…",
+        reply_to=str(context.get("reply_to_message_id") or "").strip() or None,
+        metadata=None,
+        context=context,
+    )
+    result = await original(runner, event)
+    if not getattr(started, "success", False):
+        return result
+
+    terminal_content = str(result or "").strip() or "上下文压缩已完成。"
+    completed = await _hfc_send_native_command_result_card(
+        adapter,
+        chat_id=chat_id,
+        content=terminal_content,
+        reply_to=str(context.get("reply_to_message_id") or "").strip() or None,
+        metadata=None,
+        context=context,
+    )
+    if getattr(completed, "success", False):
+        return None
+    return result
+
+
+def _hfc_install_compress_command_handler(runner_type: type[Any]) -> bool:
+    current = runner_type.__dict__.get("_handle_compress_command")
+    if current is _hfc_handle_compress_command_with_card:
+        setattr(runner_type, "_hfc_compress_command_wrapped", True)
+        return True
+    if getattr(runner_type, "_hfc_compress_command_wrapped", False):
+        return callable(getattr(runner_type, "_handle_compress_command", None))
+    original = current or getattr(runner_type, "_handle_compress_command", None)
+    if not callable(original):
+        return False
+    setattr(runner_type, "_hfc_original_handle_compress_command", original)
+    setattr(
+        runner_type,
+        "_handle_compress_command",
+        _hfc_handle_compress_command_with_card,
+    )
+    setattr(runner_type, "_hfc_compress_command_wrapped", True)
+    return True
+
+
 def _parse_model_picker_choice(choice: str) -> tuple[str, str] | None:
     try:
         data = json.loads(choice)
@@ -2011,6 +2130,10 @@ def _hfc_command_result_card(
     content: str,
     template: str = "green",
 ) -> dict[str, Any]:
+    from .render import MAIN_CONTENT_CHUNK_CHARS
+    from .text import split_markdown_blocks
+
+    normalized_content = str(content or "").strip() or "已处理。"
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -2020,8 +2143,12 @@ def _hfc_command_result_card(
         "elements": [
             {
                 "tag": "markdown",
-                "content": str(content or "").strip() or "已处理。",
+                "content": chunk,
             }
+            for chunk in split_markdown_blocks(
+                normalized_content,
+                MAIN_CONTENT_CHUNK_CHARS,
+            )
         ],
     }
 
@@ -2046,6 +2173,23 @@ def _hfc_command_from_event(event: Any) -> str:
     return command.split(None, 1)[0].strip().lower()
 
 
+def _hfc_canonical_command(command: str) -> str:
+    raw = str(command or "").strip().lstrip("/")
+    if not raw:
+        return ""
+    raw = raw.split(None, 1)[0].lower()
+    try:
+        from hermes_cli.commands import resolve_command
+
+        resolved = resolve_command(raw)
+        name = str(getattr(resolved, "name", "") or "").strip().lower()
+        if name:
+            return name
+    except Exception:
+        pass
+    return raw.replace("_", "-")
+
+
 def _hfc_command_event_message_id(event: Any) -> str:
     for obj in (event, getattr(event, "source", None)):
         if obj is None:
@@ -2060,23 +2204,31 @@ def _hfc_command_event_message_id(event: Any) -> str:
     return ""
 
 
-def _hfc_command_result_context_from_event(event: Any) -> dict[str, str] | None:
+def _hfc_command_result_context_from_event(event: Any) -> dict[str, Any] | None:
     if event is None:
         return None
     source = getattr(event, "source", None)
     if _platform_name({}, source) != "feishu":
         return None
-    command = _hfc_command_from_event(event)
-    if command not in _HFC_COMMAND_RESULT_CARD_COMMANDS:
+    raw_command = _hfc_command_from_event(event)
+    command = _hfc_canonical_command(raw_command)
+    if not command:
         return None
+    now = time.monotonic()
     return {
         "command": command,
+        "raw_command": raw_command,
         "chat_id": str(getattr(source, "chat_id", "") or "").strip(),
-        "message_id": _hfc_command_event_message_id(event),
+        "reply_to_message_id": _hfc_command_event_message_id(event),
+        "thread_id": str(getattr(source, "thread_id", "") or "").strip(),
+        "card_message_id": "",
+        "created_at": now,
+        "expires_at": now + COMMAND_FEEDBACK_CONTEXT_TTL_SECONDS,
     }
 
 
 def _hfc_command_result_title(command: str) -> str:
+    normalized = str(command or "").strip().lower()
     return {
         "new": "会话已重置",
         "reset": "会话已重置",
@@ -2084,13 +2236,16 @@ def _hfc_command_result_title(command: str) -> str:
         "undo": "已撤销上一步",
         "stop": "已停止",
         "model": "模型已更新",
-    }.get(command, "命令已完成")
+        "compress": "上下文压缩",
+    }.get(normalized, f"/{normalized}" if normalized else "命令反馈")
 
 
 def _hfc_command_result_template(content: str) -> str:
     text = str(content or "").strip().lower()
     if text.startswith(("❌", "error", "failed")) or "失败" in text or "error:" in text:
         return "red"
+    if text.startswith(("⏳", "正在", "running", "starting")):
+        return "blue"
     if text.startswith(("⚠️", "warning")) or "cancel" in text or "取消" in text:
         return "orange"
     return "green"
@@ -2100,22 +2255,28 @@ def _hfc_take_feishu_command_result_context(
     *,
     chat_id: str,
     content: Any,
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
     context = _HFC_FEISHU_COMMAND_RESULT_CONTEXT.get()
     if not isinstance(context, dict):
         return None
     command = str(context.get("command") or "").strip().lower()
-    if command not in _HFC_COMMAND_RESULT_CARD_COMMANDS:
+    if not command:
         _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
         return None
     if not str(content or "").strip():
+        return None
+    try:
+        expires_at = float(context.get("expires_at") or 0.0)
+    except (TypeError, ValueError):
+        expires_at = 0.0
+    if expires_at <= time.monotonic():
+        _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
         return None
     expected_chat_id = str(context.get("chat_id") or "").strip()
     actual_chat_id = str(chat_id or "").strip()
     if expected_chat_id and actual_chat_id and expected_chat_id != actual_chat_id:
         _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
         return None
-    _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
     return context
 
 
@@ -2171,6 +2332,7 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, Any] | None:
             "level": "info",
             "notice_kind": "heartbeat",
             "notice_id": "heartbeat",
+            "notice_terminal": False,
         }
     if "caps context" in lowered and "auto-compaction" in lowered:
         return {
@@ -2296,7 +2458,7 @@ async def _hfc_send_system_notice_card(
     try:
         config = load_runtime_config()
         if not config.enabled:
-            return _send_result(False, error="disabled")
+            return _send_result(False, error="delivery_outcome=not_sent")
         context = _HFC_FEISHU_NOTICE_CONTEXT.get()
         if not isinstance(context, dict):
             context = {}
@@ -2324,11 +2486,28 @@ async def _hfc_send_system_notice_card(
             )
             if _hfc_notice_post_applied(post_result):
                 return _send_result(True, message_id=payload["message_id"])
+            if not (
+                isinstance(post_result, dict)
+                and post_result.get("ok") is not False
+                and post_result.get("applied") is False
+            ):
+                return _send_result(
+                    False,
+                    error=(
+                        "delivery_outcome="
+                        + _hfc_notice_delivery_outcome(post_result)
+                    ),
+                )
 
         independent_message_id = (
             message_id
             if message_id.startswith("notice_")
-            else _hfc_independent_notice_message_id(chat_id, str(content or ""), notice)
+            else _hfc_independent_notice_message_id(
+                chat_id,
+                str(content or ""),
+                notice,
+                anchor=str(context.get("message_id") or "").strip(),
+            )
         )
         payload = _hfc_build_system_notice_payload(
             chat_id=chat_id,
@@ -2348,27 +2527,57 @@ async def _hfc_send_system_notice_card(
         if _hfc_notice_post_applied(post_result):
             return _send_result(True, message_id=payload["message_id"])
     except Exception as exc:
-        _hfc_warn(f"send system notice card failed: {exc.__class__.__name__}: {exc}")
-        return _send_result(False, error=str(exc))
-    return _send_result(False, error="system notice card not applied")
+        _hfc_warn(f"send system notice card failed: {exc.__class__.__name__}")
+        return _send_result(False, error="delivery_outcome=unknown")
+    return _send_result(
+        False,
+        error="delivery_outcome=" + _hfc_notice_delivery_outcome(post_result),
+    )
 
 
 def _hfc_notice_post_applied(result: Any) -> bool:
-    if not isinstance(result, dict):
-        return True
-    if result.get("ok") is False:
+    if not isinstance(result, dict) or result.get("ok") is False:
         return False
-    return result.get("applied") is not False
+    outcome = _hfc_notice_delivery_outcome(result)
+    if outcome == "accepted":
+        return result.get("applied") is True
+    return outcome == "delivered" and result.get("applied") is not False
+
+
+def _hfc_notice_delivery_outcome(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "unknown"
+    delivery = result.get("delivery")
+    if not isinstance(delivery, dict):
+        return "unknown"
+    outcome = delivery.get("outcome")
+    if outcome in {"accepted", "delivered", "not_sent", "unknown"}:
+        return outcome
+    return "unknown"
+
+
+def _hfc_send_result_delivery_outcome(result: Any) -> str:
+    error = getattr(result, "error", None)
+    if error == "delivery_outcome=not_sent":
+        return "not_sent"
+    if error == "delivery_outcome=unknown":
+        return "unknown"
+    return "unknown"
 
 
 def _hfc_independent_notice_message_id(
     chat_id: str,
     content: str,
     notice: dict[str, Any],
+    *,
+    anchor: str = "",
 ) -> str:
     notice_id = str(notice.get("notice_id") or "").strip()
     if notice.get("notice_kind") == "background-process" and notice_id:
         raw = f"{chat_id}:{notice_id}".encode("utf-8")
+        return "notice_" + sha256(raw).hexdigest()[:16]
+    if notice.get("notice_kind") == "heartbeat" and notice_id:
+        raw = f"{chat_id}:{anchor}:{notice_id}".encode("utf-8")
         return "notice_" + sha256(raw).hexdigest()[:16]
     if notice_id.startswith("background-task-completed:"):
         return "notice_" + secrets.token_hex(8)
@@ -2431,48 +2640,76 @@ async def _hfc_send_native_command_result_card(
     content: str,
     reply_to: str | None,
     metadata: dict[str, Any] | None,
-    context: dict[str, str],
+    context: dict[str, Any],
 ) -> Any:
     if not getattr(adapter, "_client", None):
         return _send_result(False, error="not connected")
     if not hasattr(adapter, "_feishu_send_with_retry"):
         return _send_result(False, error="feishu send unavailable")
 
-    command = str(context.get("command") or "").strip().lower()
-    card = _hfc_command_result_card(
-        title=_hfc_command_result_title(command),
-        content=content,
-        template=_hfc_command_result_template(content),
-    )
-    effective_reply_to = (
-        str(reply_to or "").strip()
-        or _metadata_reply_to(metadata)
-        or str(context.get("message_id") or "").strip()
-        or None
-    )
-    try:
-        response = await adapter._feishu_send_with_retry(
-            chat_id=chat_id,
-            msg_type="interactive",
-            payload=json.dumps(card, ensure_ascii=False),
-            reply_to=effective_reply_to,
-            metadata=metadata,
-        )
-    except Exception as exc:
-        _hfc_warn(f"send command result card failed: {exc.__class__.__name__}: {exc}")
-        return _send_result(False, error=str(exc))
+    lock = context.get("_lock")
+    if not isinstance(lock, asyncio.Lock):
+        lock = asyncio.Lock()
+        context["_lock"] = lock
 
-    finalizer = getattr(adapter, "_finalize_send_result", None)
-    if callable(finalizer):
+    async with lock:
+        command = str(context.get("command") or "").strip().lower()
+        card = _hfc_command_result_card(
+            title=_hfc_command_result_title(command),
+            content=content,
+            template=_hfc_command_result_template(content),
+        )
+        card_message_id = str(context.get("card_message_id") or "").strip()
+        if card_message_id:
+            updated = await _hfc_update_native_command_card(
+                adapter,
+                card_message_id,
+                card,
+            )
+            if updated:
+                return _send_result(True, message_id=card_message_id)
+            return _send_result(False, error="update command result card failed")
+
+        effective_reply_to = (
+            str(reply_to or "").strip()
+            or _metadata_reply_to(metadata)
+            or str(context.get("reply_to_message_id") or "").strip()
+            or None
+        )
+        effective_metadata = dict(metadata or {})
+        thread_id = str(context.get("thread_id") or "").strip()
+        if thread_id and not effective_metadata.get("thread_id"):
+            effective_metadata["thread_id"] = thread_id
         try:
-            return finalizer(response, "send command result card failed")
-        except Exception:
-            pass
-    success, message_id = _hfc_feishu_send_success(response)
-    if not success:
-        _hfc_warn(f"send command result card failed: response={response!r}")
-        return _send_result(False, error="send command result card failed")
-    return _send_result(True, message_id=message_id)
+            response = await adapter._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=effective_reply_to,
+                metadata=effective_metadata or None,
+            )
+        except Exception as exc:
+            _hfc_warn(f"send command result card failed: {exc.__class__.__name__}: {exc}")
+            return _send_result(False, error=str(exc))
+
+        finalizer = getattr(adapter, "_finalize_send_result", None)
+        if callable(finalizer):
+            try:
+                result = finalizer(response, "send command result card failed")
+                if getattr(result, "success", False):
+                    message_id = str(getattr(result, "message_id", "") or "").strip()
+                    if message_id:
+                        context["card_message_id"] = message_id
+                    return result
+                return result
+            except Exception:
+                pass
+        success, message_id = _hfc_feishu_send_success(response)
+        if not success:
+            _hfc_warn(f"send command result card failed: response={response!r}")
+            return _send_result(False, error="send command result card failed")
+        context["card_message_id"] = message_id
+        return _send_result(True, message_id=message_id)
 
 
 async def _hfc_send_with_native_command_result_card(
@@ -2507,16 +2744,19 @@ async def _hfc_send_with_native_command_result_card(
     if getattr(notice_result, "success", False):
         return notice_result
     if _hfc_classify_system_notice(content) is not None:
-        error = getattr(notice_result, "error", None) or "system notice card not applied"
-        _hfc_warn(f"system notice native fallback suppressed: {error}")
-        return _send_result(
-            True,
-            message_id=(
-                str(reply_to or "").strip()
-                or _metadata_reply_to(metadata)
-                or "notice_suppressed"
-            ),
-        )
+        outcome = _hfc_send_result_delivery_outcome(notice_result)
+        if callable(original):
+            fallback_content = (
+                content if outcome == "not_sent" else _NOTICE_UNCERTAIN_WARNING
+            )
+            return await original(
+                self,
+                chat_id,
+                fallback_content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        return _send_result(False, error="original Feishu send unavailable")
     if callable(original):
         return await original(self, chat_id, content, reply_to=reply_to, metadata=metadata)
     return _send_result(False, error="original Feishu send unavailable")
@@ -4043,7 +4283,11 @@ async def _hfc_handle_feishu_card_action_event(self: Any, data: Any) -> None:
 
 
 def _hfc_refresh_feishu_event_handler(adapter: Any) -> bool:
-    if getattr(adapter, "_hfc_command_card_event_handler_refreshed", False):
+    if getattr(adapter, "_hfc_command_card_event_handler_refreshed", False) or getattr(
+        adapter,
+        "_hfc_command_card_event_handler_refresh_scheduled",
+        False,
+    ):
         return False
 
     current_handler = getattr(adapter, "_event_handler", None)
@@ -4052,28 +4296,73 @@ def _hfc_refresh_feishu_event_handler(adapter: Any) -> bool:
     if current_handler is None and ws_handler is None:
         return False
 
-    build_event_handler = getattr(adapter, "_build_event_handler", None)
-    if not callable(build_event_handler):
+    callback = getattr(adapter, "_on_card_action_trigger", None)
+    if not callable(callback):
         return False
 
+    handlers = []
+    for handler in (current_handler, ws_handler):
+        if handler is not None and all(handler is not item for item in handlers):
+            handlers.append(handler)
+
+    def refresh_card_action_callback() -> bool:
+        refreshed = False
+        for handler in handlers:
+            processor_map = getattr(handler, "_callback_processor_map", None)
+            if not isinstance(processor_map, dict):
+                continue
+            processor = processor_map.get("p2.card.action.trigger")
+            if processor is None or not hasattr(processor, "f"):
+                continue
+            try:
+                setattr(processor, "f", callback)
+                refreshed = True
+            except Exception:
+                continue
+        if refreshed:
+            setattr(adapter, "_hfc_command_card_event_handler_refreshed", True)
+            _hfc_info(
+                "Feishu card action callback refreshed without replacing live event handler"
+            )
+        return refreshed
+
+    if ws_client is None:
+        return refresh_card_action_callback()
+
+    ws_loop = getattr(adapter, "_ws_thread_loop", None)
+    call_soon_threadsafe = getattr(ws_loop, "call_soon_threadsafe", None)
+    is_closed = getattr(ws_loop, "is_closed", None)
     try:
-        rebuilt_handler = build_event_handler()
+        ws_loop_closed = callable(is_closed) and bool(is_closed())
     except Exception as exc:
-        _hfc_warn(f"Feishu event handler refresh failed: {exc.__class__.__name__}: {exc}")
+        _hfc_warn(
+            "Feishu card action callback refresh skipped: "
+            f"WS loop state unavailable ({exc.__class__.__name__})"
+        )
         return False
-    if rebuilt_handler is None:
-        _hfc_warn("Feishu event handler refresh skipped: builder returned None")
+    if not callable(call_soon_threadsafe) or ws_loop_closed:
+        _hfc_warn("Feishu card action callback refresh skipped: WS loop unavailable")
         return False
-
     try:
-        setattr(adapter, "_event_handler", rebuilt_handler)
-        if ws_client is not None:
-            setattr(ws_client, "_event_handler", rebuilt_handler)
-        setattr(adapter, "_hfc_command_card_event_handler_refreshed", True)
-        _hfc_info("Feishu event handler refreshed for command card callbacks")
+        setattr(adapter, "_hfc_command_card_event_handler_refresh_scheduled", True)
+
+        def refresh_on_ws_loop() -> None:
+            try:
+                refresh_card_action_callback()
+            finally:
+                setattr(
+                    adapter,
+                    "_hfc_command_card_event_handler_refresh_scheduled",
+                    False,
+                )
+
+        call_soon_threadsafe(refresh_on_ws_loop)
         return True
     except Exception as exc:
-        _hfc_warn(f"Feishu event handler refresh failed: {exc.__class__.__name__}: {exc}")
+        setattr(adapter, "_hfc_command_card_event_handler_refresh_scheduled", False)
+        _hfc_warn(
+            f"Feishu card action callback refresh failed: {exc.__class__.__name__}: {exc}"
+        )
         return False
 
 
@@ -4150,6 +4439,7 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
             return False
         runner_type = type(runner)
         _hfc_install_resume_picker_handler(runner_type)
+        _hfc_install_compress_command_handler(runner_type)
         current_notice_delivery = runner_type.__dict__.get("_deliver_platform_notice")
         if current_notice_delivery is _hfc_deliver_platform_notice_with_card:
             setattr(runner_type, "_hfc_platform_notice_wrapped", True)
@@ -4478,7 +4768,7 @@ async def _post_json(url: str, payload: dict[str, Any], timeout: float) -> None:
     req = request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=_post_headers(url, body),
         method="POST",
     )
     loop = asyncio.get_running_loop()
@@ -4490,7 +4780,7 @@ async def _post_json_response(url: str, payload: dict[str, Any], timeout: float)
     req = request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=_post_headers(url, body),
         method="POST",
     )
     loop = asyncio.get_running_loop()
@@ -4502,10 +4792,23 @@ def _post_json_sync_response(url: str, payload: dict[str, Any], timeout: float) 
     req = request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=_post_headers(url, body),
         method="POST",
     )
     return _open_json_request(req, timeout)
+
+
+def _post_headers(url: str, body: bytes) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if not parse.urlsplit(url).path.rstrip("/").endswith("/events"):
+        return headers
+    try:
+        root_secret = read_transport_root_secret()
+        if root_secret is not None:
+            headers.update(sign_event_request(root_secret, body))
+    except Exception:
+        pass
+    return headers
 
 
 async def lookup_card_summary(
@@ -4559,8 +4862,23 @@ def _open_request(req: request.Request, timeout: float) -> None:
 
 
 def _open_json_request(req: request.Request, timeout: float) -> Any:
-    with _open_sidecar_request(req, timeout) as response:
-        body = response.read()
+    try:
+        with _open_sidecar_request(req, timeout) as response:
+            body = response.read()
+    except urlerror.HTTPError as exc:
+        try:
+            body = exc.read()
+        finally:
+            exc.close()
+        if not body:
+            raise
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
+            raise exc
+        return payload
     if not body:
         return None
     return json.loads(body.decode("utf-8"))
@@ -5027,6 +5345,18 @@ def _event_data(
         )
         if isinstance(notice_terminal, bool):
             data["notice_terminal"] = notice_terminal
+        notice_phase = _first_string(
+            local_vars,
+            ("_hfc_notice_phase", "notice_phase", "phase"),
+        )
+        if notice_phase:
+            data["phase"] = notice_phase
+        notice_create_session = local_vars.get(
+            "_hfc_notice_create_session",
+            local_vars.get("create_session"),
+        )
+        if isinstance(notice_create_session, bool):
+            data["create_session"] = notice_create_session
         delivery_kind = _first_string(local_vars, ("delivery_kind",))
         if delivery_kind:
             data["delivery_kind"] = delivery_kind
@@ -5186,15 +5516,20 @@ def _tool_arguments(local_vars: dict[str, Any]) -> Any:
 
 
 def _tool_duration_milliseconds(local_vars: dict[str, Any]) -> int | float | None:
-    for name in ("duration_ms", "elapsed_ms", "tool_duration_ms"):
-        value = _finite_float(local_vars.get(name))
-        if value is not None and value >= 0:
-            return int(value) if value.is_integer() else value
-    for name in ("duration", "elapsed", "tool_duration"):
-        value = _finite_float(local_vars.get(name))
-        if value is not None and value >= 0:
-            milliseconds = value * 1000
-            return int(milliseconds) if milliseconds.is_integer() else milliseconds
+    sources = [local_vars]
+    callback_kwargs = local_vars.get("kwargs")
+    if isinstance(callback_kwargs, dict):
+        sources.append(callback_kwargs)
+    for source in sources:
+        for name in ("duration_ms", "elapsed_ms", "tool_duration_ms"):
+            value = _finite_float(source.get(name))
+            if value is not None and value >= 0:
+                return int(value) if value.is_integer() else value
+        for name in ("duration", "elapsed", "tool_duration"):
+            value = _finite_float(source.get(name))
+            if value is not None and value >= 0:
+                milliseconds = value * 1000
+                return int(milliseconds) if milliseconds.is_integer() else milliseconds
     return None
 
 

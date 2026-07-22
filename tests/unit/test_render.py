@@ -38,6 +38,66 @@ def test_render_card_accepts_custom_header_title():
     assert card["header"]["title"]["content"] == "研发助手"
 
 
+def test_render_initial_running_card_shows_context_loading_and_empty_timeline():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    card = render_card(session)
+
+    main = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "main_content"
+    )
+    timeline = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "auxiliary_timeline"
+    )
+
+    assert any(frame in main["content"] for frame in _SPINNER_FRAMES)
+    assert "正在加载上下文…" in main["content"]
+    assert card["header"]["title"]["content"] == "Hermes Agent"
+    assert "subtitle" not in card["header"]
+    assert timeline["expanded"] is False
+    assert timeline["header"]["title"]["content"] == "思考与工具 · 0 次工具调用"
+    assert "tool_summary" not in {
+        item.get("element_id") for item in card["body"]["elements"]
+    }
+
+
+def test_running_tool_without_model_text_removes_loading_placeholder_from_body():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="tool.updated",
+            conversation_id="chat-1",
+            message_id="msg-1",
+            chat_id="oc_abc",
+            platform="feishu",
+            sequence=1,
+            created_at=10.0,
+            data={
+                "tool_id": "terminal-1",
+                "name": "terminal",
+                "status": "running",
+                "detail": "pytest -q",
+            },
+        )
+    )
+
+    card = render_card(session)
+
+    assert card["header"]["subtitle"]["content"] == "正在执行终端：pytest -q"
+    assert not any(
+        str(item.get("element_id", "")).startswith("main_content")
+        for item in card["body"]["elements"]
+    )
+    assert "正在加载上下文…" not in str(card)
+
+
 def test_v4_running_card_uses_preview_title_and_public_interim_body():
     session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
     session.thinking_text = "我先检查天气客户端。"
@@ -64,6 +124,77 @@ def test_v4_running_card_uses_preview_title_and_public_interim_body():
     assert main["content"] == "我先检查天气客户端。"
     assert "gpt-" not in footer["content"]
     assert "ctx " not in footer["content"]
+
+
+def test_compaction_phase_replaces_header_title_and_hides_stale_tool_summary():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.thinking_text = "已保留的公开阶段说明"
+    session.latest_tool_preview = "正在读取：weather_client.py"
+    session.runtime_phase_text = "正在压缩上下文"
+
+    card = render_card(session, title="研发助手")
+
+    assert card["header"]["title"]["content"] == "正在压缩上下文"
+    assert "subtitle" not in card["header"]
+    assert "正在读取：weather_client.py" not in str(card["header"])
+
+
+def test_pending_interaction_has_priority_over_compaction_phase():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.runtime_phase_text = "正在压缩上下文"
+    session.active_interaction = InteractionState(
+        interaction_id="approval-compaction",
+        kind="approval",
+        prompt="允许继续执行吗？",
+    )
+
+    card = render_card(session, title="研发助手")
+
+    assert card["header"]["title"]["content"] == "允许继续执行吗？"
+    assert "正在压缩上下文" not in str(card["header"])
+
+
+def test_tool_activity_clears_compaction_and_restores_tool_subtitle():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.runtime_phase_text = "正在压缩上下文"
+    assert session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="tool.updated",
+            conversation_id="c",
+            message_id="m",
+            chat_id="oc",
+            platform="feishu",
+            sequence=1,
+            created_at=0.0,
+            data={
+                "tool_id": "tool-1",
+                "name": "terminal",
+                "status": "running",
+                "detail": "pytest",
+            },
+        )
+    )
+
+    card = render_card(session, title="研发助手")
+
+    assert session.runtime_phase_text == ""
+    assert card["header"]["title"]["content"] == "研发助手"
+    assert card["header"]["subtitle"]["content"] == "正在执行终端：pytest"
+
+
+def test_completed_card_never_renders_stale_compaction_phase():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.status = "completed"
+    session.answer_text = "最终答案"
+    session.runtime_phase_text = "正在压缩上下文"
+
+    card = render_card(session, title="研发助手")
+
+    assert card["header"]["title"]["content"] == "研发助手"
+    assert "正在压缩上下文" not in str(card)
 
 
 def test_v4_answer_delta_remains_primary_over_public_interim_text():
@@ -535,6 +666,194 @@ def test_render_long_main_content_splits_markdown_elements_without_truncating():
     assert "".join(item["content"] for item in main_elements) == session.answer_text
 
 
+def test_render_card_default_json_has_no_style_or_explicit_body_text_size():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.status = "completed"
+    session.answer_text = "正文"
+
+    card = render_card(session)
+    main = next(
+        item for item in card["body"]["elements"] if item["element_id"] == "main_content"
+    )
+    footer = next(
+        item for item in card["body"]["elements"] if item["element_id"] == "footer"
+    )
+
+    assert "style" not in card["config"]
+    assert "text_size" not in main
+    assert footer["text_size"] == "x-small"
+
+
+def test_render_scalar_text_sizes_apply_to_each_role_and_body_chunks():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    base = {
+        "schema_version": "1",
+        "conversation_id": "c",
+        "message_id": "m",
+        "chat_id": "oc",
+        "platform": "feishu",
+        "created_at": 0.0,
+    }
+    session.apply(
+        SidecarEvent(
+            event="answer.delta",
+            sequence=1,
+            data={"text": "先分析实现。"},
+            **base,
+        )
+    )
+    session.apply(
+        SidecarEvent(
+            event="tool.updated",
+            sequence=2,
+            data={
+                "tool_id": "terminal",
+                "name": "terminal",
+                "status": "completed",
+                "detail": "pytest",
+            },
+            **base,
+        )
+    )
+    session.apply(
+        SidecarEvent(
+            event="system.notice",
+            sequence=3,
+            data={"title": "提示", "content": "已切换上下文"},
+            **base,
+        )
+    )
+    session.apply(
+        SidecarEvent(
+            event="message.completed",
+            sequence=4,
+            data={"answer": "甲" * 2600},
+            **base,
+        )
+    )
+    session.attachments = [{"name": "report.txt"}]
+
+    card = render_card(
+        session,
+        timeline_expanded=True,
+        text_sizes={
+            "body": "large",
+            "reasoning": "medium",
+            "tool": "small",
+            "notice": "notation",
+            "footer": "normal",
+        },
+    )
+
+    main = [
+        item
+        for item in card["body"]["elements"]
+        if str(item.get("element_id", "")).startswith("main_content")
+    ]
+    timeline = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "auxiliary_timeline"
+    )
+    reasoning = next(item for item in timeline["elements"] if "思考" in item["content"])
+    tool = next(item for item in timeline["elements"] if "terminal" in item["content"])
+    notice = next(item for item in timeline["elements"] if "提示" in item["content"])
+    attachment = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "attachment_summary"
+    )
+    footer = next(
+        item for item in card["body"]["elements"] if item.get("element_id") == "footer"
+    )
+
+    assert len(main) > 1
+    assert all(item["text_size"] == "large" for item in main)
+    assert reasoning["text_size"] == "medium"
+    assert tool["text_size"] == "small"
+    assert notice["text_size"] == "notation"
+    assert footer["text_size"] == "normal"
+    assert "text_size" not in attachment
+
+
+def test_render_independent_notice_uses_notice_text_size():
+    session = CardSession(conversation_id="c", message_id="n", chat_id="oc")
+    session.delivery_kind = "notice"
+    session.notice_title = "通知"
+    session.answer_text = "通知正文"
+    session.status = "completed"
+
+    card = render_card(session, text_sizes={"body": "large", "notice": "small"})
+    main = next(
+        item for item in card["body"]["elements"] if item["element_id"] == "main_content"
+    )
+
+    assert main["text_size"] == "small"
+
+
+def test_render_device_text_size_emits_footer_alias():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.status = "completed"
+    session.answer_text = "正文"
+
+    card = render_card(
+        session,
+        text_sizes={
+            "footer": {
+                "default": "x-small",
+                "pc": "x-small",
+                "mobile": "notation",
+            }
+        },
+    )
+    footer = next(
+        item for item in card["body"]["elements"] if item["element_id"] == "footer"
+    )
+
+    assert card["config"]["style"]["text_size"] == {
+        "hfc_footer": {
+            "default": "x-small",
+            "pc": "x-small",
+            "mobile": "notation",
+        }
+    }
+    assert footer["text_size"] == "hfc_footer"
+
+
+def test_render_text_size_aliases_use_deterministic_role_order():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.status = "completed"
+    session.answer_text = "正文"
+    mapping = {"default": "normal", "pc": "large", "mobile": "small"}
+
+    card = render_card(
+        session,
+        text_sizes={
+            "footer": mapping,
+            "body": mapping,
+            "reasoning": mapping,
+        },
+    )
+
+    assert list(card["config"]["style"]["text_size"]) == [
+        "hfc_body",
+        "hfc_footer",
+    ]
+    assert "hfc_reasoning" not in card["config"]["style"]["text_size"]
+
+
+def test_render_scalar_only_text_sizes_do_not_emit_style_aliases():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.status = "completed"
+    session.answer_text = "正文"
+
+    card = render_card(session, text_sizes={"body": "large", "footer": "small"})
+
+    assert "style" not in card["config"]
+
+
 def test_render_long_table_chunks_keep_markdown_table_shape():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     rows = "\n".join(f"| {index} | {'甲' * 80} |" for index in range(80))
@@ -960,8 +1279,151 @@ def test_render_timeline_styles_reasoning_and_tools_with_compact_hierarchy():
 
     assert reasoning["text_size"] == "small"
     assert tool["text_size"] == "x-small"
-    assert tool["content"].startswith("> ")
+    assert tool["content"].startswith('<font color="green">✓ **terminal**</font>')
     assert "gh release list" in tool["content"]
+
+
+def test_render_tool_timeline_uses_compact_semantic_event_rows():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    base = {
+        "schema_version": "1",
+        "conversation_id": "chat-1",
+        "message_id": "msg-1",
+        "chat_id": "oc_abc",
+        "platform": "feishu",
+        "created_at": 0.0,
+    }
+    session.apply(
+        SidecarEvent(
+            event="tool.updated",
+            sequence=1,
+            data={
+                "tool_id": "terminal",
+                "name": "terminal",
+                "status": "completed",
+                "arguments": {"command": "gh issue list"},
+                "duration_ms": 250,
+            },
+            **base,
+        )
+    )
+    session.apply(
+        SidecarEvent(
+            event="tool.updated",
+            sequence=2,
+            data={
+                "tool_id": "editor",
+                "name": "edit_file",
+                "status": "running",
+                "detail": "优化工具事件层级",
+            },
+            **base,
+        )
+    )
+    session.apply(
+        SidecarEvent(
+            event="tool.updated",
+            sequence=3,
+            data={
+                "tool_id": "fetch",
+                "name": "fetch",
+                "status": "failed",
+                "duration_ms": 4000,
+                "error": "exit 1",
+            },
+            **base,
+        )
+    )
+
+    timeline = next(
+        item
+        for item in render_card(session, timeline_expanded=True)["body"]["elements"]
+        if item.get("element_id") == "auxiliary_timeline"
+    )
+    rows = [
+        item
+        for item in timeline["elements"]
+        if str(item.get("element_id", "")).startswith("auxiliary_timeline_toolentry_")
+    ]
+    completed, running, failed = (row["content"] for row in rows)
+
+    assert completed.startswith('<font color="green">✓ **terminal** · 250ms</font>')
+    assert '<font color="grey">　参数: ' in completed
+    assert "耗时:" not in completed
+    assert running.startswith('<font color="blue">')
+    assert any(frame in running for frame in _SPINNER_FRAMES)
+    assert "**edit_file** · 进行中" in running
+    assert failed.startswith('<font color="red">✕ **fetch** · 4s · 失败</font>')
+    assert '<font color="grey">　失败: exit 1</font>' in failed
+    assert all(not row["content"].startswith("> ") for row in rows)
+    assert timeline["border"]["corner_radius"] == "8px"
+
+
+def test_render_tool_timeline_removes_all_duration_lines_from_detail():
+    from hermes_feishu_card.card_timeline import TimelineEntry
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.timeline._entries.append(
+        TimelineEntry(
+            kind="tool",
+            title="web_search",
+            status="completed",
+            detail="搜索参数\n耗时: 2.47s\n耗时: 2.12s",
+            tool_id="call-1",
+        )
+    )
+    session._tool_call_count = 1
+
+    card = render_card(session, timeline_expanded=True)
+    timeline = next(
+        item for item in card["body"]["elements"] if item.get("element_id") == "auxiliary_timeline"
+    )
+    content = str(timeline)
+
+    assert "web_search** · 2.47s" in content
+    assert "搜索参数" in content
+    assert "耗时:" not in content
+
+
+def test_render_tool_timeline_recognizes_localized_terminal_status():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="tool.updated",
+            conversation_id="chat-1",
+            message_id="msg-1",
+            chat_id="oc_abc",
+            platform="feishu",
+            sequence=1,
+            created_at=0.0,
+            data={
+                "tool_id": "read-docs",
+                "name": "读取资料",
+                "status": "已完成",
+                "detail": "docs/wiki/README.md",
+            },
+        )
+    )
+
+    timeline = next(
+        item
+        for item in render_card(session, timeline_expanded=True)["body"]["elements"]
+        if item.get("element_id") == "auxiliary_timeline"
+    )
+    row = next(
+        item
+        for item in timeline["elements"]
+        if str(item.get("element_id", "")).startswith("auxiliary_timeline_toolentry_")
+    )
+
+    assert row["content"].startswith(
+        '<font color="green">✓ **读取资料**</font>'
+    )
 
 
 def test_render_timeline_styles_system_notices_as_compact_status_lines():
@@ -1360,7 +1822,8 @@ def test_render_timeline_shows_compact_tool_arguments_duration_and_error():
 
     assert "参数:" in content
     assert "gh issue list" in content
-    assert "耗时: 250ms" in content
+    assert "250ms" in content
+    assert "耗时:" not in content
     assert "失败: exit 1" in content
     assert "secret-token" not in content
 
