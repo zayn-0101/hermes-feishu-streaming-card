@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.0.19`. It fixes the one-line installer's invalid `pip --user` use inside the Hermes venv and prevents pip failures from being swallowed. V3.9.1 was released on 2026-07-11, and V4.0.18 and earlier releases are public.
+Current release candidate: `4.0.20`. It fixes Issue #153's asynchronous acknowledgement semantics for notices on existing cards and adds redacted observability for real PATCH failures. V3.9.1 was released on 2026-07-11, and V4.0.19 and earlier releases are public.
 
 ## Ready
 
@@ -144,6 +144,13 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Verify macOS, Linux, Windows, and checksums assets after tagging.
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
+
+## V4.0.20 Release Gates
+
+- Existing-card notices return `accepted` only when `applied=true` and the asynchronous PATCH is queued; the hook treats that explicit acknowledgement as handled: **passed hook/server regressions**.
+- Initial independent notice create/reply keeps the three delivery outcomes; queued work is not represented as delivered, and the request does not wait for every PATCH: **passed existing delivery regressions**.
+- After PATCH retry exhaustion, `notice_update_failures` increments once and `last_update_error` retains only the exception type plus validated `status_code` / `api_code`: **passed fault-injection and redaction assertions**.
+- Final full automation: **passed (`1517 passed, 4 skipped`)**; sdist/wheel, isolated `site-packages` import of `4.0.20`, the public tagged installer, and Release assets are rechecked during release.
 
 ## V4.0.19 Release Gates
 

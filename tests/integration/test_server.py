@@ -62,6 +62,11 @@ DELIVERED_RESPONSE = {
     "applied": True,
     "delivery": {"outcome": "delivered"},
 }
+ACCEPTED_RESPONSE = {
+    "ok": True,
+    "applied": True,
+    "delivery": {"outcome": "accepted"},
+}
 
 
 def create_app(*args, **kwargs):
@@ -171,6 +176,17 @@ class UnknownFailureClient(FakeFeishuClient):
             retryable=True,
             outcome="unknown",
             retry_count=2,
+        )
+
+
+class UpdateFailureClient(FakeFeishuClient):
+    async def update_card_message(self, message_id, card):
+        raise FeishuAPIError(
+            "Authorization Bearer private-update-token",
+            status_code=503,
+            api_code=9499,
+            retryable=True,
+            outcome="unknown",
         )
 
 
@@ -730,6 +746,7 @@ async def test_health_reports_healthy_status_and_active_sessions(client):
         "feishu_send_unknown_outcomes": 0,
         "notice_native_fallbacks": 0,
         "notice_uncertain_warnings": 0,
+        "notice_update_failures": 0,
         "feishu_update_attempts": 0,
         "feishu_update_successes": 0,
         "feishu_update_failures": 0,
@@ -4742,11 +4759,63 @@ async def test_topic_system_notice_with_reply_anchor_updates_existing_card(clien
     )
 
     assert notice.status == 200
-    assert await notice.json() == {"ok": True, "applied": True}
+    assert await notice.json() == {
+        "ok": True,
+        "applied": True,
+        "delivery": {"outcome": "accepted"},
+    }
     message_id, card = await wait_for_card_update(feishu_client, "auto-compaction")
     assert message_id == "feishu-message-1"
     assert "上下文窗口提示" in str(card)
     assert len(feishu_client.sent) == 1
+
+
+async def test_existing_session_notice_update_failure_is_observable():
+    feishu_client = UpdateFailureClient()
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        started = await test_client.post(
+            "/events",
+            json=event_payload("message.started", 0),
+        )
+        notice = await test_client.post(
+            "/events",
+            json=event_payload(
+                "system.notice",
+                1,
+                {
+                    "title": "运行提示",
+                    "content": "后台任务正在运行",
+                    "notice_kind": "context-cap",
+                    "notice_scope": "session",
+                },
+            ),
+        )
+        notice_body = await notice.json()
+        await _wait_until(
+            lambda: app[METRICS_KEY].feishu_update_failures
+            == sidecar_server.UPDATE_MAX_ATTEMPTS
+        )
+        health = await test_client.get("/health")
+        health_body = await health.json()
+    finally:
+        await test_client.close()
+
+    assert started.status == 200
+    assert notice.status == 200
+    assert notice_body == {
+        "ok": True,
+        "applied": True,
+        "delivery": {"outcome": "accepted"},
+    }
+    assert health_body["metrics"]["notice_update_failures"] == 1
+    last_error = health_body["diagnostics"]["last_update_error"]
+    assert "FeishuAPIError" in last_error
+    assert "status_code=503" in last_error
+    assert "api_code=9499" in last_error
+    assert "private-update-token" not in last_error
 
 
 async def test_topic_second_message_reusing_message_id_sends_new_card(client):
@@ -5241,10 +5310,7 @@ async def test_orphaned_heartbeats_update_one_running_notice_card(client):
         )
         responses.append(await response.json())
 
-    assert responses == [
-        DELIVERED_RESPONSE,
-        {"ok": True, "applied": True},
-    ]
+    assert responses == [DELIVERED_RESPONSE, ACCEPTED_RESPONSE]
     assert message_ids[0] == message_ids[1]
     assert len(feishu_client.sent) == 1
     await _wait_until(lambda: len(feishu_client.updated) == 1)
@@ -5664,7 +5730,7 @@ async def test_independent_background_process_notice_updates_same_card(client):
     )
 
     assert completed_response.status == 200
-    assert await completed_response.json() == {"ok": True, "applied": True}
+    assert await completed_response.json() == ACCEPTED_RESPONSE
     assert len(feishu_client.sent) == 1
     assert len(feishu_client.updated) == 1
     card = feishu_client.updated[0][1]
@@ -5791,7 +5857,7 @@ async def test_background_notice_terminal_update_retries_and_cleans_controller(
     )
 
     assert completed.status == 200
-    assert await completed.json() == {"ok": True, "applied": True}
+    assert await completed.json() == ACCEPTED_RESPONSE
     await wait_for_card_update(feishu_client, "Updating files: 100%, done.")
     for _ in range(20):
         if message_id not in test_client.app[FLUSH_CONTROLLERS_KEY]:

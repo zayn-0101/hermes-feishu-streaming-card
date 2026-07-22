@@ -2536,12 +2536,12 @@ async def _hfc_send_system_notice_card(
 
 
 def _hfc_notice_post_applied(result: Any) -> bool:
-    return (
-        isinstance(result, dict)
-        and result.get("ok") is not False
-        and result.get("applied") is not False
-        and _hfc_notice_delivery_outcome(result) == "delivered"
-    )
+    if not isinstance(result, dict) or result.get("ok") is False:
+        return False
+    outcome = _hfc_notice_delivery_outcome(result)
+    if outcome == "accepted":
+        return result.get("applied") is True
+    return outcome == "delivered" and result.get("applied") is not False
 
 
 def _hfc_notice_delivery_outcome(result: Any) -> str:
@@ -2551,7 +2551,7 @@ def _hfc_notice_delivery_outcome(result: Any) -> str:
     if not isinstance(delivery, dict):
         return "unknown"
     outcome = delivery.get("outcome")
-    if outcome in {"delivered", "not_sent", "unknown"}:
+    if outcome in {"accepted", "delivered", "not_sent", "unknown"}:
         return outcome
     return "unknown"
 

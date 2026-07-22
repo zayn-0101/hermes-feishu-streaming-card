@@ -1817,6 +1817,7 @@ def _hfc_monitor_lines(request: web.Request, event: SidecarEvent) -> list[str]:
         "feishu_send_unknown_outcomes",
         "notice_native_fallbacks",
         "notice_uncertain_warnings",
+        "notice_update_failures",
         "feishu_update_attempts",
         "feishu_update_successes",
         "feishu_update_failures",
@@ -2354,6 +2355,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 feishu_message_id,
                 latest_card,
                 bot_id,
+                notice_update=event.event == "system.notice",
             )
             if not updated and is_terminal:
                 await _retry_terminal_update(
@@ -2384,6 +2386,8 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
     else:
         metrics.events_ignored += 1
     response_payload = {"ok": True, "applied": applied}
+    if applied and event.event == "system.notice" and post_lock_task is not None:
+        response_payload["delivery"] = {"outcome": "accepted"}
     if event.event == "interaction.requested":
         response_payload["interaction_mode"] = _interaction_mode_for_session_key(
             request.app,
@@ -3068,6 +3072,7 @@ async def _update_card_for_app(
     bot_id: str | None,
     *,
     is_current: Callable[[], bool] | None = None,
+    notice_update: bool = False,
 ) -> bool:
     metrics: SidecarMetrics = app[METRICS_KEY]
     for attempt in range(UPDATE_MAX_ATTEMPTS):
@@ -3095,6 +3100,8 @@ async def _update_card_for_app(
         if is_current is not None and not is_current():
             return False
         return True
+    if notice_update:
+        metrics.notice_update_failures += 1
     return False
 
 
@@ -3372,7 +3379,29 @@ def _is_client_factory(feishu_client: Any) -> bool:
 
 
 def _safe_update_error_message(bot_id: str | None, exc: Exception) -> str:
-    return f"bot_id={bot_id or ''} {exc.__class__.__name__}"
+    parts = [f"bot_id={bot_id or ''}", exc.__class__.__name__]
+    status_code = getattr(exc, "status_code", None)
+    if (
+        isinstance(status_code, int)
+        and not isinstance(status_code, bool)
+        and 100 <= status_code <= 599
+    ):
+        parts.append(f"status_code={status_code}")
+    api_code = getattr(exc, "api_code", None)
+    if isinstance(api_code, int) and not isinstance(api_code, bool):
+        parts.append(f"api_code={api_code}")
+    elif isinstance(api_code, str):
+        normalized_api_code = api_code.strip()
+        if (
+            normalized_api_code
+            and len(normalized_api_code) <= 32
+            and all(
+                char.isalnum() or char in {"_", "-"}
+                for char in normalized_api_code
+            )
+        ):
+            parts.append(f"api_code={normalized_api_code}")
+    return " ".join(parts)
 
 
 def _initial_routing_diagnostics(feishu_client: Any) -> dict[str, Any]:

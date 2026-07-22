@@ -1935,6 +1935,26 @@ def test_system_notice_delivery_outcome_selects_safe_native_fallback(
     ]
 
 
+def test_system_notice_accepts_queued_existing_card_update():
+    result = {
+        "ok": True,
+        "applied": True,
+        "delivery": {"outcome": "accepted"},
+    }
+
+    assert hook_runtime._hfc_notice_delivery_outcome(result) == "accepted"
+    assert hook_runtime._hfc_notice_post_applied(result) is True
+
+
+def test_system_notice_rejects_accepted_outcome_without_applied_ack():
+    result = {
+        "ok": True,
+        "delivery": {"outcome": "accepted"},
+    }
+
+    assert hook_runtime._hfc_notice_post_applied(result) is False
+
+
 def test_system_notice_delivered_suppresses_native_fallback(monkeypatch):
     calls = []
 

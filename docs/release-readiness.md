@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.0.19`。它修复 one-line installer 在 Hermes venv 中误用 `pip --user` 和吞掉 pip 失败的问题；V3.9.1 已于 2026-07-11 发布，V4.0.18 及更早版本也已发布。
+当前发布候选为 `4.0.20`。它修复 Issue #153 中已有卡片 notice 的异步 ACK 语义，并为真实 PATCH 失败补充脱敏可观测性；V3.9.1 已于 2026-07-11 发布，V4.0.19 及更早版本也已发布。
 
 ## 已具备
 
@@ -144,6 +144,13 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - tag 后验证 macOS、Linux、Windows 与 checksums 四个 assets。
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
+
+## V4.0.20 发布门禁
+
+- 已有卡片 notice 必须只在 `applied=true` 且异步 PATCH 已排队时返回 `accepted`；hook 据此接管并抑制误报：**已通过 hook/server 回归**。
+- 独立 notice 初始 create/reply 继续使用三态投递语义；不把排队等同于送达，也不等待每次 PATCH：**已通过既有投递回归**。
+- PATCH 内部重试耗尽后 `notice_update_failures` 增加一次，`last_update_error` 只保留异常类型和白名单 `status_code` / `api_code`：**已通过故障注入与脱敏断言**。
+- 最终全量自动化：**已通过（`1517 passed, 4 skipped`）**；sdist/wheel、隔离 `site-packages` import `4.0.20`、公开 tagged installer 与 Release assets 在发布流程中复核。
 
 ## V4.0.19 发布门禁
 
