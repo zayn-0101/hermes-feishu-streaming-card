@@ -55,7 +55,6 @@ macOS / Linux:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/main/install.sh | bash
 ```
-
 Windows PowerShell:
 
 ```powershell
@@ -131,7 +130,7 @@ For an existing Hermes container:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.18
+export HFC_VERSION=v4.0.19
 bash install-docker.sh
 ```
 
@@ -172,6 +171,7 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 ![Feishu topic reply card continuity and reasoning/tool timeline showcase](docs/assets/feishu-topic-card-showcase-v389.png)
 | Version | Highlights |
 |---|---|
+| [v4.0.19](docs/release-notes-v4.0.19.en.md) | Prevents the one-line installer from using `pip --user` inside the Hermes venv and stops immediately on pip failures, avoiding false upgrade success |
 | [v4.0.18](docs/release-notes-v4.0.18.en.md) | Checks the real Hermes Feishu SDK constructor capability, diagnoses stale `lark-oapi`, and repairs it during setup/install |
 | [v4.0.17](docs/release-notes-v4.0.17.en.md) | Correlates parallel same-name tools by real call ID, counts invocations once, and removes duplicate duration detail |
 | [v4.0.16](docs/release-notes-v4.0.16.en.md) | Removes duplicate initial loading text, drops the stale body placeholder once tools start, and restores real tool durations |

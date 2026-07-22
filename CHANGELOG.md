@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.19 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.19.md](docs/release-notes-v4.0.19.md)
+
+### Fixed
+- The macOS/Linux one-line installer no longer passes `pip --user` when it selects a Python interpreter inside the Hermes venv.
+- A failed package installation now preserves the real pip exit status and stops before setup, preventing an older checkout or installed package from making an upgrade appear successful.
+
+### Tests
+- Added regression coverage for Hermes-venv pip arguments and fail-fast package-install behavior.
+- A fresh public-install fixture completed without `HFC_PIP_USER`, then imported the tagged package from the Hermes venv `site-packages`.
+
 ## V4.0.18 — 2026-07-22
 
 See also: [docs/release-notes-v4.0.18.md](docs/release-notes-v4.0.18.md)

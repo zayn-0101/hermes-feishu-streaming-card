@@ -67,9 +67,10 @@ exit 0
     )
 
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "hermes_feishu_card.cli setup" in (tmp_path / "python.log").read_text(
-        encoding="utf-8"
-    )
+    python_log = (tmp_path / "python.log").read_text(encoding="utf-8")
+    assert "hermes_feishu_card.cli setup" in python_log
+    assert "-m pip install --upgrade" in python_log
+    assert "--user" not in python_log
     assert not system_marker.exists()
 
 
@@ -212,6 +213,67 @@ exit 0
     assert "--break-system-packages" in (tmp_path / "python.log").read_text(
         encoding="utf-8"
     )
+
+
+def test_install_sh_stops_when_pip_install_fails(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "FEISHU_APP_ID=cli_dotenv\nFEISHU_APP_SECRET=dotenv_secret\n",
+        encoding="utf-8",
+    )
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_PYTHON_LOG"
+if [ "$1" = "-m" ] && [ "$2" = "pip" ] && [ "$3" = "--version" ]; then
+  exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ] && [ "$3" = "install" ]; then
+  echo "fatal package install failure" >&2
+  exit 9
+fi
+if [ "$1" = "-m" ] && [ "$2" = "hermes_feishu_card.cli" ]; then
+  touch "$SETUP_MARKER"
+  exit 0
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(fake_python.stat().st_mode | stat.S_IXUSR)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "FAKE_PYTHON_LOG": str(tmp_path / "python.log"),
+            "SETUP_MARKER": str(tmp_path / "setup-ran"),
+            "HERMES_DIR": str(tmp_path / "hermes-agent"),
+            "HFC_CONFIG": str(tmp_path / "config.yaml"),
+            "HFC_ENV_FILE": str(env_file),
+            "HFC_NO_PROMPT": "1",
+            "HFC_SKIP_START": "1",
+            "HFC_VERSION": "main",
+            "PYTHON": str(fake_python),
+        }
+    )
+    env.pop("HFC_PYTHON", None)
+    env.pop("HFC_PIP_USER", None)
+    env.pop("FEISHU_APP_ID", None)
+    env.pop("FEISHU_APP_SECRET", None)
+
+    result = subprocess.run(
+        ["bash", "install.sh"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 9
+    assert "fatal package install failure" in result.stderr
+    assert not (tmp_path / "setup-ran").exists()
 
 
 def test_install_sh_suppresses_pip_root_user_warning(tmp_path):

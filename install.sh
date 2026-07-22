@@ -10,7 +10,7 @@ PROFILE_ID="${HERMES_FEISHU_CARD_PROFILE_ID:-}"
 EVENT_URL="${HERMES_FEISHU_CARD_EVENT_URL:-}"
 NO_REPAIR="${HFC_NO_REPAIR:-}"
 PYTHON_BIN="${HFC_PYTHON:-}"
-PIP_USER_FLAG="${HFC_PIP_USER:---user}"
+PIP_USER_FLAG="${HFC_PIP_USER-}"
 
 log() {
   printf '[hermes-feishu-card] %s\n' "$*"
@@ -184,6 +184,23 @@ detect_python() {
   PYTHON_BIN="${PYTHON:-python3}"
 }
 
+configure_pip_user_flag() {
+  if [ "${HFC_PIP_USER+x}" = "x" ]; then
+    PIP_USER_FLAG="$HFC_PIP_USER"
+    return
+  fi
+  case "$PYTHON_BIN" in
+    "$HERMES_DIR"/venv/bin/python|"$HERMES_DIR"/venv/bin/python3|\
+    "$HERMES_DIR"/.venv/bin/python|"$HERMES_DIR"/.venv/bin/python3|\
+    "$HERMES_DIR"/gateway/.venv/bin/python|"$HERMES_DIR"/gateway/venv/bin/python)
+      PIP_USER_FLAG="0"
+      ;;
+    *)
+      PIP_USER_FLAG="--user"
+      ;;
+  esac
+}
+
 install_package() {
   have "$PYTHON_BIN" || fail "$PYTHON_BIN was not found. Install Python 3.9+ first."
   export PIP_ROOT_USER_ACTION="${PIP_ROOT_USER_ACTION:-ignore}"
@@ -203,13 +220,14 @@ install_package() {
   esac
   local pip_log
   pip_log="$(mktemp)"
+  local pip_status
   if "$PYTHON_BIN" -m pip "${pip_args[@]}" "$spec" >"$pip_log" 2>&1; then
     cat "$pip_log"
     rm -f "$pip_log"
     return
+  else
+    pip_status=$?
   fi
-  local pip_status
-  pip_status=$?
   if grep -q "externally-managed-environment" "$pip_log"; then
     log "Python environment is externally managed; retrying with --break-system-packages"
     if "$PYTHON_BIN" -m pip "${pip_args[@]}" --break-system-packages "$spec" >"$pip_log" 2>&1; then
@@ -217,8 +235,9 @@ install_package() {
       log "pip warning handled safely; package install completed"
       rm -f "$pip_log"
       return
+    else
+      pip_status=$?
     fi
-    pip_status=$?
     cat "$pip_log" >&2
     rm -f "$pip_log"
     return "$pip_status"
@@ -265,6 +284,7 @@ main() {
   HERMES_DIR="$(expand_path "$HERMES_DIR")"
   CONFIG_PATH="$(expand_path "$CONFIG_PATH")"
   detect_python
+  configure_pip_user_flag
 
   export HFC_CONFIG="$CONFIG_PATH"
   export HFC_ENV_FILE="$ENV_FILE"

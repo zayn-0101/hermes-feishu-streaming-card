@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.0.18`. It fixes the capability mismatch between the Hermes Feishu adapter and `lark-oapi` in the Gateway venv. V3.9.1 was released on 2026-07-11, and V4.0.17 and earlier releases are public.
+Current release candidate: `4.0.19`. It fixes the one-line installer's invalid `pip --user` use inside the Hermes venv and prevents pip failures from being swallowed. V3.9.1 was released on 2026-07-11, and V4.0.18 and earlier releases are public.
 
 ## Ready
 
@@ -144,6 +144,13 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Verify macOS, Linux, Windows, and checksums assets after tagging.
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
+
+## V4.0.19 Release Gates
+
+- Hermes venv Python omits `--user` by default while the system-Python fallback keeps user installs: **passed installer regression**.
+- Pip failures preserve their real exit status and prevent setup from running: **passed red/green regression**.
+- A fresh Hermes venv without `HFC_PIP_USER` completed installation and imported the target version from venv `site-packages`: **passed real install smoke**.
+- Final full automation, sdist/wheel, public tagged installer, and Release assets are rechecked during release.
 
 ## V4.0.18 Release Gates
 

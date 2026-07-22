@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.0.18`。它修复 Hermes Feishu adapter 与 Gateway venv 中 `lark-oapi` 的能力错位；V3.9.1 已于 2026-07-11 发布，V4.0.17 及更早版本也已发布。
+当前发布候选为 `4.0.19`。它修复 one-line installer 在 Hermes venv 中误用 `pip --user` 和吞掉 pip 失败的问题；V3.9.1 已于 2026-07-11 发布，V4.0.18 及更早版本也已发布。
 
 ## 已具备
 
@@ -144,6 +144,13 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - tag 后验证 macOS、Linux、Windows 与 checksums 四个 assets。
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
+
+## V4.0.19 发布门禁
+
+- Hermes venv Python 默认不带 `--user`，system Python fallback 保持 user install：**已通过 installer 回归**。
+- pip 安装失败保留真实退出码并阻止 setup：**已通过红灯/绿灯回归**。
+- fresh Hermes venv 不设置 `HFC_PIP_USER` 完成安装，并从 venv `site-packages` 导入目标版本：**已通过真实安装 smoke**。
+- 最终全量自动化、sdist/wheel、公开 tagged installer 与 Release assets 在发布流程中复核。
 
 ## V4.0.18 发布门禁
 

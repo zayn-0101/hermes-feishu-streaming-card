@@ -180,6 +180,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | `HFC_REPO` | `baileyh8/hermes-feishu-streaming-card` | GitHub repository to install from. |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent root directory. |
 | `HFC_PYTHON` | Hermes venv, then `PYTHON`/`python3` fallback | Explicit Python interpreter override. |
+| `HFC_PIP_USER` | automatic | Hermes venv installs omit `--user`; system Python uses `--user`. Set `0` or `--user` only to override. |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | Sidecar config path. |
 | `HFC_ENV_FILE` | Same directory as `HFC_CONFIG`, named `.env` | Feishu credential file. |
 | `FEISHU_APP_ID` | unset | Feishu/Lark app id. |
@@ -197,7 +198,7 @@ script selects Hermes venv Python and does not fall back to system Python unless
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.18
+export HFC_VERSION=v4.0.19
 bash install-docker.sh
 ```
 

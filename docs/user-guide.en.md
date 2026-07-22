@@ -459,7 +459,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.18
+export HFC_VERSION=v4.0.19
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -702,6 +702,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v4.0.19](release-notes-v4.0.19.en.md) | 2026-07-22 | Avoids `pip --user` inside the Hermes venv and stops immediately with the real pip failure |
 | [v4.0.18](release-notes-v4.0.18.en.md) | 2026-07-22 | Checks the Hermes Feishu SDK constructor capability, repairs stale `lark-oapi`, and exposes operations guidance |
 | [v4.0.17](release-notes-v4.0.17.en.md) | 2026-07-22 | Correlates parallel same-name tools by real call ID and reports one count and duration per invocation |
 | [v4.0.16](release-notes-v4.0.16.en.md) | 2026-07-22 | Deduplicates loading state, removes the empty body placeholder after tools start, and restores real tool durations |
