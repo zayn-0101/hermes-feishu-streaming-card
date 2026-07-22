@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.0.14`。它修复 Issue #142：orphan 长任务 heartbeat 保持非终态、按原始用户消息锚点更新同一卡，并在最终完成事件到达时正常收束。V3.9.1 已于 2026-07-11 发布，V4.0.13 及更早版本也已发布。
+当前发布候选为 `4.0.15`。它修复 Issue #141 的工具事件视觉与首事件加载反馈，并让 CLI 主动识别 Hermes 升级覆盖 Gateway hook 的静默失效。V3.9.1 已于 2026-07-11 发布，V4.0.14 及更早版本也已发布。
 
 ## 已具备
 
@@ -144,6 +144,12 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - tag 后验证 macOS、Linux、Windows 与 checksums 四个 assets。
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
+
+## V4.0.15 发布门禁
+
+- Issue #141 紧凑工具时间线、加载/运行 spinner、同卡 PATCH、停止条件、终态 drain 与 topic/reply anchor：**已通过聚焦自动化和真实 Hermes/飞书模型验证**。
+- Hermes 升级覆盖后的只读发现、`start` 拒绝、显式恢复、恢复后 installed，以及用户编辑 fail-closed：**已通过临时 fixture 升级闭环与本机实际升级排障验证**。
+- 最终全量自动化：**已通过（`1498 passed, 4 skipped`）**；sdist/wheel、隔离 `site-packages` import `4.0.15` 与 CLI smoke：**已通过**；tag 前再执行 `git diff --check`。
 
 ## V4.0.14 发布门禁
 

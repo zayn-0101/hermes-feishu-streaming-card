@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.0.14`. It fixes Issue #142 so orphaned long-running heartbeats remain non-terminal, update one card per original user-message anchor, and complete when the final event arrives. V3.9.1 was released on 2026-07-11, and V4.0.13 and earlier releases are public.
+Current release candidate: `4.0.15`. It fixes Issue #141's tool-event visuals and first-event loading feedback, and makes the CLI detect silent Gateway-hook removal after a Hermes upgrade. V3.9.1 was released on 2026-07-11, and V4.0.14 and earlier releases are public.
 
 ## Ready
 
@@ -144,6 +144,12 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Verify macOS, Linux, Windows, and checksums assets after tagging.
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
+
+## V4.0.15 Release Gates
+
+- Issue #141's compact tool timeline, loading/running spinner, same-card PATCH path, stop conditions, terminal drain, and topic/reply anchors: **passed focused automation and real Hermes/Feishu model validation**.
+- Read-only detection after a Hermes upgrade, `start` refusal, explicit recovery, installed state after recovery, and fail-closed user edits: **passed a temporary-fixture upgrade loop plus the local real-upgrade diagnosis**.
+- Final full automation: **passed (`1498 passed, 4 skipped`)**; sdist/wheel, isolated `site-packages` import of `4.0.15`, and CLI smoke: **passed**; `git diff --check` is rerun before tagging.
 
 ## V4.0.14 Release Gates
 

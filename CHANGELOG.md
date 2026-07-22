@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.15 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.15.md](docs/release-notes-v4.0.15.md)
+
+### Added
+- Fixed Issue #141 with a compact semantic tool-event timeline: the first line shows status, tool name, and duration while arguments, results, and failure details stay on a smaller second line without blockquote backgrounds.
+- The initial card displays an animated `正在加载上下文…` state, and running tools advance the same spinner through the existing serialized PATCH controller without creating a second card.
+
+### Reliability
+- `status` and `start` now detect a verified Hermes upgrade that replaced the injected hook while leaving safe installer evidence. They report `upgrade_repair_required`; `start` refuses the silent broken state and prints the explicit recovery plus Gateway-start commands.
+- User-edited, corrupt, unsupported, or incomplete Hermes source stays fail-closed as `manual_review_required`; the CLI never suggests upgrade acceptance for those states.
+- Hook installation now prints `gateway.restart_required: hermes gateway start` whenever patched Gateway or cron source changed.
+
+### Tests
+- Added render/server animation coverage, first-event compatibility, terminal drain checks, safe upgrade-recovery lifecycle coverage, and real Hermes/Feishu validation with the configured model.
+- Full automation, package build, isolated `site-packages` import, tagged install, and release-asset results are recorded in the release notes.
+
 ## V4.0.14 — 2026-07-20
 
 See also: [docs/release-notes-v4.0.14.md](docs/release-notes-v4.0.14.md)
