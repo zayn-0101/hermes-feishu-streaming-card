@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.0.16`。它去除初始加载文案重复，并恢复真实 Hermes 工具耗时显示；V3.9.1 已于 2026-07-11 发布，V4.0.15 及更早版本也已发布。
+当前发布候选为 `4.0.17`。它修复并行同名工具的事件关联、调用计数和重复耗时显示；V3.9.1 已于 2026-07-11 发布，V4.0.16 及更早版本也已发布。
 
 ## 已具备
 
@@ -144,6 +144,13 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - tag 后验证 macOS、Linux、Windows 与 checksums 四个 assets。
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
+
+## V4.0.17 发布门禁
+
+- 两个并行同名工具使用不同 `call_id`，查询详情和 completed 事件保持独立：**已通过 session/patcher 回归**。
+- started/completed 只计一次真实调用，详情中的全部 `耗时:` 元数据被清除且标题只保留一个耗时：**已通过 session/renderer 回归**。
+- 本机当前 Hermes 原始 Gateway source 的 patch 编译、幂等与精确 restore：**已通过**；无稳定 callback anchor 的兼容 fallback 保持不变。
+- 最终全量自动化：**已通过（`1508 passed, 4 skipped`）**；sdist/wheel、隔离 `site-packages` import `4.0.17`、公开 tagged installer 与本机运行来源在发布流程中复核。
 
 ## V4.0.16 发布门禁
 

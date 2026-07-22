@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.17 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.17.md](docs/release-notes-v4.0.17.md)
+
+### Fixed
+- Parallel tools with the same name now use Hermes' stable `tool_start_callback` / `tool_complete_callback` call IDs, so each query, argument set, status, and duration stays on its own timeline row.
+- The timeline header counts tool invocations once instead of counting both started and completed lifecycle events.
+- Rendering removes every duration metadata line from the detail body and keeps only the first valid duration on the compact tool headline.
+
+### Compatibility
+- Existing Hermes tool callbacks are preserved and wrapped without retaining stale per-turn HFC closures on cached agents.
+- Hermes layouts without compatible stable callback anchors retain the established progress-callback fallback and fail-open behavior.
+
+### Tests
+- Added regression coverage for parallel same-name tools, invocation counting, duplicate-duration cleanup, stable patch insertion, idempotency, compilation against the current Hermes Gateway source, and exact restore.
+- Full automation passed with `1508 passed, 4 skipped`; package build, isolated install, public tagged-install, release assets, and local runtime provenance are verified during release.
+
 ## V4.0.16 — 2026-07-22
 
 See also: [docs/release-notes-v4.0.16.md](docs/release-notes-v4.0.16.md)

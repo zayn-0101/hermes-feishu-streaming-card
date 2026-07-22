@@ -459,7 +459,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.16
+export HFC_VERSION=v4.0.17
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -701,6 +701,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v4.0.17](release-notes-v4.0.17.en.md) | 2026-07-22 | Correlates parallel same-name tools by real call ID and reports one count and duration per invocation |
 | [v4.0.16](release-notes-v4.0.16.en.md) | 2026-07-22 | Deduplicates loading state, removes the empty body placeholder after tools start, and restores real tool durations |
 | [v4.0.15](release-notes-v4.0.15.en.md) | 2026-07-22 | Issue #141: compact tool-event styling, same-card loading animation, and CLI protection when Hermes upgrades remove the hook |
 | [v4.0.14](release-notes-v4.0.14.en.md) | 2026-07-20 | Issue #142: orphaned long-task heartbeats stay running, reuse one card per original message anchor, and complete on the final event |
