@@ -730,9 +730,9 @@ streaming:
 | `setup --repair ... --yes` / `--no-repair` | 自动修复已知安全状态，或显式关闭自动 repair |
 | `restore --hermes-dir ... --yes` | 恢复原始 Hermes 文件 |
 | `uninstall --hermes-dir ... --yes` | 卸载并恢复 |
-| `start --config ...` | 启动 sidecar；Linux/systemd 优先使用独立 user service |
+| `start --config ...` | 启动 sidecar；已配置 `HERMES_DIR` 时先检查升级是否覆盖 hook，异常则拒绝静默启动 |
 | `stop --config ...` | 停止 sidecar；校验 PID/token，并通过记录的 systemd unit 或进程身份安全停止 |
-| `status --config ...` | 查看 sidecar 状态、routing、profile diagnostics 与 metrics |
+| `status --config ...` | 查看 sidecar、routing、profile diagnostics、metrics 与 Hermes hook 安装状态 |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | 按指定 profile 发送真实飞书 smoke 卡片 |
 | `bots list|show|add|remove --config ...` | 管理飞书 Bot 注册 |
 | `bots test --profile-id ... --chat-id ...` | 按指定 profile/bot 做真实飞书 bot smoke |

@@ -7,6 +7,7 @@ from ipaddress import ip_address
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -149,8 +150,9 @@ def _build_parser() -> argparse.ArgumentParser:
     for command in ("start", "stop", "status"):
         process_parser = subparsers.add_parser(command)
         process_parser.add_argument("--config", default="config.yaml.example")
-        if command == "start":
+        if command in {"start", "status"}:
             process_parser.add_argument("--env-file")
+            process_parser.add_argument("--hermes-dir")
 
     smoke = subparsers.add_parser("smoke-feishu-card")
     smoke.add_argument("--config", default="config.yaml.example")
@@ -1560,6 +1562,96 @@ def _truthy(value: object) -> bool:
     return bool(value)
 
 
+def _configured_lifecycle_hermes_root(args: argparse.Namespace) -> Path | None:
+    explicit = getattr(args, "hermes_dir", None)
+    if explicit:
+        return Path(explicit).expanduser()
+
+    raw_env_path = getattr(args, "env_file", None) or os.environ.get("HFC_ENV_FILE")
+    env_paths = []
+    if raw_env_path:
+        env_paths.append(Path(raw_env_path).expanduser())
+    env_paths.append(Path(args.config).expanduser().parent / ".env")
+    for env_path in env_paths:
+        value = read_hfc_env(env_path).get("HERMES_DIR", "").strip()
+        if value:
+            return Path(value).expanduser()
+
+    for name in ("HERMES_DIR", "HFC_HERMES_DIR", "HERMES_AGENT_ROOT"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return Path(value).expanduser()
+    return None
+
+
+def _lifecycle_hook_check(args: argparse.Namespace) -> dict[str, object] | None:
+    hermes_root = _configured_lifecycle_hermes_root(args)
+    if hermes_root is None:
+        return None
+
+    detection = detect_hermes(hermes_root)
+    if not detection.supported:
+        return {
+            "status": "manual_review_required",
+            "blocking": True,
+            "root": hermes_root,
+        }
+
+    plan = plan_recovery(detection)
+    if plan.state == "installed" and not plan.actions:
+        return {"status": "installed", "blocking": False, "root": hermes_root}
+    if plan.state == "clean":
+        return {"status": "not_installed", "blocking": False, "root": hermes_root}
+    if plan.state == "stale_unpatched":
+        accepted = plan_recovery(detection, accept_hermes_upgrade=True)
+        if accepted.executable:
+            return {
+                "status": "upgrade_repair_required",
+                "blocking": True,
+                "root": hermes_root,
+            }
+    return {
+        "status": "manual_review_required",
+        "blocking": True,
+        "root": hermes_root,
+    }
+
+
+def _print_lifecycle_hook_check(
+    check: dict[str, object], *, file: Any = None
+) -> None:
+    output = sys.stdout if file is None else file
+    status = str(check["status"])
+    hermes_root = Path(check["root"])
+    print(f"hook.status: {status}", file=output)
+    if status == "upgrade_repair_required":
+        repair_command = shlex.join(
+            [
+                "hermes-feishu-card",
+                "install",
+                "--hermes-dir",
+                str(hermes_root),
+                "--accept-hermes-upgrade",
+                "--yes",
+            ]
+        )
+        print(f"hook.next: {repair_command}", file=output)
+        print("hook.restart: hermes gateway start", file=output)
+    elif status == "manual_review_required":
+        doctor_command = shlex.join(
+            [
+                "hermes-feishu-card",
+                "doctor",
+                "--config",
+                str(Path(check.get("config", "config.yaml.example"))),
+                "--hermes-dir",
+                str(hermes_root),
+                "--explain",
+            ]
+        )
+        print(f"hook.next: {doctor_command}", file=output)
+
+
 def _run_start(args: argparse.Namespace) -> int:
     try:
         config = (
@@ -1569,6 +1661,12 @@ def _run_start(args: argparse.Namespace) -> int:
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    hook_check = _lifecycle_hook_check(args)
+    if hook_check is not None and bool(hook_check["blocking"]):
+        hook_check["config"] = args.config
+        _print_lifecycle_hook_check(hook_check, file=sys.stderr)
         return 1
 
     try:
@@ -1656,7 +1754,12 @@ def _run_status(args: argparse.Namespace) -> int:
         print("status: stopped")
         if status["pid"] is not None:
             print(f"pid: {status['pid']} stale")
-    return 0
+    hook_check = _lifecycle_hook_check(args)
+    if hook_check is None:
+        return 0
+    hook_check["config"] = args.config
+    _print_lifecycle_hook_check(hook_check)
+    return 1 if bool(hook_check["blocking"]) else 0
 
 
 def _print_status_routing(health: dict[str, Any]) -> None:
@@ -1996,6 +2099,7 @@ def _run_install(args: argparse.Namespace) -> int:
     manifest_existed = False
     backup_existed = False
     cron_backup_existed = False
+    gateway_restart_required = False
 
     try:
         original = _read_text_preserve_newlines(run_py)
@@ -2019,6 +2123,14 @@ def _run_install(args: argparse.Namespace) -> int:
             apply_cron_patch(cron_original)
             if cron_py is not None and cron_original is not None
             else None
+        )
+        gateway_restart_required = bool(
+            patched != original
+            or (
+                cron_patched is not None
+                and cron_original is not None
+                and cron_patched != cron_original
+            )
         )
         if not backup_existed:
             _atomic_write_text(backup_path, original)
@@ -2051,6 +2163,8 @@ def _run_install(args: argparse.Namespace) -> int:
         return 1
 
     print("install ok")
+    if gateway_restart_required:
+        print("gateway.restart_required: hermes gateway start")
     return 0
 
 

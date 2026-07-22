@@ -57,7 +57,7 @@ def test_start_passes_explicit_env_file_to_sidecar(tmp_path, monkeypatch, capsys
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / "CUSTOM.env"
     config_path.write_text("server: {}\n", encoding="utf-8")
-    env_path.write_text("HERMES_DIR=custom-hermes\n", encoding="utf-8")
+    env_path.write_text("FEISHU_APP_ID=test-app\n", encoding="utf-8")
     started = {}
     monkeypatch.setattr(
         cli_module,

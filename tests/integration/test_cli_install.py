@@ -1109,11 +1109,105 @@ def test_install_accepts_explicit_changed_state_after_hermes_upgrade(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "install state: cleared stale unpatched state" in result.stdout
     assert "install ok" in result.stdout.lower()
+    assert "gateway.restart_required: hermes gateway start" in result.stdout
     assert backup_path(hermes_dir).read_text(encoding="utf-8") == upgraded
     current = run_py(hermes_dir).read_text(encoding="utf-8")
     assert patcher.remove_patch(current) == upgraded
     manifest = json.loads(manifest_path(hermes_dir).read_text(encoding="utf-8"))
     assert manifest["backup_sha256"] == sha256(upgraded.encode("utf-8")).hexdigest()
+
+
+def _write_lifecycle_config(tmp_path, hermes_dir):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server:\n  port: 19015\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        f"HERMES_DIR={hermes_dir}\n",
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def _simulate_hermes_upgrade(hermes_dir):
+    upgraded = patcher.remove_patch(
+        run_py(hermes_dir).read_text(encoding="utf-8")
+    ) + "\n# upstream Hermes changed this file during upgrade\n"
+    run_py(hermes_dir).write_text(upgraded, encoding="utf-8")
+    return upgraded
+
+
+def test_status_detects_missing_hook_after_hermes_upgrade(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = _write_lifecycle_config(tmp_path, hermes_dir)
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+    upgraded = _simulate_hermes_upgrade(hermes_dir)
+
+    result = run_cli("status", "--config", str(config_path))
+
+    assert result.returncode != 0
+    assert "hook.status: upgrade_repair_required" in result.stdout
+    assert "--accept-hermes-upgrade --yes" in result.stdout
+    assert "hermes gateway start" in result.stdout
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == upgraded
+
+    repair = run_cli(
+        "install",
+        "--hermes-dir",
+        str(hermes_dir),
+        "--accept-hermes-upgrade",
+        "--yes",
+    )
+    assert repair.returncode == 0, repair.stderr
+    assert "gateway.restart_required: hermes gateway start" in repair.stdout
+
+    repaired_status = run_cli("status", "--config", str(config_path))
+    assert repaired_status.returncode == 0, repaired_status.stderr
+    assert "hook.status: installed" in repaired_status.stdout
+
+
+def test_start_refuses_missing_hook_after_hermes_upgrade(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = _write_lifecycle_config(tmp_path, hermes_dir)
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+    upgraded = _simulate_hermes_upgrade(hermes_dir)
+
+    result = run_cli("start", "--config", str(config_path))
+
+    assert result.returncode != 0
+    assert "hook.status: upgrade_repair_required" in result.stderr
+    assert "--accept-hermes-upgrade --yes" in result.stderr
+    assert "hermes gateway start" in result.stderr
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == upgraded
+
+
+def test_status_reports_installed_hook(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = _write_lifecycle_config(tmp_path, hermes_dir)
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+
+    result = run_cli("status", "--config", str(config_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "hook.status: installed" in result.stdout
+
+
+def test_status_does_not_offer_upgrade_acceptance_for_user_edited_patch(tmp_path):
+    hermes_dir = copy_hermes(tmp_path)
+    config_path = _write_lifecycle_config(tmp_path, hermes_dir)
+    install_result = run_cli("install", "--hermes-dir", str(hermes_dir), "--yes")
+    assert install_result.returncode == 0, install_result.stderr
+    edited = run_py(hermes_dir).read_text(encoding="utf-8") + "\n# user edit\n"
+    run_py(hermes_dir).write_text(edited, encoding="utf-8")
+
+    result = run_cli("status", "--config", str(config_path))
+
+    assert result.returncode != 0
+    assert "hook.status: manual_review_required" in result.stdout
+    assert "--accept-hermes-upgrade" not in result.stdout
+    assert "doctor" in result.stdout
+    assert run_py(hermes_dir).read_text(encoding="utf-8") == edited
 
 
 def test_doctor_json_reports_changed_installed_run_py(tmp_path):
