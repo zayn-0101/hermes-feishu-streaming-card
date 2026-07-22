@@ -229,7 +229,8 @@ class CardSession:
                 started_at=started_at,
             )
             self.timeline.record_tool(tool_id, resolved_name, resolved_status, resolved_detail)
-            self._tool_call_count += 1
+            if previous_tool is None or previous_is_terminal:
+                self._tool_call_count += 1
         elif event.event == "message.started":
             delivery_kind = event.data.get("delivery_kind")
             if isinstance(delivery_kind, str) and delivery_kind.strip():

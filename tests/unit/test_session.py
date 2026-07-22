@@ -170,13 +170,13 @@ def test_failed_event_clears_explicit_status_to_session_source():
     assert session.display_status_source == "session"
 
 
-def test_tool_updates_count_all_events():
+def test_tool_count_tracks_invocations_instead_of_lifecycle_events():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     session.apply(event("tool.updated", 1, {"tool_id": "t1", "name": "search", "status": "running"}))
     session.apply(event("tool.updated", 2, {"tool_id": "t1", "name": "search", "status": "completed"}))
     session.apply(event("tool.updated", 3, {"tool_id": "t2", "name": "fetch", "status": "completed"}))
-    assert session.tool_count == 3  # 3 actual tool calls (1 unique: t1 called twice, t2 once)
-    assert len(session.tools) == 2  # tools dict still deduplicates
+    assert session.tool_count == 2
+    assert len(session.tools) == 2
     assert session.tools["t1"].status == "completed"
 
 
@@ -657,13 +657,69 @@ def test_failed_visible_main_text_shows_error():
     assert session.visible_main_text == "失败原因"
 
 
-def test_tool_count_increments_for_same_tool_id():
+def test_repeated_running_updates_do_not_inflate_tool_count():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     for i in range(3):
         e = event("tool.updated", i, {"tool_id": "web_search", "name": "web_search", "status": "running"})
         session.apply(e)
-    assert session.tool_count == 3  # 实际调用次数
-    assert len(session.tools) == 1  # tools 字典仍去重
+    assert session.tool_count == 1
+    assert len(session.tools) == 1
+
+
+def test_parallel_same_name_tools_keep_details_and_durations_separate():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "tool.updated",
+            1,
+            {
+                "tool_id": "call-1",
+                "name": "web_search",
+                "status": "running",
+                "detail": "DeepSeek V4 official release July 2026 live status",
+            },
+            created_at=100.0,
+        )
+    )
+    assert session.apply(
+        event(
+            "tool.updated",
+            2,
+            {
+                "tool_id": "call-2",
+                "name": "web_search",
+                "status": "running",
+                "detail": "site:api-docs.deepseek.com V4 models latest",
+            },
+            created_at=100.01,
+        )
+    )
+    assert session.apply(
+        event(
+            "tool.updated",
+            3,
+            {"tool_id": "call-1", "name": "web_search", "status": "completed"},
+            created_at=102.12,
+        )
+    )
+    assert session.apply(
+        event(
+            "tool.updated",
+            4,
+            {"tool_id": "call-2", "name": "web_search", "status": "completed"},
+            created_at=102.48,
+        )
+    )
+
+    entries = [item for item in session.timeline.snapshot() if item.kind == "tool"]
+
+    assert session.tool_count == 2
+    assert len(entries) == 2
+    assert entries[0].tool_id == "call-1"
+    assert entries[0].detail == "DeepSeek V4 official release July 2026 live status\n耗时: 2.12s"
+    assert entries[1].tool_id == "call-2"
+    assert entries[1].detail == "site:api-docs.deepseek.com V4 models latest\n耗时: 2.47s"
 
 
 def test_timeline_preserves_repeated_completed_tool_calls_with_same_id():

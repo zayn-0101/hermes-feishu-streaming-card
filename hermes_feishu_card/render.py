@@ -568,8 +568,9 @@ def _split_tool_timeline_detail(detail: str) -> tuple[str, str]:
     lines: list[str] = []
     for line in str(detail or "").splitlines():
         match = _TOOL_DURATION_LINE_RE.fullmatch(line.strip())
-        if match and not duration:
-            duration = match.group(1)
+        if match:
+            if not duration:
+                duration = match.group(1)
             continue
         lines.append(line)
     return "\n".join(lines).strip(), duration

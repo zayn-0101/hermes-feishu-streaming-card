@@ -771,6 +771,34 @@ def test_apply_patch_inserts_streaming_callback_hooks():
     assert patcher.remove_patch(patched) == content
 
 
+def test_apply_patch_uses_stable_tool_call_ids_when_gateway_exposes_callbacks():
+    content = (
+        "async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "    return await self._run_agent(source, event_message_id=event.message_id)\n"
+        "\n"
+        "async def _run_agent(self, source, event_message_id=None):\n"
+        "    _loop_for_step = asyncio.get_running_loop()\n"
+        "    agent = self.agent\n"
+        "    def _run_still_current():\n"
+        "        return True\n"
+        "    def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):\n"
+        "        return None\n"
+        "    agent.tool_progress_callback = progress_callback\n"
+        "    agent.tool_start_callback = voice_ack_callback if voice_enabled else None\n"
+        "    return agent\n"
+    )
+
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    assert patcher.STABLE_TOOL_PATCH_BEGIN in patched
+    assert '"tool_id": str(call_id or tool_name or "tool")' in patched
+    assert "agent.tool_start_callback = _hfc_tool_start_callback" in patched
+    assert "agent.tool_complete_callback = _hfc_tool_complete_callback" in patched
+    assert "_hfc_pending_tool_previews" in patched
+    assert patcher.apply_patch(patched, strategy="gateway_run_013_plus") == patched
+    assert patcher.remove_patch(patched) == content
+
+
 def _status_callback_fixture() -> str:
     return (
         "async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"

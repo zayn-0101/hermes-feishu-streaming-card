@@ -1361,6 +1361,32 @@ def test_render_tool_timeline_uses_compact_semantic_event_rows():
     assert timeline["border"]["corner_radius"] == "8px"
 
 
+def test_render_tool_timeline_removes_all_duration_lines_from_detail():
+    from hermes_feishu_card.card_timeline import TimelineEntry
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.timeline._entries.append(
+        TimelineEntry(
+            kind="tool",
+            title="web_search",
+            status="completed",
+            detail="搜索参数\n耗时: 2.47s\n耗时: 2.12s",
+            tool_id="call-1",
+        )
+    )
+    session._tool_call_count = 1
+
+    card = render_card(session, timeline_expanded=True)
+    timeline = next(
+        item for item in card["body"]["elements"] if item.get("element_id") == "auxiliary_timeline"
+    )
+    content = str(timeline)
+
+    assert "web_search** · 2.47s" in content
+    assert "搜索参数" in content
+    assert "耗时:" not in content
+
+
 def test_render_tool_timeline_recognizes_localized_terminal_status():
     from hermes_feishu_card.events import SidecarEvent
 
