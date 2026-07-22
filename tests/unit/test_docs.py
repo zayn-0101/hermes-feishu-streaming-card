@@ -17,6 +17,7 @@ def test_maintainer_docs_define_reliable_notice_delivery_contract():
 
     for marker in (
         "delivery_uuid",
+        "accepted",
         "not_sent",
         "unknown",
         "feishu_send_retries",
@@ -24,6 +25,9 @@ def test_maintainer_docs_define_reliable_notice_delivery_contract():
         "feishu_noop_attempts",
         "notice_native_fallbacks",
         "notice_uncertain_warnings",
+        "notice_update_failures",
+        "status_code",
+        "api_code",
     ):
         assert marker in combined
     assert "不重试 `/events`" in combined
@@ -1316,9 +1320,9 @@ def test_v400_release_docs_cover_live_runtime_cards():
     assert "tool.updated.detail" in notes_en
     assert "thinking.delta" in notes_en
     assert "运行态 Header" in readme
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.19}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.19" in doc
+        assert "HFC_VERSION=v4.0.20" in doc
     for event_name in (
         "progress_callback.preview",
         "tool.updated.detail",
@@ -1712,9 +1716,9 @@ def test_v4012_release_docs_cover_compaction_text_sizes_and_noop_credentials():
             assert asset in text
     assert "docs/release-notes-v4.0.12.md" in readme
     assert "docs/release-notes-v4.0.12.en.md" in readme_en
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.19}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.19" in doc
+        assert "HFC_VERSION=v4.0.20" in doc
     assert "V4.0.12" in todo
 
 
@@ -1755,9 +1759,9 @@ def test_v4013_release_docs_cover_all_command_feedback_cards():
             assert asset in text
     assert "docs/release-notes-v4.0.13.md" in readme
     assert "docs/release-notes-v4.0.13.en.md" in readme_en
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.19}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.19" in doc
+        assert "HFC_VERSION=v4.0.20" in doc
     assert "V4.0.13" in todo
     assert "V4.0.13 发布门禁" in readiness
     assert "V4.0.13 Release Gates" in readiness_en
@@ -1800,9 +1804,9 @@ def test_v4014_release_docs_cover_long_running_heartbeat_fix():
             assert asset in text
     assert "docs/release-notes-v4.0.14.md" in readme
     assert "docs/release-notes-v4.0.14.en.md" in readme_en
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.19}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.19" in doc
+        assert "HFC_VERSION=v4.0.20" in doc
     assert "V4.0.14" in todo
     assert "V4.0.14 发布门禁" in readiness
     assert "V4.0.14 Release Gates" in readiness_en
@@ -1846,9 +1850,9 @@ def test_v4015_release_docs_cover_tool_timeline_and_upgrade_guard():
             assert asset in text
     assert "docs/release-notes-v4.0.15.md" in readme
     assert "docs/release-notes-v4.0.15.en.md" in readme_en
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.19}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.19" in doc
+        assert "HFC_VERSION=v4.0.20" in doc
     assert "V4.0.15" in todo
     assert "V4.0.15 发布门禁" in readiness
     assert "V4.0.15 Release Gates" in readiness_en
@@ -1890,9 +1894,9 @@ def test_v4016_release_docs_cover_loading_dedup_and_real_tool_duration():
             assert asset in text
     assert "docs/release-notes-v4.0.16.md" in readme
     assert "docs/release-notes-v4.0.16.en.md" in readme_en
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.19}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.19" in doc
+        assert "HFC_VERSION=v4.0.20" in doc
     assert "V4.0.16" in todo
     assert "V4.0.16 发布门禁" in readiness
     assert "V4.0.16 Release Gates" in readiness_en
@@ -1933,9 +1937,9 @@ def test_v4017_release_docs_cover_parallel_tool_correlation():
             assert asset in text
     assert "docs/release-notes-v4.0.17.md" in readme
     assert "docs/release-notes-v4.0.17.en.md" in readme_en
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.19}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.19" in doc
+        assert "HFC_VERSION=v4.0.20" in doc
     assert "V4.0.17" in todo
     assert "V4.0.17 发布门禁" in readiness
     assert "V4.0.17 Release Gates" in readiness_en
@@ -1976,9 +1980,9 @@ def test_v4018_release_docs_cover_feishu_sdk_capability_guard():
             assert asset in text
     assert "docs/release-notes-v4.0.18.md" in readme
     assert "docs/release-notes-v4.0.18.en.md" in readme_en
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.19}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.19" in doc
+        assert "HFC_VERSION=v4.0.20" in doc
     assert "V4.0.18" in todo
     assert "V4.0.18 发布门禁" in readiness
     assert "V4.0.18 Release Gates" in readiness_en
@@ -2013,12 +2017,57 @@ def test_v4019_release_docs_cover_venv_pip_install_guard():
             assert asset in text
     assert "docs/release-notes-v4.0.19.md" in readme
     assert "docs/release-notes-v4.0.19.en.md" in readme_en
-    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.19}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
     for doc in (readme, readme_en, install_doc, guide, guide_en):
-        assert "HFC_VERSION=v4.0.19" in doc
+        assert "HFC_VERSION=v4.0.20" in doc
     assert "V4.0.19" in todo
     assert "V4.0.19 发布门禁" in readiness
     assert "V4.0.19 Release Gates" in readiness_en
+
+
+def test_v4020_release_docs_cover_notice_accepted_ack_and_observability():
+    changelog = read_doc("CHANGELOG.md")
+    notes = read_doc("docs/release-notes-v4.0.20.md")
+    notes_en = read_doc("docs/release-notes-v4.0.20.en.md")
+    readme = read_doc("README.md")
+    readme_en = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    guide = read_doc("docs/user-guide.md")
+    guide_en = read_doc("docs/user-guide.en.md")
+    compose = read_doc("docker-compose.example.yml")
+    todo = read_doc("TODO.md")
+    readiness = read_doc("docs/release-readiness.md")
+    readiness_en = read_doc("docs/release-readiness.en.md")
+    acceptance = read_doc("docs/wiki/feishu-acceptance.md")
+
+    assert "## V4.0.20 — 2026-07-22" in changelog
+    assert "[docs/release-notes-v4.0.20.md](docs/release-notes-v4.0.20.md)" in changelog
+    for text in (notes, notes_en):
+        for marker in (
+            "accepted",
+            "applied=true",
+            "notice_update_failures",
+            "status_code",
+            "api_code",
+            "1517 passed, 4 skipped",
+        ):
+            assert marker in text
+        for asset in (
+            "hermes-feishu-card-v4.0.20-macos.tar.gz",
+            "hermes-feishu-card-v4.0.20-linux.tar.gz",
+            "hermes-feishu-card-v4.0.20-windows.zip",
+            "hermes-feishu-card-v4.0.20-checksums.txt",
+        ):
+            assert asset in text
+    assert "docs/release-notes-v4.0.20.md" in readme
+    assert "docs/release-notes-v4.0.20.en.md" in readme_en
+    assert 'HFC_VERSION: "${HFC_VERSION:-v4.0.20}"' in compose
+    for doc in (readme, readme_en, install_doc, guide, guide_en):
+        assert "HFC_VERSION=v4.0.20" in doc
+    assert "V4.0.20" in todo
+    assert "V4.0.20 发布门禁" in readiness
+    assert "V4.0.20 Release Gates" in readiness_en
+    assert "V4.0.20 notice 异步 ACK 语义" in acceptance
 
 
 def test_feishu_cli_playbook_is_linked_and_keeps_cli_optional():

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.20 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.20.md](docs/release-notes-v4.0.20.md)
+
+### Fixed
+- Existing-card `system.notice` updates now return `delivery.outcome=accepted` only after the event is applied and the asynchronous PATCH task is queued, preventing the hook from emitting a false unknown-delivery warning.
+- Initial independent notice create/reply semantics remain `delivered`, `not_sent`, or `unknown`; the fix does not wait for every PATCH or weaken create-delivery confirmation.
+
+### Diagnostics
+- `/health.metrics.notice_update_failures` counts accepted notice update tasks that still fail after internal PATCH retries.
+- `last_update_error` may include only validated `status_code` and `api_code` fields in addition to the exception type; response bodies, tokens, URLs, and credentials remain excluded.
+
+### Tests
+- Added hook and sidecar regressions for explicit `accepted + applied=true`, rejection of incomplete acknowledgements, queued update responses, retry exhaustion, and redacted diagnostics.
+- Full automation passed with `1517 passed, 4 skipped`; the package also passed sdist/wheel and isolated `site-packages` import checks.
+
 ## V4.0.19 — 2026-07-22
 
 See also: [docs/release-notes-v4.0.19.md](docs/release-notes-v4.0.19.md)
